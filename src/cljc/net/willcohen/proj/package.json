@@ -1,0 +1,37 @@
+{
+  "name": "proj",
+  "version": "0.0.1",
+  "description": "",
+  "main": "proj.mjs",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cherry-cljs": "0.3.23",
+    "proj-emscripten": "file:../../../../js/proj-emscripten",
+    "url": "^0.11.4"
+  },
+  "devDependencies": {
+    "@babel/cli": "^7.26.4",
+    "@babel/core": "^7.26.0",
+    "@babel/preset-env": "^7.26.0",
+    "@vercel/ncc": "^0.38.3",
+    "babel-loader": "^9.2.1",
+    "exports-loader": "^5.0.0",
+    "file-loader": "^6.2.0",
+    "webpack": "^5.97.1",
+    "webpack-cli": "^5.1.4"
+  },
+  "presets": [
+    [
+      "@babel/preset-env",
+      {
+        "useBuiltIns": "usage",
+        "corejs": "3.33"
+      }
+    ]
+  ]
+}
