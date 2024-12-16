@@ -74,11 +74,15 @@ popd
 
 if [ -d "PROJ-$VERSION" ]; then
     rm -rf "PROJ-$VERSION"
+    tar xvzf $VERSION.tar.gz
 fi
 
-tar xvzf $VERSION.tar.gz
-
-pushd PROJ-$VERSION
+if [[ "$VERSION" == "HEAD" ]]; then
+    pushd PROJ
+else
+    tar xvzf $VERSION.tar.gz
+    pushd PROJ-$VERSION
+fi
 
 mkdir -p proj-build-$LIBRARY_DIR
 pushd proj-build-$LIBRARY_DIR
@@ -93,6 +97,7 @@ if [ ! -f lib/libproj.dylib ]; then
 
     cmake -DBUILD_APPS=OFF -DBUILD_PROJSYNC=OFF -DBUILD_CCT=OFF \
         -DBUILD_GEOD=OFF -DBUILD_GIE=OFF -DBUILD_PROJ=OFF -DBUILD_PROJINFO=OFF -DBUILD_PROJSYNC=OFF -DENABLE_CURL=OFF \
+        -DBUILD_TESTING=OFF \
         -DSQLite3_INCLUDE_DIR=../../sqlite-autoconf-$SQLITE_VERSION_URL \
         -DSQLite3_LIBRARY=../../sqlite-autoconf-$SQLITE_VERSION_URL/sqlite-build-$LIBRARY_DIR/sqlite3.o \
         -DSQLite3_VERSION=$SQLITE_VERSION \

@@ -8,6 +8,7 @@
                [tech.v3.datatype.ffi.ptr-value :as dt-ptr]
                [tech.v3.datatype.native-buffer :as dt-nb]
                [tech.v3.tensor :as dt-t]
+               [clojure.java.io :as io]
                [clojure.tools.logging :as log]
                [clojure.string :as string]
                ;[net.willcohen.proj.clj.impl.struct :as struct]
@@ -16,6 +17,8 @@
                [net.willcohen.proj.impl.graal :as graal])
      :cljs
      (:require ["proj-emscripten$default" :as proj-emscripten]
+               ["resource-tracker" :as resource]
+               [cljs.string :as string]
                ["fs" :as fs]))
   #?(:clj (:import [tech.v3.datatype.ffi Pointer]
                    [java.io File])))
@@ -40,12 +43,16 @@
 
 (declare get-implementation)
 
-;; (defn ts-helper
-;;   "thread-safe-helper"
-;;   [body]
-;;   (case (get-implementation)
-;;     :ffi body
-;;     :graal (graal/tsgcd body)))
+(def p #?(:clj nil
+          :cljs (atom nil)))
+
+#?(:cljs
+   (defn proj-emscripten-helper
+     [f return-type arg-types args]
+     ;; Asserts to be commented out when not debugging
+     ;; (assert (valid-ccall-type? return-type))
+     ;; (map #(assert (valid-ccall-type? %)) arg-types)
+     ((.-ccall @p) f return-type arg-types args 0)))
 
 (defn cs
   "The primary mechanism for attempting to ensure atomicity with contexts.
@@ -76,18 +83,26 @@
                        :result #?(:clj (case (get-implementation)
                                          :ffi (apply f (cons ptr args))
                                          :graal (graal/tsgcd (apply f (cons ptr args))))
-                                  :cljs (apply f (cons ptr args)))))))))
+                                  :cljs (case (get-implementation)
+                                         :node (let [return-type (first args)
+                                                     arg-types (nth args 1)
+                                                     args (nth args 2)]
+                                                 (proj-emscripten-helper f return-type
+                                                                         (into-array (cons "number" arg-types))
+                                                                         (into-array (cons ptr args))))))))))))
 
 (defn string-list-destroy
   ([addr]
    (string-list-destroy addr nil))
   ([addr log-level]
-   (when log-level
-     (log/logf log-level
-               "Destroyed string list 0x%16X" addr))
-   (case (get-implementation)
-     :ffi (native/proj_string_list_destroy (Pointer. addr))
-     :graal (graal/proj-string-list-destroy (graal/address-as-polyglot-value addr)))))
+   #?(:clj (when log-level
+             (log/logf log-level
+                       "Destroyed string list 0x%16X" addr)))
+   #?(:clj (case (get-implementation)
+             :ffi (native/proj_string_list_destroy (Pointer. addr))
+             :graal (graal/proj-string-list-destroy (graal/address-as-polyglot-value addr)))
+      :cljs (case (get-implementation)
+              :node (proj-emscripten-helper "proj_string_list_destroy" "number" "number" addr)))))
 
 (defn context-set-database-path
   ([context]
@@ -111,62 +126,117 @@
                  :graal graal/proj-context-set-database-path)
        [db-path aux-db-paths options])))
 
+#?(:cljs
+   (defn get-value
+     [ptr type]
+     ((.-getValue @p) ptr type)))
+
+#?(:cljs
+   (defn pointer->string
+     [ptr]
+     ((.-UTF8ToString @p) (get-value ptr "*"))))
+
+#?(:cljs
+   (defn malloc
+     [b]
+     ((.-_malloc @p) b)))
+
+#?(:cljs
+   (defn heapf64
+     [o n]
+     (.subarray (.-HEAPF64 @p) o (+ o n))))
+
+#?(:cljs
+   (defn alloc-coord-array
+     [num-coords]
+     (let [alloc (malloc (* 8 num-coords))
+           array (heapf64 (/ alloc 8) (* 4 num-coords))]
+       {:malloc alloc :array array})))
+
+#?(:cljs
+   (defn set-coord-array
+     [coord-array allocated]
+     (let [flattened (into-array (flatten coord-array))]
+       (.-set (:array allocated) [flattened 0])
+       allocated)))
+
+
 (defn string-array-pointer->strs
   [ptr]
-  (let [ptrs (-> ptr
-               dt-ptr/ptr-value
-               com.sun.jna.Pointer.
-               (.getPointerArray 0))]
-    (map #(.getString % 0) ptrs)))
+  #?(:clj (let [ptrs (-> ptr
+                       dt-ptr/ptr-value
+                       com.sun.jna.Pointer.
+                       (.getPointerArray 0))]
+            (map #(.getString % 0) ptrs))
+     :cljs (loop [addr ptr
+                  arr []
+                  str (pointer->string ptr)]
+            (if (empty? str)
+              arr
+              (recur (+ 4 addr)
+                     (conj arr str)
+                     (pointer->string (+ 4 addr)))))))
 
 (defn context-destroy
   ([addr]
    (context-destroy addr nil))
   ([addr log-level]
-   (when log-level
-     (log/logf log-level
-               "Destroyed context 0x%16X" addr))
-   (log/info "Destroying" addr)
-   (log/info (type addr))
-   (case (get-implementation)
-     :ffi (native/proj_context_destroy (Pointer. addr))
-     :graal (graal/proj-context-destroy addr))))
+   #?(:clj (do
+             (when log-level
+               (log/logf log-level
+                         "Destroyed context 0x%16X" addr))
+             (log/info "Destroying" addr)
+             (log/info (type addr))))
+   #?(:clj (case (get-implementation)
+             :ffi (native/proj_context_destroy (Pointer. addr))
+             :graal (graal/proj-context-destroy addr))
+
+      :cljs (case (get-implementation)
+              :node ((.-_proj_context_destroy @p) addr)))))
 
 (defn proj-destroy
   ([addr]
    (proj-destroy addr nil))
   ([addr log-level]
-   (when log-level
-     (log/logf log-level
-               "Destroyed proj 0x%16X" addr))
-   (case (get-implementation)
-     :ffi (native/proj_destroy (Pointer. addr))
-     :graal (graal/proj-destroy addr))))
+   #?(:clj (when log-level
+             (log/logf log-level
+                       "Destroyed proj 0x%16X" addr)))
+   #?(:clj (case (get-implementation)
+             :ffi (native/proj_destroy (Pointer. addr))
+             :graal (graal/proj-destroy addr))
+      :cljs (case (get-implementation)
+              :node ((.-_proj_destroy @p) addr)))))
 
 (defn context-create
   ([]
    (context-create nil))
   ([log-level]
-   (context-create log-level :auto))
+   (context-create log-level #?(:clj :auto
+                                :cljs "auto")))
   ([log-level resource-type]
    (let [retval #?(:clj (case (get-implementation)
                           :ffi (native/proj_context_create)
                           :graal (graal/proj-context-create))
-                   :cljs 1)
+                   :cljs (case (get-implementation)
+                           :node ((.-_proj_context_create @p))))
          addr (case (get-implementation)
                 :ffi (.address retval)
-                :graal (graal/address-as-string retval))
+                :graal (graal/address-as-string retval)
+                :node (str retval))
          t (when resource-type
-             (resource/track retval {:dispose-fn #(context-destroy addr log-level)
-                                     :track-type resource-type}))
+            (resource/track
+             retval
+             #?(:clj {:dispose-fn #(context-destroy addr log-level)
+                      :track-type resource-type}
+                :cljs (js-obj "disposefn" #(context-destroy addr log-level)
+                              "tracktype" resource-type))))
          a (atom {:ptr retval :op (long 0) :result nil})]
      (case (get-implementation)
        :ffi (context-set-database-path a)
-       :graal nil)
-     (println a)
+       :graal nil
+       :node nil)
      a)))
 
-(def p nil)
 (def force-graal (atom false))
 (defn toggle-graal! [] (swap! force-graal not))
 (defn force-graal! [] (reset! force-graal true))
@@ -179,13 +249,14 @@
        (catch Exception _
          (graal/init-proj))))
      :cljs
-     (def p (proj-emscripten/proj))))
+     (reset! p (proj-emscripten))))
 
 (defn get-implementation
   []
-  (cond @force-graal :graal
-        (not (nil? (:singleton @native/proj))) :ffi
-        :else :graal))
+  #?(:clj (cond @force-graal :graal
+                (not (nil? (:singleton @native/proj))) :ffi
+                :else :graal)
+     :cljs :node))
 
 (defn ffi?
   []
@@ -195,13 +266,31 @@
   []
   (= :graal (get-implementation)))
 
+(defn node?
+  []
+  (= :node (get-implementation)))
+
+#?(:cljs
+   (defmacro ef
+     "Emscripten function helper, not working"
+     ; TODO Fix this to simplify usage in this NS
+     [f]
+     `(~(symbol (str ".-" (name f))) (deref p))))
+
+(defn valid-ccall-type?
+  [t]
+  (if (not (nil? (#{:number :array :string} t)))
+    true
+    false))
+
 (defn proj-reset
   []
   ;; need to destroy first?
   (cond (ffi?) (native/reset-proj)
         (graal?) (do
                    (graal/reset-graal-context!)
-                   (graal/init-proj))))
+                   (graal/init-proj))
+        (node?) (proj-init)))
 
 (defn get-authorities-from-database
   ([]
@@ -209,23 +298,33 @@
   ([context]
    (get-authorities-from-database context nil))
   ([context log-level]
-   (get-authorities-from-database context log-level :auto))
+   (get-authorities-from-database context log-level #?(:clj :auto
+                                                       :cljs "auto")))
   ([context log-level resource-type]
-   (let [retval (cs context (case (get-implementation)
-                              :ffi native/proj_get_authorities_from_database
-                              :graal graal/proj-get-authorities-from-database) nil)
-         addr (case (get-implementation)
-                :ffi (.address retval)
-                :graal (graal/address-as-int retval))]
+   (let [retval (cs context #?(:clj (case (get-implementation)
+                                      :ffi native/proj_get_authorities_from_database
+                                      :graal graal/proj-get-authorities-from-database)
+                               :cljs (case (get-implementation)
+                                       :node (.-_proj_get_authorities_from_database @p)))
+                    nil)
+         addr #?(:clj (case (get-implementation)
+                        :ffi (.address retval)
+                        :graal (graal/address-as-int retval))
+                 :clj (case (get-implementation)
+                        :node retval))]
      (when log-level
-       (log/logf log-level
-                 "proj_get_authorities_from_database returned 0x%16x" addr))
+       #?(:clj (log/logf log-level
+                         "proj_get_authorities_from_database returned 0x%16x" addr)))
      (when resource-type
-       (resource/track retval {:dispose-fn #(string-list-destroy addr log-level)
-                               :track-type resource-type}))
-     (case (get-implementation)
-       :ffi (string-array-pointer->strs retval)
-       :graal (graal/pointer-array->string-array retval)))))
+       (resource/track retval #?(:clj {:dispose-fn #(string-list-destroy addr log-level)
+                                       :track-type resource-type}
+                                 :cljs (js-obj "disposefn" #(string-list-destroy addr log-level)
+                                               "tracktype" resource-type))))
+     #?(:clj (case (get-implementation)
+               :ffi (string-array-pointer->strs retval)
+               :graal (graal/string-array-pointer->strs retval))
+        :cljs (case (get-implementation)
+                :node (string-array-pointer->strs retval))))))
 
 (defn get-codes-from-database
   ([auth-name]
@@ -237,23 +336,32 @@
   ([context auth-name type allow-deprecated]
    (get-codes-from-database context auth-name type allow-deprecated nil))
   ([context auth-name type allow-deprecated log-level]
-   (get-codes-from-database context auth-name type allow-deprecated log-level :auto))
+   (get-codes-from-database context auth-name type allow-deprecated log-level #?(:clj :auto
+                                                                                 :cljs "auto")))
   ([context auth-name type allow-deprecated log-level resource-type]
    (let [retval (cs context (case (get-implementation)
                               :ffi native/proj_get_codes_from_database
-                              :graal graal/proj-get-codes-from-database)
-                    [auth-name type allow-deprecated])
+                              :graal graal/proj-get-codes-from-database
+                              :node "proj_get_codes_from_database")
+                    #?(:clj [auth-name type allow-deprecated]
+                       :cljs ["number"
+                              (array "string" "number" "number")
+                              (array auth-name type log-level)]))
           addr (case (get-implementation)
                  :ffi (.address retval)
-                 :graal retval)]
+                 :graal retval
+                 :node retval)]
       (when resource-type
-        (resource/track retval {:dispose-fn #(string-list-destroy addr log-level)
-                                :track-type resource-type}))
+        (resource/track retval #?(:clj {:dispose-fn #(string-list-destroy addr log-level)
+                                        :track-type resource-type}
+                                  :cljs (js-obj "disposefn" #(string-list-destroy addr log-level)
+                                                "tracktype" resource-type))))
       ;; Need to diagnose why the string array continues too far
       (filter #(re-matches #"^[A-Za-z0-9\-]+$" %)
               (case (get-implementation)
                 :ffi (string-array-pointer->strs retval)
-                :graal (graal/pointer-array->string-array retval))))))
+                :graal (graal/string-array-pointer->strs retval)
+                :node (string-array-pointer->strs retval))))))
 
 (defn context-guess-wkt-dialect
   ([wkt]
@@ -261,8 +369,13 @@
   ([context wkt]
    (let [retval (cs context (case (get-implementation)
                               :ffi native/proj_context_guess_wkt_dialect
-                              :graal graal/proj-context-guess-wkt-dialect)
-                    [wkt])]
+                              :graal graal/proj-context-guess-wkt-dialect
+                              :node "proj_context_guess_wkt_dialect")
+                    #?(:clj [wkt]
+                       :cljs ["number"
+                              (array "string")
+                              (array wkt)]))]
+
       retval)))
 
 (defn create-crs-to-crs
@@ -271,18 +384,26 @@
   ([context source-crs target-crs]
    (create-crs-to-crs context source-crs target-crs 0 nil))
   ([context source-crs target-crs area log-level]
-   (create-crs-to-crs context source-crs target-crs area log-level :auto))
+   (create-crs-to-crs context source-crs target-crs area log-level #?(:clj :auto
+                                                                      :cljs "auto")))
   ([context source-crs target-crs area log-level resource-type]
    (let [retval (cs context (case (get-implementation)
                               :ffi native/proj_create_crs_to_crs
-                              :graal graal/proj-create-crs-to-crs)
-                    [source-crs target-crs area])
+                              :graal graal/proj-create-crs-to-crs
+                              :node "proj_create_crs_to_crs")
+                    #?(:clj [source-crs target-crs area]
+                       :cljs ["number"
+                              (array "string" "string" "number")
+                              (array source-crs target-crs area)]))
          addr (case (get-implementation)
                 :ffi (.address retval)
-                :graal (graal/address-as-int retval))]
+                :graal (graal/address-as-int retval)
+                :node retval)]
      (when resource-type
-       (resource/track retval {:dispose-fn #(proj-destroy addr log-level)
-                               :track-type resource-type}))
+       (resource/track retval #?(:clj {:dispose-fn #(proj-destroy addr log-level)
+                                       :track-type resource-type}
+                                 :cljs (js-obj "disposefn" #(proj-destroy addr log-level)
+                                               "tracktype" resource-type))))
      retval)))
 
 (defn create-from-database
@@ -293,18 +414,23 @@
   ([context auth-name code category use-proj-alternative-grid-names options]
    (create-from-database context auth-name code category use-proj-alternative-grid-names options nil))
   ([context auth-name code category use-proj-alternative-grid-names options log-level]
-   (create-from-database context auth-name code category use-proj-alternative-grid-names options log-level :auto))
+   (create-from-database context auth-name code category use-proj-alternative-grid-names options log-level #?(:clj :auto
+                                                                                                              :cljs "auto")))
   ([context auth-name code category use-proj-alternative-grid-names options log-level resource-type]
    (let [retval (cs context (case (get-implementation)
                               :ffi native/proj_create_from_database
-                              :graal graal/proj-create-from-database)
+                              :graal graal/proj-create-from-database
+                              :node "proj_create_from_database")
                     [auth-name code category use-proj-alternative-grid-names options])
          addr (case (get-implementation)
                 :ffi (.address retval)
-                :graal (graal/address-as-int retval))]
+                :graal (graal/address-as-int retval)
+                :node retval)]
      (when resource-type
-       (resource/track retval {:dispose-fn #(proj-destroy addr log-level)
-                               :track-type resource-type}))
+       (resource/track retval #?(:clj {:dispose-fn #(proj-destroy addr log-level)
+                                       :track-type resource-type}
+                                 :cljs (js-obj "disposefn" #(proj-destroy log-level)
+                                               "tracktype" resource-type))))
      retval)))
 
 (defn trans-array
@@ -317,15 +443,24 @@
             (let [coord-array (dt-t/ensure-native (dt-t/->tensor coord-array :datatype :float64))]
               (dt-t/->jvm (trans-array p coord-array direction))))
      :graal (trans-array p coord-array direction
-                         (graal/tsgcd (/ (.asInt (.getMember (:array coord-array) "length")) 4)))))
+                         (graal/tsgcd (/ (.asInt (.getMember (:array coord-array) "length")) 4)))
+     :node (trans-array p coord-array direction
+                        (/ (.-length (:array coord-array)) 4))))
   ([p coord-array direction n]
-   (case (get-implementation)
-     :ffi (if (dt-t/tensor? coord-array)
-            (do (native/proj_trans_array p direction n coord-array)
-                coord-array)
-            (trans-array p (dt-t/ensure-native (dt-t/->tensor coord-array :datatype :float64)) direction n))
-     :graal (do (graal/proj-trans-array p direction n coord-array)
-                coord-array))))
+   #?(:clj (case (get-implementation)
+             :ffi (if (dt-t/tensor? coord-array)
+                    (do (native/proj_trans_array p direction n coord-array)
+                        coord-array)
+                    (trans-array p (dt-t/ensure-native (dt-t/->tensor coord-array :datatype :float64)) direction n))
+             :graal (do (graal/proj-trans-array p direction n coord-array)
+                        coord-array))
+       :cljs (case (get-implementation)
+              :node (do (proj-emscripten-helper
+                         "proj_trans_array"
+                         "number"
+                         (array "number" "number" "number" "number")
+                         (array p direction n (:malloc coord-array)))
+                        coord-array)))))
 
 (defn coord-tensor
   [ca]
@@ -335,9 +470,12 @@
 
 (defn coord-array
   ([n]
-   (case (get-implementation)
-     :ffi (coord-array n :native-heap :auto)
-     :graal (graal/alloc-coord-array n)))
+   #?(:clj (case (get-implementation)
+             :ffi (coord-array n :native-heap :auto)
+             :graal (graal/alloc-coord-array n))
+      :cljs (case (get-implementation)
+             :node (alloc-coord-array n))))
+
   ([n container-type resource-type]
    (-> (dt-struct/new-array-of-structs :proj-coord n {:container-type container-type
                                                       :resource-type resource-type})
@@ -345,26 +483,38 @@
 
 (defn coord->coord-array
   [coord]
-  (case (get-implementation)
-    :ffi (if (dt-t/tensor? coord)
-           (let [coord-array (coord-array 1)
-                 len (count coord)]
-             (reduce #(dt-t/mset! %1 0 %2 (dt-t/mget coord %2)) coord-array (range len)))
-           (coord->coord-array (dt-t/->tensor coord)))
-    :graal (graal/set-coord-array coord (coord-array 1))))
+  #?(:clj
+     (case (get-implementation)
+       :ffi (if (dt-t/tensor? coord)
+              (let [coord-array (coord-array 1)
+                    len (count coord)]
+                (reduce #(dt-t/mset! %1 0 %2 (dt-t/mget coord %2)) coord-array (range len)))
+              (coord->coord-array (dt-t/->tensor coord)))
+       :graal (graal/set-coord-array coord (coord-array 1)))
+     :cljs
+     (case (get-implementation)
+       :node (set-coord-array coord (coord-array 1)))))
 
 (defn trans-coord
   ([proj coord]
-   (if (or (dt-t/tensor? coord) (= (get-implementation) :graal))
-     (trans-coord proj coord PJ_FWD)
-     (dt-t/->jvm (trans-coord proj coord PJ_FWD))))
+   #?(:clj
+      (if (or (dt-t/tensor? coord) (= (get-implementation) :graal))
+        (trans-coord proj coord PJ_FWD)
+        (dt-t/->jvm (trans-coord proj coord PJ_FWD)))
+      :cljs
+      (trans-coord proj coord PJ_FWD)))
   ([proj coord direction]
-   (case (get-implementation)
-     :ffi (if (dt-t/tensor? coord)
-            (dt-t/mget (trans-array proj (coord->coord-array coord) direction 1) 0)
-            (dt-t/->jvm (dt-t/select (dt-t/mget (trans-array proj (coord->coord-array coord) direction 1) 0) (range (count coord)))))
-     :graal (graal/polyglot-array->jvm-array
-             (:array (trans-array proj (coord->coord-array coord) direction))))))
+   #?(:clj
+      (case (get-implementation)
+        :ffi (if (dt-t/tensor? coord)
+               (dt-t/mget (trans-array proj (coord->coord-array coord) direction 1) 0)
+               (dt-t/->jvm (dt-t/select (dt-t/mget (trans-array proj (coord->coord-array coord) direction 1) 0) (range (count coord)))))
+        :graal (graal/polyglot-array->jvm-array
+                (:array (trans-array proj (coord->coord-array coord) direction))))
+      :cljs
+      (case (get-implementation)
+        :node
+        (:array (trans-array proj (coord->coord-array coord) direction))))))
 
 (defn set-coord!
   "Sets the value of a single coordinate in a coord-array tensor.
@@ -429,6 +579,6 @@
   (set-col! ca 3 vals))
 
 
-#?(:cljs (do
-           (proj-init)
-           p))
+;; #?(:cljs (do
+;;            (proj-init)
+;;            (println (trans-coord (create-crs-to-crs "EPSG:3586" "EPSG:4326") (array 0 0 0 0)))))

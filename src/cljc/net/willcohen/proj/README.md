@@ -1,12 +1,37 @@
-# proj-emscripten
+# proj-wasm
 
-![NPM Version](https://img.shields.io/npm/v/proj-emscripten)
+A transpiled WebAssembly version of [PROJ](https://github.com/OSGeo/PROJ), made
+available for use via JavaScript.
 
+Part of the [clj-proj](https://github.com/willcohen/clj-proj) project, and is
+still experimental. Please see that project's
+[README](https://github.com/willcohen/clj-proj/blob/main/README.md) for further
+details.
 
-This is a wrapper around a version of [PROJ](https://github.com/OSGeo/PROJ)
-compiled with [emscripten](https://github.com/emscripten-core/emscripten), for
-use in [clj-proj](https://github.com/willcohen/clj-proj) as a JS dependency. It
-is not intended for general use.
+## Usage
+
+Put the following in `index.mjs`.
+``` ejs
+import * as proj from "proj-wasm";
+
+proj.proj_init();
+
+var t = proj.create_crs_to_crs("EPSG:3586", "EPSG:4326");
+var c = [0,0,0,0]
+console.log(proj.trans_coord(t, c));
+```
+
+``` sh
+$ node index.mjs
+writeStackCookie: 0x00000000
+initRuntime
+Float64Array(4) [
+  34.24438675300125,
+  -73.6513909034731,
+  4.8569143e-317,
+  5.7293886364e-313
+]
+```
 
 ## License
 

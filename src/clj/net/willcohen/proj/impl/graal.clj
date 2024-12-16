@@ -1,5 +1,6 @@
 (ns net.willcohen.proj.impl.graal
-  (:require [clojure.string :as string]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as string]
             [clojure.tools.logging :as log])
 
   (:import [org.graalvm.polyglot Context PolyglotAccess Source]
@@ -26,6 +27,7 @@
                 .build)))
 
 (defmacro tsgcd
+  "thread-safe graal context do"
   [body]
   `(locking context
      ~body))
@@ -40,13 +42,13 @@
 (defn init-proj
   []
   (reset-graal-context!)
-  (def p (let [f (java.io.File. "resources/wasm/pw.wasm")
+  (def p (let [f (java.io.File. (.getPath (io/resource "wasm/pgi.wasm")))
                w (byte-array (.length f))
                _ (with-open [in (java.io.DataInputStream. (clojure.java.io/input-stream f))]
                    (.readFully in w))]
           (.putMember (.getBindings context "js") "pwproxy" (ProxyArray/fromArray (object-array (seq w))))
-          (eval-js (slurp "resources/wasm/proj_emscripten.graal.js"))
-          (let [f  (java.io.File. "resources/proj.db")
+          (eval-js (slurp (.getPath (io/resource "wasm/proj_emscripten.graal.js"))))
+          (let [f  (java.io.File. (.getPath (io/resource "proj.db")))
                 d (byte-array (.length f))]
             (with-open [in (java.io.DataInputStream. (clojure.java.io/input-stream f))]
               (.readFully in d))
@@ -72,7 +74,7 @@
           (sp)
           (let [p-local (tsgcd p)]
            (tsgcd (.getMember p-local f))))))
-()
+
 (defn valid-ccall-type?
   [t]
   (if (not (nil? (#{:number :array :string} t)))
@@ -102,12 +104,9 @@
 
 (defn proj-emscripten-helper
   [f return-type arg-types args]
+  ;; Asserts to be commented out when not debugging
   (assert (valid-ccall-type? return-type))
   (map #(assert (valid-ccall-type? %)) arg-types)
-  (log/info f)
-  (log/info return-type)
-  (log/info arg-types)
-  (log/info args)
   (let [eval-str (string/join
                   ["p.ccall(" (tsgcd (arg->quoted-string f)) ", " (keyword->quoted-string return-type) ", "
                    (keyword-array->string arg-types) ", " (tsgcd (arg-array->string args)) ", 0);"])]
@@ -121,7 +120,7 @@
   (address-as-trackable-pointer [this])
   (get-value [this type])
   (pointer->string [this])
-  (pointer-array->string-array [this]))
+  (string-array-pointer->strs [this]))
 
 (defrecord TrackablePointer [address]
   Pointerlike
@@ -131,7 +130,7 @@
   (address-as-trackable-pointer [this] this)
   (get-value [this type] (get-value (:address this) type))
   (pointer->string [this] (pointer->string (:address this)))
-  (pointer-array->string-array [this] (pointer-array->string-array (:address this))))
+  (string-array-pointer->strs [this] (string-array-pointer->strs (:address this))))
 
 (extend-protocol Pointerlike
   org.graalvm.polyglot.Value
@@ -143,7 +142,7 @@
                                 (into-array Object [this type])))
   (pointer->string [this] (.asString (.execute (emscripten-helper "UTF8ToString")
                                                (into-array Object [(get-value this "*")]))))
-  (pointer-array->string-array [this]
+  (string-array-pointer->strs [this]
     (loop [addr this
            arr []
            str (pointer->string this)]
@@ -160,7 +159,7 @@
   (address-as-trackable-pointer [this] (->TrackablePointer (address-as-int this)))
   (get-value [this type] (get-value (address-as-polyglot-value this) type))
   (pointer->string [this] (pointer->string (address-as-polyglot-value this)))
-  (pointer-array->string-array [this] (pointer-array->string-array (address-as-polyglot-value this)))
+  (string-array-pointer->strs [this] (string-array-pointer->strs (address-as-polyglot-value this)))
 
   java.lang.Long
   (address-as-int [this] (int this))
@@ -169,7 +168,7 @@
   (address-as-trackable-pointer [this] (->TrackablePointer (address-as-int this)))
   (get-value [this type] (get-value (address-as-polyglot-value this) type))
   (pointer->string [this] (pointer->string (address-as-polyglot-value this)))
-  (pointer-array->string-array [this] (pointer-array->string-array (address-as-polyglot-value this)))
+  (string-array-pointer->strs [this] (string-array-pointer->strs (address-as-polyglot-value this)))
 
   java.lang.Integer
   (address-as-int [this] this)
@@ -178,7 +177,7 @@
   (address-as-trackable-pointer [this] (->TrackablePointer this))
   (get-value [this type] (get-value (address-as-polyglot-value this) type))
   (pointer->string [this] (pointer->string (address-as-polyglot-value this)))
-  (pointer-array->string-array [this] (pointer-array->string-array (address-as-polyglot-value this))))
+  (string-array-pointer->strs [this] (string-array-pointer->strs (address-as-polyglot-value this))))
 
 (defn polyglot-array->jvm-array
   [a]

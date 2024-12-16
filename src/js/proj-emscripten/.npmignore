@@ -1,2 +1,5 @@
 src/
 webpack.config.js
+webpack.config.graal.js
+webpack.config.node.js
+webpack.config.web.js

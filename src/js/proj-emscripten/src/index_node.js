@@ -16,7 +16,7 @@
 //const __dirname = new URL('', import.meta.url).pathname;
 
 import { pn } from "./pn";
-import './pw.wasm';
+//import './pn.wasm';
 //import { pj } from "./pj.js";
 
 //import projwasmmodule from "./projwasm.wasm"
