@@ -1,8 +1,8 @@
 //import "core-js";
 import { pw } from "./pw";
-import { pi } from "./pi";
-import { pgi } from "./pgi";
-import './pw.wasm';
+//import { pi } from "./pi";
+//import { pgi } from "./pgi";
+//import './pw.wasm';
 //import { pj } from "./pj.js";
 
 //import projwasmmodule from "./projwasm.wasm"
@@ -23,6 +23,6 @@ import './pw.wasm';
 
 //var projjs = projjs
 
-var proj = { wasm: pw, insertwasm: pi, insertwasmgraal: pgi};
+var proj = { proj: pw };
 
 export default proj;

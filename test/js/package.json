@@ -1,0 +1,14 @@
+{
+  "name": "test",
+  "version": "0.1.0-alpha1",
+  "description": "Testing the local proj-js package",
+  "main": "index.mjs",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Will Cohen",
+  "license": "MIT",
+  "dependencies": {
+    "proj-js": "file:../../src/cljc/net/willcohen/proj"
+  }
+}

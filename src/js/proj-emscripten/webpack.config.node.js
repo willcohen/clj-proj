@@ -19,23 +19,20 @@ module.exports = {
     },
   },
   target: "node",
-  module: {
-    rules: [
-      {
-        test: /pw\.wasm$/,
-        type: "asset/resource",
-        generator: {
-          filename: "[name].wasm"
-        }
-      },
-      {
-        test: /proj\.db$/,
-        type: "asset/resource",
-        generator: {
-          filename: "[name].db"
-        }
-      }
-    ]
-  }
+  // module: {
+  //   rules: [
+  //     {
+  //       test: /pn\.wasm$/,
+  //       type: "asset/resource",
+  //       generator: {
+  //         filename: "[name].wasm"
+  //       }
+  //     }
+  //   ]
+  // },
+  node: {
+    __filename: true,
+    __dirname: true
+  },
   // plugins: []
 };

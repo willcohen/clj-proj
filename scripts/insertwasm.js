@@ -1,2 +1,2 @@
 //const fs = require('fs');
-Module['wasmBinary'] = fs.readFileSync('./pw.wasm');
+Module['wasmBinary'] = fs.readFileSync('./pn.wasm');

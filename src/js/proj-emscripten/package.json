@@ -1,13 +1,8 @@
 {
   "name": "proj-emscripten",
-  "version": "1.0.0",
+  "version": "0.1.0-alpha1",
   "description": "Emscripten-compiled version of PROJ, not intended for direct use",
-  "browser": {
-    "fs": false,
-    "path": false,
-    "os": false,
-    "crypto": false
-  },
+  "homepage": "https://github.com/willcohen/clj-proj",
   "main": "dist/proj_emscripten.node.mjs",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"

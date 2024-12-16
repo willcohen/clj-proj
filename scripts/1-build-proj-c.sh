@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 VERSION="9.5.1"
+WASM_GIT="HEAD"
 SQLITE_VERSION="3.46.1"
 SQLITE_VERSION_URL="3460100"
 SQLITE_YEAR="2024"
@@ -11,8 +12,9 @@ case "$(uname -sm)" in
     *) LIBTIFF_VERSION="4.6.0" ;;
 esac
 
-NATIVE_COMPILE=false
+NATIVE_COMPILE=true
 WASM_COMPILE=true
+GRAAL_COMPILE=true
 CROSS_COMPILE=false # not working
 
 LIBTIFF_MINOR_VERSION=$(echo $LIBTIFF_VERSION | awk -F "." '{print $2}')
@@ -61,6 +63,15 @@ if [ -d "libtiff-v$LIBTIFF_VERSION" ]; then
     rm -rf "libtiff-v$LIBTIFF_VERSION"
 fi
 
+if [[ "$WASM_GIT" == "HEAD" ]]; then
+    git clone https://github.com/OSGeo/PROJ
+    # Until embedded db is released, pin to a fixed commit for predictability
+    # https://github.com/OSGeo/PROJ/pull/4265
+    pushd "PROJ"
+    git checkout 14f5080
+    popd
+fi
+
 if [ ! -f $VERSION.tar.gz ]; then
     curl -OL https://github.com/OSGeo/PROJ/archive/refs/tags/$VERSION.tar.gz
 fi
@@ -90,9 +101,20 @@ if $NATIVE_COMPILE; then
     bash ../scripts/1a-build-proj-native.sh $VERSION $SQLITE_VERSION $SQLITE_VERSION_URL $LIBTIFF_VERSION
 fi
 
+pwd
+
 if $WASM_COMPILE; then
-    bash ../scripts/1b-build-proj-wasm.sh $VERSION $SQLITE_VERSION $SQLITE_VERSION_URL $LIBTIFF_VERSION
+    bash ../scripts/1b-build-proj-wasm.sh $VERSION $WASM_GIT $SQLITE_VERSION $SQLITE_VERSION_URL $LIBTIFF_VERSION
 fi
+
+pwd
+
+if $GRAAL_COMPILE; then
+    bash ../scripts/1c-build-proj-wasm-graal.sh $VERSION $SQLITE_VERSION $SQLITE_VERSION_URL $LIBTIFF_VERSION
+fi
+
+pwd
+
 
 if ! $CROSS_COMPILE; then
     exit 0

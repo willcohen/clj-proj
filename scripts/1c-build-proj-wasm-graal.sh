@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
 
 VERSION=$1
-WASM_GIT=$2
-SQLITE_VERSION=$3
-SQLITE_VERSION_URL=$4
-LIBTIFF_VERSION=$5
+SQLITE_VERSION=$2
+SQLITE_VERSION_URL=$3
+LIBTIFF_VERSION=$4
+
+echo "entering graal"
+
+pwd
 
 mkdir -p .emscriptencache
 export EM_CACHE=$(pwd)/.emscriptencache
-
-# if [[ "$WASM_GIT" == "HEAD" ]]; then
-#     pushd "PROJ"
-# else
-#     pushd "PROJ-$VERSION"
-# fi
 
 if [ -d "sqlite-autoconf-$SQLITE_VERSION_URL" ]; then
     rm -rf "sqlite-autoconf-$SQLITE_VERSION_URL"
@@ -79,15 +76,10 @@ popd
 
 if [ -d "PROJ-$VERSION" ]; then
     rm -rf "PROJ-$VERSION"
-    tar xvzf $VERSION.tar.gz
 fi
 
-if [[ "$WASM_GIT" == "HEAD" ]]; then
-    pushd PROJ
-else
-    tar xvzf $VERSION.tar.gz
-    pushd PROJ-$VERSION
-fi
+tar xvzf $VERSION.tar.gz
+pushd PROJ-$VERSION
 
 mkdir -p proj-build-wasm
 pushd proj-build-wasm
@@ -107,7 +99,6 @@ if [ ! -f lib/libproj.a ]; then
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_POLICY_DEFAULT_CMP0135=NEW \
             -DBUILD_TESTING=OFF \
-            -DEMBED_RESOURCE_FILES=ON \
             ..
     cmake --build .
 fi
@@ -116,36 +107,38 @@ cp data/proj.db .
 cp data/proj.ini .
 
 # Web target not currently working, but this wasm file is used elsewhere
-emcc -o pw.js -O2 -fexceptions -fvisibility=default --target=wasm32-unknown-emscripten lib/libproj.a $LIBTIFF_LIBNAME ../../sqlite-autoconf-$SQLITE_VERSION_URL/sqlite-build-wasm/sqlite3.o -s EXPORTED_FUNCTIONS="$(cat ../../../scripts/exported_functions.json)" -s EXPORTED_RUNTIME_METHODS="$(cat ../../../scripts/exported_runtime_methods.json)" -s ALLOW_MEMORY_GROWTH=1 -s DEFAULT_LIBRARY_FUNCS_TO_INCLUDE="\$Browser" -s ENVIRONMENT="web,shell" -s MODULARIZE -s EXPORT_NAME="pw"
+#emcc -o pw.js -O2 -fexceptions -fvisibility=default --target=wasm32-unknown-emscripten lib/libproj.a $LIBTIFF_LIBNAME ../../sqlite-autoconf-$SQLITE_VERSION_URL/sqlite-build-wasm/sqlite3.o -s EXPORTED_FUNCTIONS="$(cat ../../../scripts/exported_functions.json)" -s EXPORTED_RUNTIME_METHODS="$(cat ../../../scripts/exported_runtime_methods.json)" -s ALLOW_MEMORY_GROWTH=1 -s DEFAULT_LIBRARY_FUNCS_TO_INCLUDE="\$Browser" -s ENVIRONMENT="web,shell" -s MODULARIZE -s EXPORT_NAME="pw"
 
 ## Originally, pn and pi differed only in that pn didn't insert the pw wasm load
 ## Since pn always now fails on cherry trying to load a nonexistent pw.wasm, perhaps insertion should be the default case.
 #emcc -o pn.js -O0 -fexceptions -fvisibility=default --target=wasm32-unknown-emscripten lib/libproj.a $LIBTIFF_LIBNAME ../../sqlite-autoconf-$SQLITE_VERSION_URL/sqlite-build-wasm/sqlite3.o -s EXPORTED_FUNCTIONS="$(cat ../../../scripts/exported_functions.json)" -s EXPORTED_RUNTIME_METHODS="$(cat ../../../scripts/exported_runtime_methods.json)" -s NO_DISABLE_EXCEPTION_CATCHING -s EXCEPTION_DEBUG=1 -s ALLOW_MEMORY_GROWTH=1 -s DEFAULT_LIBRARY_FUNCS_TO_INCLUDE="\$Browser" -s ENVIRONMENT="node" -s EXPORT_NAME="pn" -s WASM_ASYNC_COMPILATION=0 -s SINGLE_FILE=1
-emcc -o proj_emscripten.node.mjs -O2 -fexceptions -fvisibility=default --target=wasm32-unknown-emscripten lib/libproj.a $LIBTIFF_LIBNAME ../../sqlite-autoconf-$SQLITE_VERSION_URL/sqlite-build-wasm/sqlite3.o -s EXPORTED_FUNCTIONS="$(cat ../../../scripts/exported_functions.json)" -s EXPORTED_RUNTIME_METHODS="$(cat ../../../scripts/exported_runtime_methods.json)" -s ALLOW_MEMORY_GROWTH=1 -s DEFAULT_LIBRARY_FUNCS_TO_INCLUDE="\$Browser" -s ENVIRONMENT="node" -s MODULARIZE -s EXPORT_NAME="proj_emscripten" -s WASM_ASYNC_COMPILATION=0 -s SINGLE_FILE=1
+#emcc -o proj_emscripten.node.mjs -O2 -fexceptions -fvisibility=default --target=wasm32-unknown-emscripten lib/libproj.a $LIBTIFF_LIBNAME ../../sqlite-autoconf-$SQLITE_VERSION_URL/sqlite-build-wasm/sqlite3.o -s EXPORTED_FUNCTIONS="$(cat ../../../scripts/exported_functions.json)" -s EXPORTED_RUNTIME_METHODS="$(cat ../../../scripts/exported_runtime_methods.json)" -s ALLOW_MEMORY_GROWTH=1 -s DEFAULT_LIBRARY_FUNCS_TO_INCLUDE="\$Browser" -s ENVIRONMENT="node" -s MODULARIZE -s EXPORT_NAME="proj_emscripten" -s WASM_ASYNC_COMPILATION=0 -s SINGLE_FILE=1
 
 #nouse!!###emcc -o pi.js -O0 -fexceptions -fvisibility=default --target=wasm32-unknown-emscripten lib/libproj.a $LIBTIFF_LIBNAME ../../sqlite-autoconf-$SQLITE_VERSION_URL/sqlite-build-wasm/sqlite3.o -s EXPORTED_FUNCTIONS="$(cat ../../../scripts/exported_functions.json)" -s EXPORTED_RUNTIME_METHODS="$(cat ../../../scripts/exported_runtime_methods.json)" -s NO_DISABLE_EXCEPTION_CATCHING -s EXCEPTION_DEBUG=1 -s ALLOW_MEMORY_GROWTH=1 -s DEFAULT_LIBRARY_FUNCS_TO_INCLUDE="\$Browser" -s ENVIRONMENT="node" -s MODULARIZE -s EXPORT_NAME="pi" -s FORCE_FILESYSTEM=1 --pre-js "../../../scripts/insertwasm.js"
 
-#emcc -o pgi.js -O0 -fexceptions -fvisibility=default --target=wasm32-unknown-emscripten lib/libproj.a $LIBTIFF_LIBNAME ../../sqlite-autoconf-$SQLITE_VERSION_URL/sqlite-build-wasm/sqlite3.o -s EXPORTED_FUNCTIONS="$(cat ../../../scripts/exported_functions.json)" -s EXPORTED_RUNTIME_METHODS="$(cat ../../../scripts/exported_runtime_methods.json)" -s NO_DISABLE_EXCEPTION_CATCHING -s EXCEPTION_DEBUG=1 -s ALLOW_MEMORY_GROWTH=1 -s DEFAULT_LIBRARY_FUNCS_TO_INCLUDE="\$Browser" -s ENVIRONMENT="web,shell" -s MODULARIZE -s EXPORT_NAME="pgi" -s FORCE_FILESYSTEM=1 --pre-js "../../../scripts/insertwasmgraal.js" -g3 -s WASM_ASYNC_COMPILATION=0 -s INITIAL_MEMORY=128MB -s MAXIMUM_MEMORY=256MB
+emcc -o pgi.js -O0 -fexceptions -fvisibility=default --target=wasm32-unknown-emscripten lib/libproj.a $LIBTIFF_LIBNAME ../../sqlite-autoconf-$SQLITE_VERSION_URL/sqlite-build-wasm/sqlite3.o -s EXPORTED_FUNCTIONS="$(cat ../../../scripts/exported_functions.json)" -s EXPORTED_RUNTIME_METHODS="$(cat ../../../scripts/exported_runtime_methods.json)" -s NO_DISABLE_EXCEPTION_CATCHING -s EXCEPTION_DEBUG=1 -s ALLOW_MEMORY_GROWTH=1 -s DEFAULT_LIBRARY_FUNCS_TO_INCLUDE="\$Browser" -s ENVIRONMENT="web,shell" -s MODULARIZE -s EXPORT_NAME="pgi" -s FORCE_FILESYSTEM=1 --pre-js "../../../scripts/insertwasmgraal.js" -g3 -s WASM_ASYNC_COMPILATION=0 -s INITIAL_MEMORY=128MB -s MAXIMUM_MEMORY=256MB
 
-if [ ! -f ../../../resources/proj.db ]; then
-    cp proj.db ../../../resources/
-fi
+# if [ ! -f ../../../resources/proj.db ]; then
+#     cp proj.db ../../../resources/
+# fi
 
-if [ ! -f ../../../resources/proj.ini ]; then
-    cp proj.ini ../../../resources/
-fi
+# if [ ! -f ../../../resources/proj.ini ]; then
+#     cp proj.ini ../../../resources/
+# fi
 
-if [ -f pw.js ]; then
-    mkdir -p ../../../resources/wasm/
-    #cp pw.wasm ../../../resources/wasm/
-    mkdir -p ../../../src/js/proj-emscripten/src
-    mkdir -p ../../../src/js/proj-emscripten/dist
-    cp pw.js ../../../src/js/proj-emscripten/src
-    #cp pn.js ../../../src/js/proj-emscripten/src
-    cp proj_emscripten.node.mjs ../../../src/js/proj-emscripten/dist
-    #cp pgi.js ../../../src/js/proj-emscripten/src
-    cp proj.db ../../../src/js/proj-emscripten/src
-    #cp pw.wasm ../../../src/js/proj-emscripten/src
-    #cp pn.wasm ../../../src/js/proj-emscripten/src
-    cd ../../../../
-fi
+# if [ -f pw.js ]; then
+#     mkdir -p ../../../resources/wasm/
+#     cp pw.wasm ../../../resources/wasm/
+#     mkdir -p ../../../src/js/proj-emscripten/src
+#     mkdir -p ../../../src/js/proj-emscripten/dist
+#     cp pw.js ../../../src/js/proj-emscripten/src
+#     #cp pn.js ../../../src/js/proj-emscripten/src
+#     cp proj_emscripten.node.mjs ../../../src/js/proj-emscripten/dist
+mkdir -p ../../../resources/wasm
+cp pgi.wasm ../../../resources/wasm
+cp pgi.js ../../../src/js/proj-emscripten/src
+#     cp proj.db ../../../src/js/proj-emscripten/src
+#     #cp pw.wasm ../../../src/js/proj-emscripten/src
+#     #cp pn.wasm ../../../src/js/proj-emscripten/src
+#     cd ../../../../
+# fi

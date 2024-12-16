@@ -25,6 +25,7 @@
             emscripten
             jdk17
             libtool
+            maven
             pkg-config
             nodejs
             sqlite

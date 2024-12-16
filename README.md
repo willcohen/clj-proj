@@ -1,17 +1,31 @@
 # clj-proj
 
+## Current Versions of Primary Packages
+
+![NPM Version](https://img.shields.io/npm/v/proj-wasm)
+
+![Clojars Version](https://img.shields.io/clojars/v/net.willcohen%2Fproj)
+
+<!-- ## Current Versions of Internal Package -->
+
+<!-- ![NPM Version](https://img.shields.io/npm/v/proj-emscripten) -->
+
+
 This project provides a native (or transpiled) version of PROJ for both the JVM
 and JS ecosystems.
 
 The goal of this project is to provide a long-missing component of geospatial
 analysis for these platforms: a performant version of PROJ that can closely
-follow upstream development. This should dramatically improve the suitability of
-the JVM and JS ecosystems for advanced open-source geospatial uses.
+follow upstream development.
 
-This currently provides bindings to the JVM via Clojure using a package that
-will eventually be published to Maven Central, and to pure Javascript via an ES6
-wrapper module over a transpiled module that will both eventually be published
-on NPM.
+This currently provides bindings to the JVM via Clojure using a [package
+published to Clojars](https://clojars.org/net.willcohen/proj), and to pure
+Javascript via [an ES6 wrapper module called
+`proj-wasm`](https://www.npmjs.com/package/proj-wasm) which provides a clean
+interface to an [internal transpiled WASM module called
+`proj-emscripten`](https://www.npmjs.com/package/proj-emscripten), both
+published to NPM.
+
 
 ## EARLY DEVELOPMENT 
 
@@ -108,17 +122,31 @@ This package uses cherry-cljs to wrap the emscripten-generated version of PROJ,
 while also allowing the wrapping logic to mirror the JVM structure. This wrapper
 via cherry creates the npm package for proj.
 
-At the moment, this build is experimental and incomplete. More specifically, the
-`proj-emscripten` raw wrapper package does successfully build, which is a
-webpack bundle of a node, web, and graal entrypoint to the emscripten-generated
-webassembly build. As noted above, the graal interaction is functional.
+#### Usage
 
-However, while the ES module has been scaffolded out using cherry within
-`proj.cljc`, something about the webpack configuration is making the node
-version unable to load as a dependency. This is likely a misconfiguration of the
-node version of the webpack build. Once this build completes and cherry can load
-and run emscripten, a JavaScript-friendly `proj` NPM module can be submitted,
-which will itself depend upon the raw `proj-emscripten` bundle NPM module.
+Put the following in `index.mjs`.
+``` ejs
+import * as proj from "proj-wasm";
+
+proj.proj_init();
+
+var t = proj.create_crs_to_crs("EPSG:3586", "EPSG:4326");
+var c = [0,0,0,0]
+console.log(proj.trans_coord(t, c));
+```
+
+``` sh
+$ node index.mjs
+writeStackCookie: 0x00000000
+initRuntime
+Float64Array(4) [
+  34.24438675300125,
+  -73.6513909034731,
+  4.8569143e-317,
+  5.7293886364e-313
+]
+```
+
 
 ## Building locally
 
@@ -139,21 +167,6 @@ This needs to happen whenever the previous step changes.
 ### 3. Generate cross-platform NPM package matching full clj-proj API
 
 `./scripts/3-build-proj-npm.sh`
-
-
-#### Current failure of this step
-
-``` sh
-$ ./scripts/3-build-proj-npm.sh
-...
-[cherry] Running proj.cljc
-undefined:1
-var __dirname = __webpack_fileURLToPath__(import.meta.url + "/..").slice(0, -1);
-                                                 ^^^^
-
-SyntaxError: Cannot use 'import.meta' outside a module
-    at ./src/pn.js
-```
 
 ## License
 
