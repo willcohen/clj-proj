@@ -1,1 +1,0 @@
-Module['wasmBinary'] = pwproxy;

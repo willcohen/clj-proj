@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>PROJ WASM Simple Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+        }
+        input {
+            padding: 5px;
+            margin: 5px;
+            width: 150px;
+        }
+        pre {
+            background: #f4f4f4;
+            padding: 10px;
+            border-radius: 3px;
+            overflow-x: auto;
+        }
+        .error {
+            color: red;
+        }
+        .success {
+            color: green;
+        }
+    </style>
+    <script type="importmap">
+    {
+        "imports": {
+            "cherry-cljs/cljs.core.js": "https://cdn.jsdelivr.net/npm/cherry-cljs@0.4.30/lib/cljs.core.js",
+            "cherry-cljs/lib/clojure.string.js": "https://cdn.jsdelivr.net/npm/cherry-cljs@0.4.30/lib/clojure.string.js",
+            "resource-tracker": "https://cdn.jsdelivr.net/npm/resource-tracker@0.0.1-alpha1/resource.mjs",
+            "proj-wasm": "https://cdn.jsdelivr.net/npm/proj-wasm@0.1.0-alpha2/dist/proj.mjs"
+        }
+    }
+    </script>
+</head>
+<body>
+    <h1>PROJ WASM Simple Demo</h1>
+    
+    <div class="section" style="background-color: #f0f8ff;">
+        <h2>About This Demo</h2>
+        <p>
+            This is a browser-based demonstration of <a href="https://github.com/willcohen/clj-proj" target="_blank">clj-proj</a>, 
+            a Clojure/ClojureScript library that provides bindings to <a href="https://proj.org/" target="_blank">PROJ</a> 
+            (cartographic projections and coordinate transformations library).
+        </p>
+        <p>
+            This demo runs PROJ directly in your browser using WebAssembly (WASM). The entire PROJ library, including its 
+            coordinate reference system database, has been compiled to WASM and runs entirely client-side. No server 
+            communication is required for the transformations.
+        </p>
+        <p>
+            <strong>How it's built:</strong>
+        </p>
+        <ul>
+            <li><strong>WebAssembly compilation:</strong> PROJ is compiled to WASM using 
+                <a href="https://emscripten.org/" target="_blank">Emscripten</a> 
+                (see <a href="https://github.com/willcohen/clj-proj/blob/main/bb.edn" target="_blank">build configuration</a>)</li>
+            <li><strong>ClojureScript → JavaScript:</strong> The Clojure code is compiled to JavaScript ES6 modules using 
+                <a href="https://github.com/squint-cljs/cherry" target="_blank">Cherry</a> 
+                (see <a href="https://github.com/willcohen/clj-proj/blob/main/src/cljc/net/willcohen/proj/proj.cljc" target="_blank">main source</a>)</li>
+            <li><strong>Function bindings:</strong> PROJ C function names are automatically extracted from 
+                <a href="https://github.com/willcohen/clj-proj/blob/main/src/cljc/net/willcohen/proj/fndefs.cljc" target="_blank">fndefs.cljc</a> 
+                and exported from WASM (no manual maintenance required)</li>
+            <li><strong>Module bundling:</strong> JavaScript modules are bundled with 
+                <a href="https://esbuild.github.io/" target="_blank">esbuild</a>, with dependencies kept external</li>
+            <li><strong>Memory management:</strong> C-allocated objects are automatically cleaned up using 
+                <a href="https://github.com/willcohen/resource-tracker" target="_blank">resource-tracker</a> for lifecycle management</li>
+            <li><strong>Embedded resources:</strong> The proj.db and proj.ini files are embedded directly in the WASM binary, 
+                eliminating filesystem requirements</li>
+        </ul>
+        <p>
+            See the <a href="https://github.com/willcohen/clj-proj#readme" target="_blank">README</a> for comprehensive documentation, 
+            installation instructions, and usage examples for both Clojure and JavaScript environments.
+        </p>
+    </div>
+    
+    <div class="section">
+        <h2>1. Initialize PROJ</h2>
+        <button id="initBtn">Initialize PROJ</button>
+        <div id="initStatus"></div>
+    </div>
+
+    <div class="section">
+        <h2>2. Create Transform</h2>
+        <label>Source CRS: <input id="sourceCRS" value="EPSG:4326" placeholder="e.g. EPSG:4326"></label><br>
+        <label>Target CRS: <input id="targetCRS" value="EPSG:2249" placeholder="e.g. EPSG:2249"></label><br>
+        <button id="createTransformBtn">Create Transform</button>
+        <div id="transformStatus"></div>
+    </div>
+
+    <div class="section">
+        <h2>3. Transform Coordinates</h2>
+        <label>Longitude: <input id="lon" type="number" value="-71.0579667" step="0.001"></label><br>
+        <label>Latitude: <input id="lat" type="number" value="42.3603222" step="0.001"></label><br>
+        <button id="transformBtn">Transform</button>
+        <div id="coordResults"></div>
+    </div>
+
+    <div class="section">
+        <h2>4. Get Transform Info</h2>
+        <button id="getWktBtn">Get WKT</button>
+        <button id="getProjJsonBtn">Get PROJJSON</button>
+        <button id="getAuthoritiesBtn">Get Authorities</button>
+        <div id="infoResults"></div>
+    </div>
+
+    <script type="module">
+        import * as proj from 'proj-wasm';
+        
+        let context = null;
+        let transformer = null;
+        
+        // Initialize PROJ
+        document.getElementById('initBtn').addEventListener('click', async () => {
+            const status = document.getElementById('initStatus');
+            try {
+                await proj.init();
+                context = proj.context_create();
+                status.innerHTML = '<span class="success">✓ PROJ initialized successfully</span>';
+                console.log('PROJ initialized');
+            } catch (error) {
+                status.innerHTML = `<span class="error">✗ Error: ${error.message}</span>`;
+                console.error('Init error:', error);
+            }
+        });
+        
+        // Create transform
+        document.getElementById('createTransformBtn').addEventListener('click', () => {
+            const status = document.getElementById('transformStatus');
+            const sourceCRS = document.getElementById('sourceCRS').value;
+            const targetCRS = document.getElementById('targetCRS').value;
+            
+            if (!context) {
+                status.innerHTML = '<span class="error">Please initialize PROJ first</span>';
+                return;
+            }
+            
+            try {
+                // Clean up previous transformer
+                if (transformer) {
+                    proj.proj_destroy({ pj: transformer });
+                }
+                
+                transformer = proj.proj_create_crs_to_crs({
+                    source_crs: sourceCRS,
+                    target_crs: targetCRS,
+                    context: context
+                });
+                
+                status.innerHTML = `<span class="success">✓ Transform created: ${sourceCRS} → ${targetCRS}</span>`;
+                console.log('Transform created:', transformer);
+            } catch (error) {
+                status.innerHTML = `<span class="error">✗ Error: ${error.message}</span>`;
+                console.error('Transform error:', error);
+            }
+        });
+        
+        // Transform coordinates
+        document.getElementById('transformBtn').addEventListener('click', () => {
+            const results = document.getElementById('coordResults');
+            
+            if (!transformer) {
+                results.innerHTML = '<span class="error">Please create a transform first</span>';
+                return;
+            }
+            
+            try {
+                const lon = parseFloat(document.getElementById('lon').value);
+                const lat = parseFloat(document.getElementById('lat').value);
+                
+                // Create coordinate array
+                const coordArray = proj.coord_array(1);
+                // EPSG:4326 uses lat/lon order, not lon/lat!
+                proj.set_coords_BANG_(coordArray, [[lat, lon, 0, 0]]);
+                
+                // Get malloc pointer
+                const malloc = coordArray.get ? coordArray.get('malloc') : coordArray.malloc;
+                
+                // Transform
+                const PJ_FWD = proj.PJ_FWD || 1;
+                proj.proj_trans_array({
+                    p: transformer,
+                    direction: PJ_FWD,
+                    n: 1,
+                    coord: malloc
+                });
+                
+                // Get results
+                const array = coordArray.get ? coordArray.get('array') : coordArray.array;
+                const x = array[0];
+                const y = array[1];
+                
+                results.innerHTML = `
+                    <strong>Input (WGS84):</strong> Longitude: ${lon}, Latitude: ${lat}<br>
+                    <strong>Output (${document.getElementById('targetCRS').value}):</strong><br>
+                    &nbsp;&nbsp;X: ${x.toFixed(2)}<br>
+                    &nbsp;&nbsp;Y: ${y.toFixed(2)}<br>
+                    <small style="color: #666;">Note: For EPSG:2249 (MA State Plane), units are in US feet.<br>
+                    Boston City Hall should be approximately X: 775,635 ft, Y: 2,956,640 ft</small>
+                `;
+            } catch (error) {
+                results.innerHTML = `<span class="error">✗ Error: ${error.message}</span>`;
+                console.error('Transform error:', error);
+            }
+        });
+        
+        // Get WKT
+        document.getElementById('getWktBtn').addEventListener('click', () => {
+            const results = document.getElementById('infoResults');
+            
+            if (!transformer) {
+                results.innerHTML = '<span class="error">Please create a transform first</span>';
+                return;
+            }
+            
+            try {
+                const targetCrs = proj.proj_get_target_crs({
+                    context: context,
+                    pj: transformer
+                });
+                
+                const wkt = proj.proj_as_wkt({
+                    context: context,
+                    pj: targetCrs,
+                    type: proj.PJ_WKT2_2019 || 2, // PJ_WKT2_2019
+                    options: null
+                });
+                
+                results.innerHTML = `<strong>WKT:</strong><pre>${wkt}</pre>`;
+                
+            } catch (error) {
+                results.innerHTML = `<span class="error">✗ Error: ${error.message}</span>`;
+                console.error('WKT error:', error);
+            }
+        });
+        
+        // Get PROJJSON
+        document.getElementById('getProjJsonBtn').addEventListener('click', () => {
+            const results = document.getElementById('infoResults');
+            
+            if (!transformer) {
+                results.innerHTML = '<span class="error">Please create a transform first</span>';
+                return;
+            }
+            
+            try {
+                const targetCrs = proj.proj_get_target_crs({
+                    context: context,
+                    pj: transformer
+                });
+                
+                const json = proj.proj_as_projjson({
+                    context: context,
+                    pj: targetCrs,
+                    options: null
+                });
+                
+                const parsed = JSON.parse(json);
+                results.innerHTML = `<strong>PROJJSON:</strong><pre>${JSON.stringify(parsed, null, 2)}</pre>`;
+                
+            } catch (error) {
+                results.innerHTML = `<span class="error">✗ Error: ${error.message}</span>`;
+                console.error('PROJJSON error:', error);
+            }
+        });
+        
+        // Get authorities
+        document.getElementById('getAuthoritiesBtn').addEventListener('click', () => {
+            const results = document.getElementById('infoResults');
+            
+            if (!context) {
+                results.innerHTML = '<span class="error">Please initialize PROJ first</span>';
+                return;
+            }
+            
+            try {
+                const authorities = proj.proj_get_authorities_from_database();
+                results.innerHTML = `<strong>Authorities:</strong><pre>${JSON.stringify(authorities, null, 2)}</pre>`;
+            } catch (error) {
+                results.innerHTML = `<span class="error">✗ Error: ${error.message}</span>`;
+                console.error('Authorities error:', error);
+            }
+        });
+    </script>
+</body>
+</html>

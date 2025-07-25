@@ -1,0 +1,13 @@
+{
+  "name": "test-npm-package",
+  "version": "1.0.0",
+  "description": "Test the built npm package",
+  "type": "module",
+  "main": "test.mjs",
+  "scripts": {
+    "test": "node test.mjs"
+  },
+  "dependencies": {
+    "proj-wasm": "file:../src/cljc/net/willcohen/proj"
+  }
+}

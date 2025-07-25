@@ -9,6 +9,7 @@
   "author": "Will Cohen",
   "license": "MIT",
   "dependencies": {
-    "proj-js": "file:../../src/cljc/net/willcohen/proj"
+    "proj-js": "file:../../src/cljc/net/willcohen/proj",
+    "resource-tracker": "^0.0.1-alpha1"
   }
 }

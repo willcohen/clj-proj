@@ -1,4 +1,5 @@
-*.cljc
+# The package.json "files" field is used instead
+# This file is kept for any additional exclusions
 .DS_Store
-node_modules
-package-lock.json
+*.cljc
+*.clj

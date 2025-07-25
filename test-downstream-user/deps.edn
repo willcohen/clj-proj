@@ -1,0 +1,2 @@
+{:deps {net.willcohen/proj {:local/root "../target/proj-0.1.0-alpha2.jar"}}
+ :aliases {:test {:main-opts ["-m" "proj-test"]}}}

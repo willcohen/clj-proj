@@ -8,35 +8,94 @@ still experimental. Please see that project's
 [README](https://github.com/willcohen/clj-proj/blob/main/README.md) for further
 details.
 
+## Installation
+
+```bash
+npm install proj-wasm
+```
+
 ## Usage
 
-Put the following in `index.mjs`.
-``` ejs
-import * as proj from "proj-wasm";
+```javascript
+import * as proj from 'proj-wasm';
 
-proj.proj_init();
+// Initialize PROJ (required before using any functions)
+await proj.init();
 
-var t = proj.create_crs_to_crs("EPSG:3586", "EPSG:4326");
-var c = [0,0,0,0]
-console.log(proj.trans_coord(t, c));
+// Create a context
+const ctx = proj.context_create();
+
+// Create a coordinate transformation from WGS84 to Web Mercator
+const transformer = proj.proj_create_crs_to_crs({
+  context: ctx,
+  source_crs: "EPSG:4326",  // WGS84
+  target_crs: "EPSG:3857"   // Web Mercator
+});
+
+// Create a coordinate array for one point
+const coords = proj.coord_array(1);
+
+// Set coordinates: [latitude, longitude, z, time] for EPSG:4326
+// Example: Boston City Hall coordinates
+proj.set_coords_BANG_(coords, [[42.3601, -71.0589, 0, 0]]);
+
+// Transform the coordinates
+proj.proj_trans_array({
+  p: transformer,
+  direction: 1,  // PJ_FWD (forward transformation)
+  n: 1,          // number of coordinates
+  coord: coords.malloc || coords.get('malloc')
+});
+
+// Access the transformed coordinates
+const x = coords.array[0];  // Easting
+const y = coords.array[1];  // Northing
+console.log(`Transformed coordinates: [${x}, ${y}]`);
+// Output: Transformed coordinates: [-7910240.56, 5215074.24]
 ```
 
-``` sh
-$ node index.mjs
-writeStackCookie: 0x00000000
-initRuntime
-Float64Array(4) [
-  34.24438675300125,
-  -73.6513909034731,
-  4.8569143e-317,
-  5.7293886364e-313
-]
-```
+## API Reference
+
+### Core Functions
+
+- `init()` - Initialize the PROJ library (must be called first)
+- `context_create()` - Create a new PROJ context
+- `proj_create_crs_to_crs(options)` - Create a transformation between two coordinate reference systems
+  - `options.context` - The PROJ context
+  - `options.source_crs` - Source CRS (e.g., "EPSG:4326")
+  - `options.target_crs` - Target CRS (e.g., "EPSG:3857")
+
+### Coordinate Handling
+
+- `coord_array(n)` - Create an array for n coordinates
+- `set_coords_BANG_(coords, values)` - Set coordinate values
+  - `coords` - Coordinate array created with `coord_array`
+  - `values` - Array of [x, y, z, t] coordinate tuples
+- `proj_trans_array(options)` - Transform coordinates
+  - `options.p` - The transformer
+  - `options.direction` - 1 for forward, -1 for inverse
+  - `options.n` - Number of coordinates
+  - `options.coord` - The coordinate array's malloc pointer
+
+### Accessing Results
+
+After transformation, coordinates can be accessed via:
+- `coords.array[0]` - X (easting/longitude)
+- `coords.array[1]` - Y (northing/latitude)
+- `coords.array[2]` - Z (height)
+- `coords.array[3]` - T (time)
+
+## Common CRS Examples
+
+- `EPSG:4326` - WGS84 (GPS coordinates)
+- `EPSG:3857` - Web Mercator (used by Google Maps, OpenStreetMap)
+- `EPSG:2263` - NAD83 / New York Long Island (ft)
+- `EPSG:32633` - UTM Zone 33N
 
 ## License
 
 ```
-Copyright (c) 2024 Will Cohen
+Copyright (c) 2024, 2025 Will Cohen
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in

@@ -1,39 +1,29 @@
 {
   "name": "proj-wasm",
-  "version": "0.1.0-alpha1",
+  "version": "0.1.0-alpha2",
   "description": "This project provides a native (or transpiled) version of PROJ for the JS ecosystem.",
   "homepage": "https://github.com/willcohen/clj-proj",
-  "main": "proj.mjs",
+  "main": "dist/proj.mjs",
+  "exports": {
+    ".": "./dist/proj.mjs"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
+    "build": "node esbuild.config.mjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "cherry-cljs": "0.3.23",
-    "proj-emscripten": "0.1.0-alpha1",
-    "resource-tracker": "0.0.1-alpha1",
-    "url": "^0.11.4"
+    "cherry-cljs": "0.4.30",
+    "resource-tracker": "0.0.1-alpha1"
   },
   "devDependencies": {
-    "@babel/cli": "^7.26.4",
-    "@babel/core": "^7.26.0",
-    "@babel/preset-env": "^7.26.0",
-    "@vercel/ncc": "^0.38.3",
-    "babel-loader": "^9.2.1",
-    "exports-loader": "^5.0.0",
-    "file-loader": "^6.2.0",
-    "webpack": "^5.97.1",
-    "webpack-cli": "^5.1.4"
-  },
-  "presets": [
-    [
-      "@babel/preset-env",
-      {
-        "useBuiltIns": "usage",
-        "corejs": "3.33"
-      }
-    ]
-  ]
+    "esbuild": "^0.19.0"
+  }
 }

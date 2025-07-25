@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>PROJ WASM Browser Test</title>
+    <script type="importmap">
+    {
+        "imports": {
+            "cherry-cljs/cljs.core.js": "https://cdn.jsdelivr.net/npm/cherry-cljs@0.4.30/lib/cljs.core.js",
+            "cherry-cljs/lib/clojure.string.js": "https://cdn.jsdelivr.net/npm/cherry-cljs@0.4.30/lib/clojure.string.js",
+            "resource-tracker": "https://cdn.jsdelivr.net/npm/resource-tracker@0.0.1-alpha1/resource.mjs",
+            "proj-wasm": "/src/cljc/net/willcohen/proj/dist/proj.mjs"
+        }
+    }
+    </script>
+</head>
+<body>
+    <h1>PROJ WASM Browser Test</h1>
+    <div id="status">Loading...</div>
+    <div id="results"></div>
+    
+    <script type="module">
+        import * as proj from 'proj-wasm';
+        
+        // Make proj available globally for testing
+        window.proj = proj;
+        
+        async function runTests() {
+            const status = document.getElementById('status');
+            const results = document.getElementById('results');
+            
+            try {
+                status.textContent = 'PROJ module loaded, ready for tests';
+                results.innerHTML += '<p>✅ Module loaded and available</p>';
+                console.log('PROJ module loaded and available for testing');
+                
+            } catch (error) {
+                status.textContent = 'Error loading PROJ module!';
+                results.innerHTML += `<p>❌ Error: ${error.message}</p>`;
+                console.error('Error loading PROJ module:', error);
+            }
+        }
+        
+        // Run setup on load
+        runTests();
+    </script>
+</body>
+</html>
