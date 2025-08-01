@@ -7,7 +7,8 @@
              [clojure.java.io :as io]
              [babashka.http-client :as http]
              [clojure.string :as str]
-             [clojure.edn :as edn])
+             [clojure.edn :as edn]
+             [clojure.java.shell :as shell])
 
   download-grids
   {:doc "Downloads PROJ grid files from the CDN (WIP - work in progress)"
@@ -69,14 +70,75 @@
 
        (println "Grid download and setup complete.")))}
 
+  proj:clone
+  {:doc "Clone OSGeo/PROJ repository for local development. Use --branch to specify branch, --update to pull latest."
+   :spec {:branch {:desc "Branch to clone (default: master)"
+                   :coerce :string}
+          :update {:desc "Update existing clone instead of cloning fresh"
+                   :alias :u}
+          :help {:alias :h}}
+   :task
+   (let [opts (cli/parse-opts *command-line-args* {:spec (:spec proj:clone)})
+         vendor-dir (fs/path "vendor")
+         proj-dir (fs/path vendor-dir "PROJ")
+         branch (or (:branch opts) "master")
+         update? (:update opts)]
+
+     (when (:help opts)
+       (println "\nUsage: bb proj:clone [options]\n")
+       (println "Clone OSGeo/PROJ repository for local development and testing.")
+       (println "The repository will be cloned to vendor/PROJ (gitignored).\n")
+       (println "Options:")
+       (println "      --branch <name>          Branch to clone (default: master)")
+       (println "  -u, --update                 Update existing clone instead of fresh clone")
+       (println "  -h, --help                   Show this help message")
+       (println "\nExamples:")
+       (println "  bb proj:clone                Clone master branch")
+       (println "  bb proj:clone --branch=dev   Clone dev branch")
+       (println "  bb proj:clone --update       Pull latest from current branch")
+       (System/exit 0))
+
+     ;; Ensure vendor directory exists
+     (fs/create-dirs vendor-dir)
+
+     (if update?
+       ;; Update existing clone
+       (if (fs/exists? proj-dir)
+         (do
+           (println (str "Updating existing PROJ clone in " proj-dir "..."))
+           (tasks/shell {:dir (str proj-dir)} "git" "fetch" "origin")
+           (tasks/shell {:dir (str proj-dir)} "git" "pull" "origin" "HEAD")
+           (println "PROJ repository updated successfully!"))
+         (do
+           (println (str "Error: No existing PROJ clone found at " proj-dir))
+           (println "Run without --update to clone fresh, or check the path.")
+           (System/exit 1)))
+
+       ;; Fresh clone
+       (do
+         (when (fs/exists? proj-dir)
+           (println (str "Removing existing PROJ directory at " proj-dir "..."))
+           (fs/delete-tree proj-dir))
+
+         (println (str "Cloning OSGeo/PROJ (branch: " branch ") to " proj-dir "..."))
+         (tasks/shell {:dir (str vendor-dir)}
+                      "git" "clone"
+                      "--branch" branch
+                      "https://github.com/OSGeo/PROJ.git"
+                      "PROJ")
+
+         (println "PROJ repository cloned successfully!")
+         (println (str "You can now make changes to " proj-dir " and use --local-proj with build tasks.")))))}
+
   clean
-  {:doc "Deletes generated artifacts. Use flags to specify targets (--native, --wasm, --cross, --resources). No flags cleans all."
+  {:doc "Deletes generated artifacts. Use flags to specify targets (--native, --wasm, --cross, --resources, --target). No flags cleans all."
    :spec {:native {:desc "Clean native host artifacts."}
           :wasm {:desc "Clean WASM artifacts."}
           :cross {:desc "Clean all cross-compiled artifacts."}
           :cross-platform {:desc "Clean a specific cross-platform target (e.g., linux/amd64)."
                            :coerce :string}
           :resources {:desc "Clean shared resources like proj.db, proj.ini, and downloaded grids."}
+          :target {:desc "Clean only the target/ directory, preserving resources/"}
           :all {:desc "Clean everything (default if no flags are given)."}
           :help {:alias :h}}
    :task
@@ -89,6 +151,7 @@
        (println "      --cross                  Clean all cross-compiled artifacts")
        (println "      --cross-platform <plat>  Clean a specific cross-platform target (e.g., linux/amd64)")
        (println "      --resources              Clean shared resources like proj.db, proj.ini, and downloaded grids")
+       (println "      --target                 Clean only the target/ directory, preserving resources/")
        (println "      --all                    Clean everything (default if no flags are given)")
        (println "  -h, --help                   Show this help message")
        (System/exit 0))
@@ -98,6 +161,7 @@
            wasm? (or all? (:wasm opts))
            cross? (or all? (:cross opts) (:cross-platform opts))
            resources? (or all? (:resources opts))
+           target-only? (:target opts)
            proj-version "9.6.2"
            proj-dir (str "PROJ-" proj-version)
 
@@ -145,6 +209,10 @@
          (delete-if-exists (fs/path "resources" "grids"))
          (delete-if-exists (fs/path "src" "js" "proj-emscripten" "src" "grids")))
 
+       (when target-only?
+         (println "\nCleaning target/ directory only...")
+         (delete-if-exists "target"))
+
        (when all?
          (delete-if-exists "target"))
 
@@ -157,7 +225,7 @@
                                  :git/sha "98631b1"}}}
                deps-str (pr-str deps-map)]
            (println "Starting JVM nREPL server with clj...")
-           (tasks/shell "clj" "-Sdeps" deps-str "-J-XX:+UnlockExperimentalVMOptions" "-J-XX:+EnableJVMCI" #_"-J--add-modules=jdk.graal.compiler" #_"-J--add-exports=java.base/jdk.internal.misc=jdk.graal.compiler" #_"-J-Dpolyglot.engine.WarnInterpreterOnly=false" "-J--enable-native-access=ALL-UNNAMED" "-M" "-m" "org.corfield.dev.repl" "--port" "7888"))}
+           (tasks/shell "clj" "-Sdeps" deps-str "-J-XX:+UnlockExperimentalVMOptions" "-J-XX:+EnableJVMCI" "-J--enable-native-access=ALL-UNNAMED" "-M" "-m" "org.corfield.dev.repl" "--port" "7888"))}
 
   nrepl
   {:doc "Run vanilla nREPL for clojure MCP"
@@ -165,7 +233,7 @@
                                 'nrepl/nrepl {:mvn/version "1.3.1"}}}
                deps-str (pr-str deps-map)]
            (println "Starting nREPL on port 7888")
-           (tasks/shell "clj" "-Sdeps" deps-str "-J-XX:+UnlockExperimentalVMOptions" "-J-XX:+EnableJVMCI" #_"-J-Dpolyglot.engine.WarnInterpreterOnly=false" "-J--enable-native-access=ALL-UNNAMED" "-J-Djdk.attach.allowAttachSelf" "-M" "-m" "nrepl.cmdline" "--port" "7888"))}
+           (tasks/shell "clj" "-Sdeps" deps-str "-J-XX:+UnlockExperimentalVMOptions" "-J-XX:+EnableJVMCI" "-J--enable-native-access=ALL-UNNAMED" "-J-Djdk.attach.allowAttachSelf" "-M" "-m" "nrepl.cmdline" "--port" "7888"))}
 
   ;; Task to run FFI tests on JVM
 
@@ -374,6 +442,7 @@
           :cross-platform {:desc "Build for a specific cross-platform target (e.g., linux/amd64)."
                            :coerce :string}
           :debug {:desc "Enable debug mode for builds."}
+          :local-proj {:desc "Use vendor/PROJ instead of released PROJ version."}
           :target {:desc "Internal use: specify the target platform for compilation (e.g., windows-amd64)."
                    :coerce :string}
           :help {:alias :h :desc "Show this help message."}}
@@ -386,273 +455,590 @@
              (println "      --cross                  Build cross-compiled artifacts for default platforms")
              (println "      --cross-platform <plat>  Build for a specific cross-platform target (e.g., linux/amd64)")
              (println "      --debug                  Enable debug mode for builds")
+             (println "      --local-proj             Use vendor/PROJ instead of released PROJ version")
              (println "      --target <platform>      Internal use: specify the target platform")
              (println "  -h, --help                   Show this help message")
              (System/exit 0))
 
-           (let [;; --- Phase 1: Options and Configuration ---
-                 {native? :native, wasm? :wasm, debug? :debug, target-str :target} opts
-                 proj-version "9.6.2"
-                 sqlite-version-url "3500100"
-                 sqlite-year "2025"
-                 zlib-version "1.3.1"
-                 libtiff-version "4.7.0"
-                 target-dir "target"
-                 zlib-archive (str "zlib-" zlib-version ".tar.gz")
-                 zlib-dir (str "zlib-" zlib-version)
-                 sqlite-archive (str "sqlite-autoconf-" sqlite-version-url ".tar.gz")
-                 sqlite-dir (str "sqlite-autoconf-" sqlite-version-url)
-                 libtiff-archive (str "libtiff-v" libtiff-version ".tar.gz")
-                 libtiff-dir (str "libtiff-v" libtiff-version)
-                 proj-archive (str proj-version ".tar.gz")
-                 proj-dir (str "PROJ-" proj-version)
+           ;; Helper functions for local PROJ support
+           (let [get-proj-source (fn [opts proj-version target-dir]
+                                   (if (:local-proj opts)
+                                     (let [local-proj (fs/path "vendor" "PROJ")
+                                           target-proj-dir "PROJ-local"]
+                                       (if (fs/exists? local-proj)
+                                         (do
+                                           (println (str "Using local PROJ from " local-proj))
+                                           ;; Copy local PROJ to target for building
+                                           (let [target-proj-path (fs/path target-dir target-proj-dir)]
+                                             (when (fs/exists? target-proj-path)
+                                               (println (str "Removing existing " target-proj-path))
+                                               (fs/delete-tree target-proj-path))
+                                             (println (str "Copying local PROJ to " target-proj-path " for building..."))
+                                             ;; Use rsync if available, otherwise fall back to recursive copy
+                                             (if (fs/which "rsync")
+                                               (tasks/shell "rsync" "-av" "--exclude=.git"
+                                                            (str local-proj "/") (str target-proj-path "/"))
+                                               (fs/copy-tree local-proj target-proj-path {:replace-existing true}))
+                                             target-proj-dir))
+                                         (throw (ex-info "Local PROJ not found. Run 'bb proj:clone' first."
+                                                         {:local-proj-path (str local-proj)}))))
+                                     ;; Use released version - return the directory name (download happens later)
+                                     (str "PROJ-" proj-version)))
 
-                 ;; --- Host Platform Detection ---
-                 host-os (let [os-name (System/getProperty "os.name")]
-                           (cond
-                             (re-find (re-pattern "(?i)mac|darwin") os-name) :darwin
-                             (re-find (re-pattern "(?i)linux") os-name) :linux
-                             :else :unknown))
-                 host-arch (let [os-arch (System/getProperty "os.arch")]
-                             (cond
-                               (re-find (re-pattern "(?i)aarch64|arm64") os-arch) :aarch64
-                               (re-find (re-pattern "(?i)amd64|x86_64") os-arch) :amd64
-                               :else :unknown))
-
-                 ;; --- Helper Functions ---
-                 download-file (fn [url dest]
-                                 (if-not (fs/exists? dest)
-                                   (do
-                                     (println "Downloading" (fs/file-name dest) "from" url "...")
-                                     (io/copy (:body (http/get url {:as :stream})) (fs/file dest)))
-                                   (println (fs/file-name dest) "already exists. Skipping download.")))
-                 extract-archive (fn [archive-file extracted-dir base-dir]
-                                   (if-not (fs/exists? (fs/path base-dir extracted-dir))
-                                     (do
-                                       (println "Extracting" archive-file "to" (fs/path base-dir extracted-dir) "...")
-                                       (tasks/shell {:dir base-dir} "tar" "xvzf" archive-file))
-                                     (println "Directory" (str "'" extracted-dir "'") "already exists. Skipping extraction.")))
-
-                 ;; --- Build Helper Functions ---
-
-                 ;; Calculate safe parallel jobs based on available memory
-                 get-safe-parallel-jobs (fn []
-                                          (let [available-memory-gb (try
-                                                                      (if (fs/exists? "/proc/meminfo")
-                                                                        (let [memory-info (slurp "/proc/meminfo")
-                                                                              mem-available-kb (if-let [match (re-find (re-pattern "MemAvailable:\\s+(\\d+)") memory-info)]
-                                                                                                 (Long/parseLong (second match))
-                                                                                                 ;; Fallback to MemFree if MemAvailable not found
-                                                                                                 (if-let [match (re-find (re-pattern "MemFree:\\s+(\\d+)") memory-info)]
-                                                                                                   (Long/parseLong (second match))
-                                                                                                   4194304))] ; Default to 4GB if can't read
-                                                                          (/ mem-available-kb 1048576.0))
-                                                                        4.0) ; Default to 4GB on non-Linux
-                                                                      (catch Exception _ 4.0)) ; Default to 4GB on error
-                                                ;; Use 1 job per 3GB of available memory, max of availableProcessors
-                                                safe-jobs (min (.. Runtime getRuntime availableProcessors)
-                                                               (max 1 (int (/ available-memory-gb 3))))]
-                                            (when debug? (println (format "DEBUG: Available memory: %.1fGB, using %d parallel jobs" available-memory-gb safe-jobs)))
-                                            safe-jobs))
-
-                 build-sqlite (fn [{:keys [type install-dir cc host-flag debug?]}]
-                                (let [lib-path (fs/path install-dir "lib" "libsqlite3.a")]
-                                  (when debug? (println "DEBUG: Checking for existing" (name type) "SQLite library at:" (str lib-path)))
-                                  (when-not (fs/exists? lib-path)
-                                    (println "Building SQLite for" (name type) "...")
-                                    (let [build-dir (fs/path target-dir sqlite-dir (str "sqlite-build-" (name type)))
-                                          configure-args (cond-> ["../configure" (str "--prefix=" install-dir)]
-                                                           host-flag (conj host-flag)
-                                                           (= type :wasm) (conj "--disable-shared" "--disable-editline" "--disable-readline"))
-                                          env (cond-> {"CC" cc}
-                                                (= type :wasm) (assoc "CFLAGS" "-s ERROR_ON_UNDEFINED_SYMBOLS=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DISABLE_LFS -DSQLITE_LONGDOUBLE_TYPE=double -DSQLITE_ENABLE_JSON1 -DSQLITE_ENABLE_NORMALIZE"))
-                                          configure-cmd (if (= type :wasm) "emconfigure" (first configure-args))
-                                          configure-args' (if (= type :wasm) configure-args (rest configure-args))
-                                          make-base-cmd (if (= type :wasm) ["emmake" "make"] ["make"])]
-                                      (fs/delete-tree install-dir)
-                                      (fs/delete-tree build-dir)
-                                      (fs/create-dirs build-dir)
-                                      (apply tasks/shell {:dir build-dir :extra-env env} configure-cmd configure-args')
-                                      (apply tasks/shell {:dir build-dir} (concat make-base-cmd ["-j" (str (get-safe-parallel-jobs))]))
-                                      (apply tasks/shell {:dir build-dir} (concat make-base-cmd ["install"]))))))
-
-                 build-libtiff (fn [{:keys [type install-dir cc cxx host-flag is-darwin? is-linux? debug?]}]
-                                 (let [lib-path (fs/path install-dir "lib" (cond (= type :wasm) "libtiff.a" is-darwin? "libtiff.dylib" is-linux? "libtiff.so" :else "libtiff.a"))]
-                                   (when debug? (println "DEBUG: Checking for existing" (name type) "LibTIFF library at:" (str lib-path)))
-                                   (when-not (fs/exists? lib-path)
-                                     (println "Building LibTIFF for" (name type) "...")
-                                     (let [src-dir (fs/path target-dir libtiff-dir)
-                                           configure-args (cond-> ["./configure" (str "--prefix=" install-dir)]
-                                                            host-flag (conj host-flag)
-                                                            (and (= type :native) is-linux?) (conj "--enable-shared" "--disable-static")
-                                                            (and (not= type :wasm) (not= type :native)) (conj "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs")
-                                                            (= type :wasm) (conj "--disable-zlib" "--without-zstd" "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs" "--disable-ccitt"))
-                                           env (cond-> {"CC" cc "CXX" cxx}
-                                                 (= type :wasm) (assoc "CPPFLAGS" "-DHAVE_FCNTL_H=1"))
-                                           configure-cmd (if (= type :wasm) "emconfigure" (first configure-args))
-                                           configure-args' (if (= type :wasm) configure-args (rest configure-args))
-                                           make-base-cmd (if (= type :wasm) ["emmake" "make"] ["make"])]
-                                       (fs/delete-tree install-dir)
-                                       (when (fs/exists? (fs/path src-dir "Makefile"))
+                 detect-proj-version (fn [proj-source-path]
+                                       (if (fs/exists? (fs/path proj-source-path "CMakeLists.txt"))
+                                        ;; Try to parse version from CMakeLists.txt
                                          (try
-                                           (tasks/shell {:dir src-dir} "make" "distclean")
-                                           (catch Exception e
-                                             (println "Warning: make distclean failed, continuing anyway:" (.getMessage e)))))
-                                       (fs/delete-if-exists (fs/path src-dir "config.status"))
-                                       (fs/delete-if-exists (fs/path src-dir "config.cache"))
-                                       (fs/delete-if-exists (fs/path src-dir "Makefile"))
-                                       (fs/delete-if-exists (fs/path src-dir "libtool"))
-                                       (when is-darwin?
-                                         (tasks/shell {:dir src-dir} "sed" "-i.bak" "s/glibtoolize/libtoolize/g" "autogen.sh"))
-                                       (try (tasks/shell {:dir src-dir :extra-env env} "./autogen.sh")
-                                            (catch Exception _
-                                              (println "autogen.sh failed, patching and retrying...")
-                                              (tasks/shell {:dir src-dir} "sed" "-i.bak" "s|https://git.savannah.gnu.org/cgit/config.git/plain/|https://raw.githubusercontent.com/cgitmirror/config/refs/heads/master/|g" "autogen.sh")
-                                              (tasks/shell {:dir src-dir :extra-env env} "./autogen.sh")))
-                                       (apply tasks/shell {:dir src-dir :extra-env env} configure-cmd configure-args')
-                                       ;; For WASM, patch the Makefile to skip mkg3states
-                                       (when (= type :wasm)
-                                         (println "Patching libtiff Makefile to skip mkg3states for WASM...")
-                                         ;; Remove mkg3states from noinst_PROGRAMS in libtiff/Makefile
-                                         (let [makefile-path (str (fs/path src-dir "libtiff" "Makefile"))
-                                               makefile-content (slurp makefile-path)
-                                               patched-content (-> makefile-content
-                                                                   ;; Remove mkg3states from build targets
-                                                                   (str/replace (re-pattern "noinst_PROGRAMS = mkg3states") "noinst_PROGRAMS =")
-                                                                   ;; Remove mkg3states dependencies
-                                                                   (str/replace (re-pattern "mkg3states:") "# mkg3states:")
-                                                                   (str/replace (re-pattern "mkg3states\\.o") "# mkg3states.o"))]
-                                           (spit makefile-path patched-content))
-                                         ;; Create dummy tif_fax3sm.c if needed
-                                         (let [fax3sm-path (fs/path src-dir "libtiff" "tif_fax3sm.c")]
-                                           (when-not (fs/exists? fax3sm-path)
-                                             (println "Creating dummy tif_fax3sm.c...")
-                                             (spit (str fax3sm-path) "/* Dummy file for WASM build */"))))
-                                       (apply tasks/shell {:dir src-dir} (concat make-base-cmd ["-j" (str (get-safe-parallel-jobs))]))
-                                       (apply tasks/shell {:dir src-dir} (concat make-base-cmd ["install"]))))))
+                                           (let [cmake-content (slurp (fs/path proj-source-path "CMakeLists.txt"))
+                                                 version-match (re-find (re-pattern "set\\s*\\(\\s*PROJ_VERSION\\s+\"([^\"]+)\"") cmake-content)]
+                                             (if version-match
+                                               (second version-match)
+                                               "local-dev"))
+                                           (catch Exception _
+                                             "local-dev"))
+                                         "local-dev"))
 
-                 build-proj (fn [{:keys [type library-dir cc cxx is-darwin? is-linux? is-windows? sqlite-install-dir libtiff-install-dir debug? target-str]}]
-                              (let [final-proj-lib (fs/path "resources" (if (= type :wasm) "wasm" library-dir) (if (= type :wasm) "proj-emscripten.js" (if is-windows? "proj.dll" (if is-darwin? "libproj.dylib" "libproj.so"))))
-                                    build-dir (fs/path target-dir proj-dir (str "proj-build-" (if (= type :native) library-dir (name type))))]
-                                (when debug? (println "DEBUG: Checking for existing" (name type) "PROJ library at:" (str final-proj-lib)))
-                                (when-not (fs/exists? final-proj-lib)
-                                  (println "Building PROJ for" (name type) "...")
-                                  (fs/delete-tree build-dir)
-                                  (fs/create-dirs build-dir)
-                                  (let [cmake-base-cmd (if (= type :wasm) ["emcmake" "cmake"] ["cmake"])
-                                        cmake-build-cmd (if (= type :wasm)
-                                                          (concat ["emmake" "make"] ["-j" (str (get-safe-parallel-jobs))])
-                                                          (concat ["cmake" "--build" "." "--parallel" (str (get-safe-parallel-jobs))] (when debug? ["--verbose"])))
-                                        is-nix-build? (and (not is-darwin?) (System/getenv "NIX_BUILD_TOP"))
-                                        cmake-args (cond-> ["-DBUILD_APPS=OFF" "-DBUILD_PROJSYNC=OFF" "-DBUILD_CCT=OFF" "-DBUILD_GEOD=OFF" "-DBUILD_GIE=OFF" "-DBUILD_PROJINFO=OFF" "-DENABLE_CURL=OFF" "-DBUILD_TESTING=OFF"
-                                                            "-DCMAKE_BUILD_TYPE=Release"
-                                                            "-DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=ON"
-                                                            "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
-                                                            ;; Limit compiler memory usage in constrained environments
-                                                            "-DCMAKE_CXX_FLAGS=-ftemplate-depth=256"
-                                                            ;; Disable library existence checks in Nix to prevent hangs
-                                                            ;;"-DCMAKE_DISABLE_FIND_PACKAGE_Threads=ON"
-                                                            (str "-DSQLite3_INCLUDE_DIR=" (fs/path sqlite-install-dir "include"))
-                                                            (str "-DSQLite3_LIBRARY=" (fs/path sqlite-install-dir "lib" "libsqlite3.a"))
-                                                            (str "-DTIFF_INCLUDE_DIR=" (fs/path libtiff-install-dir "include"))
-                                                            (str "-DTIFF_LIBRARY=" (fs/path libtiff-install-dir "lib" (cond (= type :wasm) "libtiff.a" is-darwin? "libtiff.dylib" is-linux? "libtiff.so" :else "libtiff.a")))]
-                                                     is-darwin? (conj "-DCMAKE_INSTALL_RPATH=@loader_path")
-                                                     is-windows? (conj "-DCMAKE_SYSTEM_NAME=Windows")
-                                                     ;; Add compiler detection skip for Nix builds to prevent hanging
-                                                     is-nix-build? (conj "-DCMAKE_C_COMPILER_WORKS=TRUE"
-                                                                         "-DCMAKE_CXX_COMPILER_WORKS=TRUE"
-                                                                         "-DCMAKE_C_ABI_COMPILED=TRUE"
-                                                                         "-DCMAKE_CXX_ABI_COMPILED=TRUE"
-                                                                         ;; Skip library checks that cause hangs
-                                                                         ;; "-DCMAKE_TRY_COMPILE_CONFIGURATION=Release"
-                                                                         ;;"-DHAVE_LIBM=1"
-                                                                         ;;"-DHAVE_LIBDL=1"
-                                                                         ;; "-DHAVE_LIBPTHREAD=1"
-                                                                         )
-                                                     (and target-str is-windows? (not= type :wasm)) (conj "-DCMAKE_CROSSCOMPILING=ON"
-                                                                                                          "-DCMAKE_C_COMPILER_WORKS=TRUE"
-                                                                                                          "-DCMAKE_CXX_COMPILER_WORKS=TRUE"
-                                                                                                          "-DCMAKE_C_ABI_COMPILED=TRUE"
-                                                                                                          "-DCMAKE_CXX_ABI_COMPILED=TRUE"
-                                                                                                          "-DCMAKE_SIZEOF_VOID_P=8")
-                                                     (= type :native) (conj "-DBUILD_SHARED_LIBS=ON")
-                                                     (= type :wasm) (conj "-DBUILD_SHARED_LIBS=OFF" "-DCMAKE_POLICY_DEFAULT_CMP0135=NEW" "-DEMBED_RESOURCE_FILES=ON") ; embed proj.db and proj.ini directly in WASM
-                                                     true (conj ".."))]
-                                    (apply tasks/shell {:dir build-dir :extra-env {"CXX" cxx "CC" cc "CMAKE_VERBOSE_MAKEFILE" "TRUE"}} (concat cmake-base-cmd (if debug? (conj cmake-args "--debug-output") cmake-args)))
-                                    (apply tasks/shell {:dir build-dir :extra-env {"CXX" cxx "CC" cc}} cmake-build-cmd))
-                                  (cond
-                                    (= type :wasm)
-                                    (let [;; Exported runtime methods from scripts/exported_runtime_methods.json
-                                          exported-runtime-methods "[\"FS\",\"ENV\",\"HEAPF64\",\"err\",\"ccall\",\"cwrap\",\"stackAlloc\",\"stackSave\",\"stackRestore\",\"getValue\",\"setValue\",\"stringToNewUTF8\"]"
+                 prepare-local-proj (fn [proj-source-path]
+                                     ;; Check if autogen.sh or similar is needed for local builds
+                                      (when (and (fs/exists? (fs/path proj-source-path "autogen.sh"))
+                                                 (not (fs/exists? (fs/path proj-source-path "configure"))))
+                                        (println "Running autogen.sh to prepare local PROJ build...")
+                                        (tasks/shell {:dir (str proj-source-path)} "./autogen.sh")))]
 
-                                          ;; Extract function names from fndefs
-                                          fndefs-content (slurp "src/cljc/net/willcohen/proj/fndefs.cljc")
-                                          fndefs-raw-match (re-find (re-pattern "\\(def fndefs-raw[\\s\\S]+?\\}\\)") fndefs-content)
-                                          _ (when-not fndefs-raw-match
-                                              (throw (ex-info "Could not find fndefs-raw definition" {})))
-                                          fndefs-str (-> fndefs-raw-match
-                                                         (str/replace (re-pattern "^\\(def fndefs-raw\\s+") "")
-                                                         (str/replace (re-pattern "\\)$") ""))
-                                          fndefs-map (edn/read-string fndefs-str)
+             (let [;; --- Phase 1: Options and Configuration ---
+                   {native? :native, wasm? :wasm, debug? :debug, target-str :target} opts
+                   proj-version "9.6.2"
+                   sqlite-version-url "3500300"
+                   sqlite-year "2025"
+                   zlib-version "1.3.1"
+                   libtiff-version "4.7.0"
+                   target-dir "target"
+                   zlib-archive (str "zlib-" zlib-version ".tar.gz")
+                   zlib-dir (str "zlib-" zlib-version)
+                   sqlite-archive (str "sqlite-autoconf-" sqlite-version-url ".tar.gz")
+                   sqlite-dir (str "sqlite-autoconf-" sqlite-version-url)
+                   libtiff-archive (str "libtiff-v" libtiff-version ".tar.gz")
+                   libtiff-dir (str "libtiff-v" libtiff-version)
+                   proj-archive (str proj-version ".tar.gz")
 
-                                          ;; Convert fndefs keys to C function names with underscore prefix
-                                          proj-function-names (->> (keys fndefs-map)
-                                                                   (map name)
-                                                                   (map (fn [s] (str "_" (str/replace s "-" "_"))))
-                                                                   sort)
+                   ;; Use helper function to get PROJ source directory
+                   proj-dir (get-proj-source opts proj-version target-dir)
 
-                                          ;; Additional Emscripten/runtime functions that need to be exported
-                                          emscripten-functions ["UTF8ArrayToString"
-                                                                "UTF8ToString"
-                                                                "___get_exception_message"
-                                                                "_emscripten_stack_get_base"
-                                                                "_emscripten_stack_get_current"
-                                                                "_emscripten_stack_get_end"
-                                                                "_emscripten_stack_get_free"
-                                                                "_emscripten_stack_init"
-                                                                "_emscripten_stack_set_limits"
-                                                                "_free"
-                                                                "lengthBytesUTF8"
-                                                                "_malloc"]
+                   ;; --- Host Platform Detection ---
+                   host-os (let [os-name (System/getProperty "os.name")]
+                             (cond
+                               (re-find (re-pattern "(?i)mac|darwin") os-name) :darwin
+                               (re-find (re-pattern "(?i)linux") os-name) :linux
+                               :else :unknown))
+                   host-arch (let [os-arch (System/getProperty "os.arch")]
+                               (cond
+                                 (re-find (re-pattern "(?i)aarch64|arm64") os-arch) :aarch64
+                                 (re-find (re-pattern "(?i)amd64|x86_64") os-arch) :amd64
+                                 :else :unknown))
 
-                                          ;; Combine all functions and convert to JSON array string
-                                          all-functions (concat emscripten-functions proj-function-names)
-                                          exported-fns (str "[" (str/join "," (map (fn [f] (str "\"" f "\"")) all-functions)) "]")]
-                                      (fs/copy (fs/path build-dir "data" "proj.db") (fs/path build-dir "proj.db"))
-                                      (fs/copy (fs/path build-dir "data" "proj.ini") (fs/path build-dir "proj.ini"))
-                                      (tasks/shell {:dir build-dir}
-                                                   "emcc" "-o" "proj-emscripten.js" "-O2" "-fexceptions" "-fvisibility=default" "--target=wasm32-unknown-emscripten"
-                                                   "lib/libproj.a"
-                                                   (str (fs/path libtiff-install-dir "lib" "libtiff.a"))
-                                                   (str (fs/path sqlite-install-dir "lib" "libsqlite3.a"))
-                                                   (str "-s" "EXPORTED_FUNCTIONS=" exported-fns)
-                                                   (str "-s" "EXPORTED_RUNTIME_METHODS=" exported-runtime-methods)
-                                                   "-s" "ENVIRONMENT=web,webview,worker,node,shell"
-                                                   "-s" "ALLOW_MEMORY_GROWTH=1"
-                                                   "-s" "ASSERTIONS=1" ; Enable runtime assertions for debugging, but disable for better optimizations.
-                                                   "-s" "MODULARIZE=1"
-                                                   "-s" "EXPORT_ES6=1"
-                                                   "-s" "EXPORT_NAME=\"PROJModule\""))
+                   ;; --- Helper Functions ---
+                   download-file (fn [url dest]
+                                   (if-not (fs/exists? dest)
+                                     (do
+                                       (println "Downloading" (fs/file-name dest) "from" url "...")
+                                       (io/copy (:body (http/get url {:as :stream})) (fs/file dest)))
+                                     (println (fs/file-name dest) "already exists. Skipping download.")))
+                   extract-archive (fn [archive-file extracted-dir base-dir]
+                                     (if-not (fs/exists? (fs/path base-dir extracted-dir))
+                                       (do
+                                         (println "Extracting" archive-file "to" (fs/path base-dir extracted-dir) "...")
+                                         (tasks/shell {:dir base-dir} "tar" "xvzf" archive-file))
+                                       (println "Directory" (str "'" extracted-dir "'") "already exists. Skipping extraction.")))
 
-                                    (= type :native)
-                                    (let [proj-lib-versioned (cond is-windows? (str "proj-" (first (str/split proj-version (re-pattern "\\."))) ".dll")
-                                                                   is-darwin? (str "libproj.25." proj-version ".dylib")
-                                                                   :else "libproj.so.25")
-                                          libtiff-libname (cond is-darwin? "libtiff.dylib" is-linux? "libtiff.so" :else "libtiff.a")]
-                                      (when is-darwin?
-                                        (tasks/shell {:dir build-dir} "install_name_tool" "-change"
-                                                     (fs/path libtiff-install-dir "lib" libtiff-libname)
-                                                     (str "@loader_path/" libtiff-libname)
-                                                     (fs/path "lib" proj-lib-versioned)))
-                                      (let [dest-dir (fs/path "resources" library-dir)]
-                                        (println "Copying native build artifacts...")
-                                        (fs/create-dirs dest-dir)
-                                        (fs/copy (fs/path build-dir "lib" proj-lib-versioned) final-proj-lib {:replace-existing true})
-                                        (fs/copy (fs/path libtiff-install-dir "lib" libtiff-libname) dest-dir {:replace-existing true})
-                                        (fs/copy (fs/path build-dir "data" "proj.db") (fs/path "resources") {:replace-existing true})
-                                        (fs/copy (fs/path build-dir "data" "proj.ini") (fs/path "resources") {:replace-existing true})))))))]
+                   ;; --- Build Helper Functions ---
 
-             (do
+                   ;; Calculate safe parallel jobs based on available memory
+                   get-safe-parallel-jobs (fn []
+                                            (let [available-memory-gb (try
+                                                                        (if (fs/exists? "/proc/meminfo")
+                                                                          (let [memory-info (slurp "/proc/meminfo")
+                                                                                mem-available-kb (if-let [match (re-find (re-pattern "MemAvailable:\\s+(\\d+)") memory-info)]
+                                                                                                   (Long/parseLong (second match))
+                                                                                                   ;; Fallback to MemFree if MemAvailable not found
+                                                                                                   (if-let [match (re-find (re-pattern "MemFree:\\s+(\\d+)") memory-info)]
+                                                                                                     (Long/parseLong (second match))
+                                                                                                     4194304))] ; Default to 4GB if can't read
+                                                                            (/ mem-available-kb 1048576.0))
+                                                                          4.0) ; Default to 4GB on non-Linux
+                                                                        (catch Exception _ 4.0)) ; Default to 4GB on error
+                                                  ;; Use 1 job per 3GB of available memory, max of availableProcessors
+                                                  safe-jobs (min (.. Runtime getRuntime availableProcessors)
+                                                                 (max 1 (int (/ available-memory-gb 3))))]
+                                              (when debug? (println (format "DEBUG: Available memory: %.1fGB, using %d parallel jobs" available-memory-gb safe-jobs)))
+                                              safe-jobs))
+
+                   build-sqlite (fn [{:keys [type install-dir cc host-flag is-linux? is-windows? debug?]}]
+                                  (let [lib-path (fs/path install-dir "lib" "libsqlite3.a")]
+                                    (when debug? (println "DEBUG: Checking for existing" (name type) "SQLite library at:" (str lib-path)))
+                                    (when-not (fs/exists? lib-path)
+                                      (println "Building SQLite for" (name type) "...")
+                                      (let [build-dir (fs/path target-dir sqlite-dir (str "sqlite-build-" (name type)))
+                                            ;; Detect if we're in a container build environment
+                                            in-container? (and (= type :native) is-linux? (System/getenv "NIX_BUILD_TOP"))
+                                            ;; For container builds, explicitly set host to current architecture to avoid configure test programs
+                                            container-host-flag (when in-container?
+                                                                  (let [arch (case (System/getProperty "os.arch")
+                                                                               "amd64" "x86_64"
+                                                                               "x86_64" "x86_64"
+                                                                               "aarch64" "aarch64"
+                                                                               "arm64" "aarch64"
+                                                                               "unknown")]
+                                                                    (str "--host=" arch "-pc-linux-musl")))
+                                            configure-args (cond-> ["../configure" (str "--prefix=" install-dir)]
+                                                             host-flag (conj host-flag)
+                                                             container-host-flag (conj container-host-flag)
+                                                             (= type :wasm) (conj "--disable-shared" "--disable-editline" "--disable-readline")
+                                                             ;; Always build static on Linux to use musl
+                                                             (and (= type :native) is-linux?) (conj "--disable-shared" "--enable-static")
+                                                             ;; Windows builds also need static library
+                                                             is-windows? (conj "--disable-shared" "--enable-static"))
+
+                                            env (cond-> {"CC" cc}
+                                                  ;; Add -fPIC for static libraries that will be linked into shared libraries
+                                                  (and (= type :native) is-linux?) (assoc "CFLAGS" "-fPIC")
+                                                  ;; Windows-specific flags - inherited from environment
+                                                  is-windows? (assoc "CFLAGS" (or (System/getenv "CFLAGS") "-static-libgcc -static-libstdc++")
+                                                                     "LDFLAGS" (or (System/getenv "LDFLAGS") "-static-libgcc -static-libstdc++"))
+                                                  (= type :wasm) (assoc "CFLAGS" "-s ERROR_ON_UNDEFINED_SYMBOLS=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DISABLE_LFS -DSQLITE_LONGDOUBLE_TYPE=double -DSQLITE_ENABLE_JSON1 -DSQLITE_ENABLE_NORMALIZE"))
+                                            configure-cmd (if (= type :wasm) "emconfigure" (first configure-args))
+                                            configure-args' (if (= type :wasm) configure-args (rest configure-args))
+                                            make-base-cmd (if (= type :wasm) ["emmake" "make"] ["make"])]
+                                        (fs/delete-tree install-dir)
+                                        (fs/delete-tree build-dir)
+                                        (fs/create-dirs build-dir)
+                                        (apply tasks/shell {:dir build-dir :extra-env env} configure-cmd configure-args')
+                                        (apply tasks/shell {:dir build-dir} (concat make-base-cmd ["-j" (str (get-safe-parallel-jobs))]))
+                                        (apply tasks/shell {:dir build-dir} (concat make-base-cmd ["install"]))))))
+
+                   build-libtiff (fn [{:keys [type install-dir cc cxx host-flag is-darwin? is-linux? is-windows? debug?]}]
+                                   (let [lib-path (fs/path install-dir "lib" (cond (= type :wasm) "libtiff.a"
+                                                                                   is-darwin? "libtiff.dylib"
+                                                                                   is-linux? "libtiff.a" ; Always static on Linux
+                                                                                   is-windows? "libtiff.a" ; Static on Windows too
+                                                                                   :else "libtiff.a"))]
+                                     (when debug? (println "DEBUG: Checking for existing" (name type) "LibTIFF library at:" (str lib-path)))
+                                     (when-not (fs/exists? lib-path)
+                                       (println "Building LibTIFF for" (name type) "...")
+                                       (let [src-dir (fs/path target-dir libtiff-dir)
+                                             ;; Detect if we're in a container build environment
+                                             in-container? (and (= type :native) is-linux? (System/getenv "NIX_BUILD_TOP"))
+                                             ;; For container builds, explicitly set host to current architecture to avoid configure test programs
+                                             container-host-flag (when in-container?
+                                                                   (let [arch (case (System/getProperty "os.arch")
+                                                                                "amd64" "x86_64"
+                                                                                "x86_64" "x86_64"
+                                                                                "aarch64" "aarch64"
+                                                                                "arm64" "aarch64"
+                                                                                "unknown")]
+                                                                     (str "--host=" arch "-pc-linux-musl")))
+                                             configure-args (cond-> ["./configure" (str "--prefix=" install-dir)]
+                                                              host-flag (conj host-flag)
+                                                              container-host-flag (conj container-host-flag)
+                                                              ;; Always static on Linux
+                                                              (and (= type :native) is-linux?) (conj "--disable-shared" "--enable-static")
+                                                              (and (= type :native) is-darwin?) (conj "--enable-shared" "--disable-static")
+                                                              ;; Static on Windows too
+                                                              is-windows? (conj "--disable-shared" "--enable-static")
+                                                              ;; Disable C++ support in containers to avoid musl/glibc conflicts
+                                                              in-container? (conj "--disable-cxx")
+                                                              (and (not= type :wasm) (not= type :native)) (conj "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs")
+                                                              (= type :wasm) (conj "--disable-zlib" "--without-zstd" "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs" "--disable-ccitt"))
+                                             env (cond-> {"CC" cc "CXX" cxx}
+                                                     ;; Add -fPIC for static libraries that will be linked into shared libraries
+                                                   (and (= type :native) is-linux?) (assoc "CFLAGS" "-fPIC" "CXXFLAGS" "-fPIC")
+                                                   (= type :wasm) (assoc "CPPFLAGS" "-DHAVE_FCNTL_H=1"))
+                                             configure-cmd (if (= type :wasm) "emconfigure" (first configure-args))
+                                             configure-args' (if (= type :wasm) configure-args (rest configure-args))
+                                             make-base-cmd (if (= type :wasm) ["emmake" "make"] ["make"])]
+                                         (fs/delete-tree install-dir)
+                                         (when (fs/exists? (fs/path src-dir "Makefile"))
+                                           (try
+                                             (tasks/shell {:dir src-dir} "make" "distclean")
+                                             (catch Exception e
+                                               (println "Warning: make distclean failed, continuing anyway:" (.getMessage e)))))
+                                         (fs/delete-if-exists (fs/path src-dir "config.status"))
+                                         (fs/delete-if-exists (fs/path src-dir "config.cache"))
+                                         (fs/delete-if-exists (fs/path src-dir "Makefile"))
+                                         (fs/delete-if-exists (fs/path src-dir "libtool"))
+                                         (when is-darwin?
+                                           (tasks/shell {:dir src-dir} "sed" "-i.bak" "s/glibtoolize/libtoolize/g" "autogen.sh"))
+                                         (try (tasks/shell {:dir src-dir :extra-env env} "./autogen.sh")
+                                              (catch Exception _
+                                                (println "autogen.sh failed, patching and retrying...")
+                                                (tasks/shell {:dir src-dir} "sed" "-i.bak" "s|https://git.savannah.gnu.org/cgit/config.git/plain/|https://raw.githubusercontent.com/cgitmirror/config/refs/heads/master/|g" "autogen.sh")
+                                                (tasks/shell {:dir src-dir :extra-env env} "./autogen.sh")))
+                                         (apply tasks/shell {:dir src-dir :extra-env env} configure-cmd configure-args')
+                                         ;; For WASM, patch the Makefile to skip mkg3states
+                                         (when (= type :wasm)
+                                           (println "Patching libtiff Makefile to skip mkg3states for WASM...")
+                                           ;; Remove mkg3states from noinst_PROGRAMS in libtiff/Makefile
+                                           (let [makefile-path (str (fs/path src-dir "libtiff" "Makefile"))
+                                                 makefile-content (slurp makefile-path)
+                                                 patched-content (-> makefile-content
+                                                                     ;; Remove mkg3states from build targets
+                                                                     (str/replace (re-pattern "noinst_PROGRAMS = mkg3states") "noinst_PROGRAMS =")
+                                                                     ;; Remove mkg3states dependencies
+                                                                     (str/replace (re-pattern "mkg3states:") "# mkg3states:")
+                                                                     (str/replace (re-pattern "mkg3states\\.o") "# mkg3states.o"))]
+                                             (spit makefile-path patched-content))
+                                           ;; Create dummy tif_fax3sm.c if needed
+                                           (let [fax3sm-path (fs/path src-dir "libtiff" "tif_fax3sm.c")]
+                                             (when-not (fs/exists? fax3sm-path)
+                                               (println "Creating dummy tif_fax3sm.c...")
+                                               (spit (str fax3sm-path) "/* Dummy file for WASM build */"))))
+                                         (apply tasks/shell {:dir src-dir} (concat make-base-cmd ["-j" (str (get-safe-parallel-jobs))]))
+                                         (apply tasks/shell {:dir src-dir} (concat make-base-cmd ["install"]))))))
+
+                   build-proj (fn [{:keys [type library-dir cc cxx host-flag is-darwin? is-linux? is-windows? sqlite-install-dir libtiff-install-dir debug? target-str]}]
+                                (let [final-proj-lib (fs/path "resources" (if (= type :wasm) "wasm" library-dir)
+                                                              (cond (= type :wasm) "proj-emscripten.js"
+                                                                    is-windows? "proj.dll"
+                                                                    is-darwin? "libproj.dylib"
+                                                                    is-linux? "libproj.so"
+                                                                    :else "libproj.a"))
+                                      build-dir (fs/path target-dir proj-dir (str "proj-build-" (if (= type :native) library-dir (name type))))]
+                                  (when debug? (println "DEBUG: Checking for existing" (name type) "PROJ library at:" (str final-proj-lib)))
+                                  (when-not (fs/exists? final-proj-lib)
+                                    (println "Building PROJ for" (name type) "...")
+                                    (fs/delete-tree build-dir)
+                                    (fs/create-dirs build-dir)
+                                    ;; Patch CMakeLists.txt to skip scripts directory for cross-compilation
+                                    (when (and (not is-darwin?) (System/getenv "NIX_BUILD_TOP"))
+                                      (let [cmake-file (fs/path target-dir proj-dir "CMakeLists.txt")
+                                            content (slurp (str cmake-file))
+                                            ;; Comment out the add_subdirectory(scripts) line
+                                            patched (str/replace content
+                                                                 "add_subdirectory(scripts)"
+                                                                 "# add_subdirectory(scripts) - Skipped for cross-compilation")]
+                                        (spit (str cmake-file) patched)))
+                                    (let [cmake-base-cmd (if (= type :wasm) ["emcmake" "cmake"] ["cmake"])
+                                          cmake-build-cmd (if (= type :wasm)
+                                                            (concat ["emmake" "make"] ["-j" (str (get-safe-parallel-jobs))] (when debug? ["VERBOSE=1"]))
+                                                            (concat ["cmake" "--build" "." "--parallel" (str (get-safe-parallel-jobs))] (when debug? ["--verbose"])))
+                                          is-nix-build? (and (not is-darwin?) (System/getenv "NIX_BUILD_TOP"))
+                                          is-cross-build? (and target-str (not= type :wasm))
+                                          base-cxx-flags "-ftemplate-depth=256"
+                                          cmake-args (cond-> ["-DBUILD_APPS=OFF" "-DBUILD_PROJSYNC=OFF" "-DBUILD_CCT=OFF" "-DBUILD_GEOD=OFF" "-DBUILD_GIE=OFF" "-DBUILD_PROJINFO=OFF" "-DENABLE_CURL=OFF" "-DBUILD_TESTING=OFF"
+                                                              "-DCMAKE_BUILD_TYPE=Release"
+                                                              "-DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=ON"
+                                                              "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+                                                              ;; Set install prefix to build directory
+                                                              (str "-DCMAKE_INSTALL_PREFIX=" build-dir)
+                                                              ;; Limit compiler memory usage in constrained environments
+                                                              (str "-DCMAKE_CXX_FLAGS=" base-cxx-flags)
+                                                              ;; Disable library existence checks in Nix to prevent hangs
+                                                              ;;"-DCMAKE_DISABLE_FIND_PACKAGE_Threads=ON"
+                                                              (str "-DSQLite3_INCLUDE_DIR=" (fs/path sqlite-install-dir "include"))
+                                                              (str "-DSQLite3_LIBRARY=" (fs/path sqlite-install-dir "lib" "libsqlite3.a"))
+                                                              (str "-DTIFF_INCLUDE_DIR=" (fs/path libtiff-install-dir "include"))
+                                                              (str "-DTIFF_LIBRARY=" (fs/path libtiff-install-dir "lib" (cond (= type :wasm) "libtiff.a"
+                                                                                                                              is-darwin? "libtiff.dylib"
+                                                                                                                              is-linux? "libtiff.a" ; Always static on Linux
+                                                                                                                              :else "libtiff.a")))]
+
+                                                       is-darwin? (conj "-DCMAKE_INSTALL_RPATH=@loader_path")
+                                                       is-windows? (conj "-DCMAKE_SYSTEM_NAME=Windows"
+                                                                         "-DCMAKE_C_FLAGS=-static-libgcc -static-libstdc++ -static"
+                                                                         "-DCMAKE_CXX_FLAGS=-static-libgcc -static-libstdc++ -static"
+                                                                         "-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++ -static -Wl,--enable-auto-import"
+                                                                         "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++ -static"
+                                                                         "-DBUILD_SHARED_LIBS=ON"
+                                                                         "-DCMAKE_DL_LIBS="
+                                                                         "-DHAVE_DLADDR=0"
+                                                                         "-DCMAKE_CROSSCOMPILING=ON"
+                                                                         ;; Force static runtime linking
+                                                                         "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded")
+
+                                                       ;; Add compiler detection skip for Nix builds to prevent hanging
+                                                       ;; Add compiler detection skip for Nix builds to prevent hanging
+                                                       (and (or is-nix-build? is-cross-build?) (not is-windows?)) (conj "-DCMAKE_SYSTEM_NAME=Linux"
+                                                                                                                        "-DCMAKE_CROSSCOMPILING=ON"
+                                                                                                                        "-DCMAKE_C_COMPILER_WORKS=TRUE"
+                                                                                                                        "-DCMAKE_CXX_COMPILER_WORKS=TRUE"
+                                                                                                                        "-DCMAKE_C_ABI_COMPILED=TRUE"
+                                                                                                                        "-DCMAKE_CXX_ABI_COMPILED=TRUE"
+                                                                                                                        ;; Skip compiler feature detection
+                                                                                                                        "-DCMAKE_C_COMPILE_FEATURES=c_std_99"
+                                                                                                                        "-DCMAKE_CXX_COMPILE_FEATURES=cxx_std_17"
+                                                                                                                        ;; Skip library checks that cause hangs
+                                                                                                                        "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY"
+                                                                                                                        ;; Explicitly disable dl library check
+                                                                                                                        "-DCMAKE_DISABLE_FIND_PACKAGE_Dlfcn=ON"
+                                                                                                                        ;; Force dladdr to not be found
+                                                                                                                        "-DHAVE_DLADDR=0"
+                                                                                                                        ;; Force these to be found to skip checks
+                                                                                                                        "-DHAVE_LOCALECONV=1"
+                                                                                                                        "-DHAVE_STRERROR=1"
+                                                                                                                        ;; Disable thread support entirely
+                                                                                                                        "-DCMAKE_DISABLE_FIND_PACKAGE_Threads=ON"
+                                                                                                                        ;; Set more cache variables to skip checks
+                                                                                                                        "-DCMAKE_HAVE_LIBC_PTHREAD=NO"
+                                                                                                                        "-DCMAKE_USE_PTHREADS_INIT=NO"
+                                                                                                                        "-DCMAKE_USE_WIN32_THREADS_INIT=NO"
+                                                                                                                        ;; Skip all feature tests
+                                                                                                                        "-DCMAKE_C_STANDARD_COMPUTED_DEFAULT=99"
+                                                                                                                        "-DCMAKE_CXX_STANDARD_COMPUTED_DEFAULT=17"
+                                                                                                                        ;; Set target system info
+                                                                                                                        "-DCMAKE_SYSTEM_PROCESSOR=x86_64"
+                                                                                                                        ;; Set install directories explicitly
+                                                                                                                        "-DCMAKE_INSTALL_LIBDIR=lib"
+                                                                                                                        ;; Skip all try_compile tests by setting cache entries
+                                                                                                                        "-DCMAKE_CROSSCOMPILING_EMULATOR=/bin/false"
+                                                                                                                        ;; Skip nlohmann/json detection that causes hanging
+                                                                                                                        "-DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=ON"
+                                                                                                                        "-DUSE_EXTERNAL_NLOHMANN_JSON=OFF"
+                                                                                                                        ;; Force JSON library to internal version
+                                                                                                                        "-DNLOHMANN_JSON_FOUND=FALSE"
+                                                                                                                        ;; Skip pkg-config entirely
+                                                                                                                        "-DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON")
+                                                       (and target-str is-windows? (not= type :wasm)) (conj "-DCMAKE_CROSSCOMPILING=ON"
+                                                                                                            "-DCMAKE_C_COMPILER_WORKS=TRUE"
+                                                                                                            "-DCMAKE_CXX_COMPILER_WORKS=TRUE"
+                                                                                                            "-DCMAKE_C_ABI_COMPILED=TRUE"
+                                                                                                            "-DCMAKE_CXX_ABI_COMPILED=TRUE"
+                                                                                                            "-DCMAKE_SIZEOF_VOID_P=8")
+                                                       (and (= type :native) is-darwin?) (conj "-DBUILD_SHARED_LIBS=ON")
+                                                       (and (= type :native) is-linux?) (conj "-DBUILD_SHARED_LIBS=ON"
+                                                                                              "-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++ -Wl,-Bstatic -lc -lm -lpthread -ldl -Wl,-Bdynamic -Wl,--no-as-needed"
+                                                                                              "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-Wl,-Bstatic -lc -lm -lpthread -ldl -Wl,-Bdynamic"
+                                                                                              "-DCMAKE_FIND_LIBRARY_SUFFIXES=.a")
+                                                       (= type :wasm) (conj "-DBUILD_SHARED_LIBS=OFF" "-DCMAKE_POLICY_DEFAULT_CMP0135=NEW" "-DEMBED_RESOURCE_FILES=ON")
+                                                       true (conj ".."))]
+                                      ;; For cross-compilation, use -C to load an initial cache file
+                                      (when is-nix-build?
+                                        (let [cache-file (fs/path build-dir "initial-cache.cmake")]
+                                          (spit (str cache-file)
+                                                (str "# Initial cache to skip tests and prevent hanging\n"
+                                                     "set(CMAKE_CROSSCOMPILING ON CACHE BOOL \"\")\n"
+                                                     "set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY CACHE STRING \"\")\n"
+                                                     "set(CMAKE_C_COMPILER_WORKS TRUE CACHE BOOL \"\")\n"
+                                                     "set(CMAKE_CXX_COMPILER_WORKS TRUE CACHE BOOL \"\")\n"
+                                                     "set(CMAKE_C_ABI_COMPILED TRUE CACHE BOOL \"\")\n"
+                                                     "set(CMAKE_CXX_ABI_COMPILED TRUE CACHE BOOL \"\")\n"
+                                                     "set(Threads_FOUND FALSE CACHE BOOL \"\")\n"
+                                                     "set(CMAKE_THREAD_LIBS_INIT \"\" CACHE STRING \"\")\n"
+                                                     "set(CMAKE_USE_PTHREADS_INIT OFF CACHE BOOL \"\")\n"
+                                                     "set(CMAKE_USE_WIN32_THREADS_INIT OFF CACHE BOOL \"\")\n"
+                                                     "set(CMAKE_HP_PTHREADS_INIT OFF CACHE BOOL \"\")\n"
+                                                     "set(HAVE_PTHREAD_H OFF CACHE BOOL \"\")\n"
+                                                     "set(HAVE_PTHREAD_CREATE OFF CACHE BOOL \"\")\n"
+                                                     "set(CMAKE_INSTALL_LIBDIR lib CACHE STRING \"\")\n"
+                                                     "set(HAVE_DLADDR 0 CACHE INTERNAL \"\")\n"
+                                                     "set(HAVE_LOCALECONV 1 CACHE INTERNAL \"\")\n"
+                                                     "set(HAVE_STRERROR 1 CACHE INTERNAL \"\")\n"
+                                                     "set(nlohmann_json_FOUND FALSE CACHE BOOL \"\")\n"
+                                                     "set(PkgConfig_FOUND FALSE CACHE BOOL \"\")\n"
+                                                     "set(CMAKE_C_COMPILE_FEATURES c_std_99 CACHE STRING \"\")\n"
+                                                     "set(CMAKE_CXX_COMPILE_FEATURES cxx_std_17 CACHE STRING \"\")\n"
+                                                     "set(CMAKE_CROSSCOMPILING_EMULATOR /bin/false CACHE STRING \"\")\n"
+                                                     ;; Skip all library detection to prevent hanging under QEMU
+                                                     "set(HAVE_EXP 1 CACHE INTERNAL \"\")\n"
+                                                     "set(HAVE_LOG 1 CACHE INTERNAL \"\")\n"
+                                                     "set(HAVE_SQRT 1 CACHE INTERNAL \"\")\n"
+                                                     "set(MATH_LIBRARY m CACHE STRING \"\")\n"
+                                                     "set(CMAKE_REQUIRED_LIBRARIES m CACHE STRING \"\")\n"
+                                                     "set(CMAKE_DL_LIBS dl CACHE STRING \"\")\n"
+                                                     "set(DL_LIBRARY dl CACHE STRING \"\")\n"
+                                                     "set(CMAKE_THREAD_LIBS_INIT \"-lpthread\" CACHE STRING \"\")\n"
+                                                     "set(CMAKE_USE_PTHREADS_INIT 1 CACHE INTERNAL \"\")\n"
+                                                     "set(CMAKE_HAVE_LIBC_PTHREAD 1 CACHE INTERNAL \"\")\n"))))
+                                      (let [final-cmake-args (if is-nix-build?
+                                                               (concat ["-C" "initial-cache.cmake"] cmake-args)
+                                                               cmake-args)
+                                            cmake-env (cond-> {"CXX" cxx "CC" cc "CMAKE_VERBOSE_MAKEFILE" "TRUE"}
+                                                        ;; For Linux musl builds, statically link C runtime into shared library
+                                                        (and (= type :native) is-linux?) (assoc "LDFLAGS" "-static-libgcc -static-libstdc++ -Wl,-Bstatic -lc -Wl,-Bdynamic"))]
+                                        (when debug?
+                                          (println "DEBUG: CMake configure command:")
+                                          (println "  " (str/join " " (concat cmake-base-cmd final-cmake-args)))
+                                          (println "DEBUG: CMake environment:")
+                                          (doseq [[k v] cmake-env]
+                                            (println "  " k "=" v)))
+                                        (try
+                                          (apply tasks/shell {:dir build-dir :extra-env cmake-env} (concat cmake-base-cmd final-cmake-args))
+                                          (catch Exception e
+                                            ;; Try to show CMake error log if it exists
+                                            (let [error-log (fs/path build-dir "CMakeFiles" "CMakeError.log")
+                                                  output-log (fs/path build-dir "CMakeFiles" "CMakeOutput.log")]
+                                              (when (fs/exists? error-log)
+                                                (println "=== CMake Error Log ===")
+                                                (println (slurp (str error-log))))
+                                              (when (fs/exists? output-log)
+                                                (println "=== CMake Output Log (last 100 lines) ===")
+                                                (let [lines (str/split-lines (slurp (str output-log)))]
+                                                  (println (str/join "\n" (take-last 100 lines)))))
+                                              (throw e))))
+                                        (apply tasks/shell {:dir build-dir :extra-env cmake-env} cmake-build-cmd)))
+                                    (cond
+                                      (= type :wasm)
+                                      (let [;; Exported runtime methods from scripts/exported_runtime_methods.json
+                                            exported-runtime-methods "[\"FS\",\"ENV\",\"HEAPF64\",\"err\",\"ccall\",\"cwrap\",\"stackAlloc\",\"stackSave\",\"stackRestore\",\"getValue\",\"setValue\",\"stringToNewUTF8\"]"
+
+                                            ;; Extract function names from fndefs
+                                            fndefs-content (slurp "src/cljc/net/willcohen/proj/fndefs.cljc")
+                                            fndefs-raw-match (re-find (re-pattern "\\(def fndefs-raw[\\s\\S]+?\\}\\)") fndefs-content)
+                                            _ (when-not fndefs-raw-match
+                                                (throw (ex-info "Could not find fndefs-raw definition" {})))
+                                            fndefs-str (-> fndefs-raw-match
+                                                           (str/replace (re-pattern "^\\(def fndefs-raw\\s+") "")
+                                                           (str/replace (re-pattern "\\)$") ""))
+                                            fndefs-map (edn/read-string fndefs-str)
+
+                                            ;; Convert fndefs keys to C function names with underscore prefix
+                                            proj-function-names (->> (keys fndefs-map)
+                                                                     (map name)
+                                                                     (map (fn [s] (str "_" (str/replace s "-" "_"))))
+                                                                     sort)
+
+                                            ;; Additional Emscripten/runtime functions that need to be exported
+                                            emscripten-functions ["UTF8ArrayToString"
+                                                                  "UTF8ToString"
+                                                                  "___get_exception_message"
+                                                                  "_emscripten_stack_get_base"
+                                                                  "_emscripten_stack_get_current"
+                                                                  "_emscripten_stack_get_end"
+                                                                  "_emscripten_stack_get_free"
+                                                                  "_emscripten_stack_init"
+                                                                  "_emscripten_stack_set_limits"
+                                                                  "_free"
+                                                                  "lengthBytesUTF8"
+                                                                  "_malloc"]
+
+                                            ;; Combine all functions and convert to JSON array string
+                                            all-functions (concat emscripten-functions proj-function-names)
+                                            exported-fns (str "[" (str/join "," (map (fn [f] (str "\"" f "\"")) all-functions)) "]")]
+                                        (fs/copy (fs/path build-dir "data" "proj.db") (fs/path build-dir "proj.db"))
+                                        (fs/copy (fs/path build-dir "data" "proj.ini") (fs/path build-dir "proj.ini"))
+                                        (tasks/shell {:dir build-dir}
+                                                     "emcc" "-o" "proj-emscripten.js" "-O2" "-fexceptions" "-fvisibility=default" "--target=wasm32-unknown-emscripten"
+                                                     "lib/libproj.a"
+                                                     (str (fs/path libtiff-install-dir "lib" "libtiff.a"))
+                                                     (str (fs/path sqlite-install-dir "lib" "libsqlite3.a"))
+                                                     (str "-s" "EXPORTED_FUNCTIONS=" exported-fns)
+                                                     (str "-s" "EXPORTED_RUNTIME_METHODS=" exported-runtime-methods)
+                                                     "-s" "ENVIRONMENT=web,webview,worker,node,shell"
+                                                     "-s" "ALLOW_MEMORY_GROWTH=1"
+                                                     "-s" "ASSERTIONS=1" ; Enable runtime assertions for debugging, but disable for better optimizations.
+                                                     "-s" "MODULARIZE=1"
+                                                     "-s" "EXPORT_ES6=1"
+                                                     "-s" "EXPORT_NAME=\"PROJModule\""))
+
+                                      (= type :native)
+                                      (let [;; Function to find actual PROJ library file in build directory
+                                            find-proj-lib (fn [build-dir is-windows? is-darwin? is-linux?]
+                                                            (let [lib-dir (fs/path build-dir "lib")
+                                                                  bin-dir (fs/path build-dir "bin")]
+                                                              (cond
+                                                                is-windows?
+                                                                ;; Windows DLLs are in bin/, not lib/
+                                                                (->> (concat (fs/glob bin-dir "libproj*.dll")
+                                                                             (fs/glob bin-dir "proj*.dll"))
+                                                                     (map fs/file-name)
+                                                                     first)
+                                                                is-darwin?
+                                                                (->> (fs/glob lib-dir "libproj*.dylib")
+                                                                     (map fs/file-name)
+                                                                     first)
+                                                                is-linux?
+                                                                (->> (fs/glob lib-dir "libproj*.{a,so}")
+                                                                     (map fs/file-name)
+                                                                     first)
+                                                                :else
+                                                                (->> (fs/glob lib-dir "libproj*.a")
+                                                                     (map fs/file-name)
+                                                                     first))))
+
+                                            ;; Detect actual built library file or fall back to expected name
+                                            detected-lib (find-proj-lib build-dir is-windows? is-darwin? is-linux?)
+                                            proj-lib-versioned (or detected-lib
+                                                                    ;; Fallback to expected names if detection fails
+                                                                   (cond
+                                                                     is-windows? (str "proj-" (first (str/split proj-version (re-pattern "\\."))) ".dll")
+                                                                     is-darwin? (str "libproj.25." proj-version ".dylib")
+                                                                     is-linux? "libproj.a"
+                                                                     :else "libproj.a"))
+                                            _ (when debug?
+                                                (println (format "DEBUG: Detected PROJ library file: %s (in %s/lib/)"
+                                                                 (or detected-lib "none found - using fallback")
+                                                                 build-dir))
+                                                (when detected-lib
+                                                  (println (format "DEBUG: Using detected file: %s" proj-lib-versioned))))
+
+                                            libtiff-libname (cond
+                                                              is-darwin? "libtiff.dylib"
+                                                              is-linux? "libtiff.a" ; Always static on Linux
+                                                              :else "libtiff.a")]
+                                        (when is-darwin?
+                                          (tasks/shell {:dir build-dir} "install_name_tool" "-change"
+                                                       (fs/path libtiff-install-dir "lib" libtiff-libname)
+                                                       (str "@loader_path/" libtiff-libname)
+                                                       (fs/path "lib" proj-lib-versioned)))
+                                        (let [dest-dir (fs/path "resources" library-dir)]
+                                          (println "Copying native build artifacts...")
+                                          (fs/create-dirs dest-dir)
+                                          ;; Copy from bin/ for Windows, lib/ for others
+                                          (let [source-path (if is-windows?
+                                                              (fs/path build-dir "bin" proj-lib-versioned)
+                                                              (fs/path build-dir "lib" proj-lib-versioned))]
+                                            (fs/copy source-path final-proj-lib {:replace-existing true}))
+                                          ;; Verify Linux shared library has no dynamic musl dependencies
+                                          (when (and is-linux? (= type :native))
+                                            (println "Verifying Linux shared library dependencies...")
+                                            (println "DEBUG: Checking library file:" (str final-proj-lib))
+                                            ;; Use readelf which is more likely to be available than ldd
+                                            (let [readelf-result (shell/sh "readelf" "-d" (str final-proj-lib))]
+                                              (if (zero? (:exit readelf-result))
+                                                (let [output (:out readelf-result)
+                                                      needed-libs (filter (fn [line] (str/includes? line "NEEDED"))
+                                                                          (str/split-lines output))]
+                                                  (println "DEBUG: Found NEEDED entries:")
+                                                  (doseq [lib needed-libs]
+                                                    (println "  " lib))
+
+                                                  ;; Check if any problematic dependencies exist
+                                                  (let [problematic-deps (filter (fn [lib] (or (str/includes? lib "libc.so")
+                                                                                               (str/includes? lib "musl")
+                                                                                               (str/includes? lib "/nix/store")))
+                                                                                 needed-libs)]
+                                                    (if (seq problematic-deps)
+                                                      (do
+                                                        (println "WARNING: Shared library has unexpected dynamic dependencies:")
+                                                        (doseq [dep problematic-deps]
+                                                          (println "  " dep))
+                                                        (println "This may cause JNA loading failures at runtime.")
+                                                        ;; Try to fix with patchelf if available
+                                                        (let [patchelf-result (shell/sh "which" "patchelf")]
+                                                          (when (zero? (:exit patchelf-result))
+                                                            (println "Attempting to remove dynamic dependencies with patchelf...")
+                                                            (let [remove-result (shell/sh "patchelf" "--remove-needed" "libc.so" (str final-proj-lib))]
+                                                              (if (zero? (:exit remove-result))
+                                                                (println "Successfully removed libc.so dependency")
+                                                                (println "Failed to remove dependency:" (:err remove-result)))))))
+                                                      (println "✓ No problematic dependencies found!")))
+
+                                                  (when debug?
+                                                    (println "Full readelf output:")
+                                                    (println output)))
+                                                (do
+                                                  (println "ERROR: readelf failed to analyze library")
+                                                  (println "Exit code:" (:exit readelf-result))
+                                                  (println "Error:" (:err readelf-result))
+                                                  ;; Fallback to ldd if readelf fails
+                                                  (let [ldd-result (shell/sh "ldd" (str final-proj-lib))]
+                                                    (if (zero? (:exit ldd-result))
+                                                      (println "Fallback ldd output:" (:out ldd-result))
+                                                      (println "Both readelf and ldd unavailable")))))))
+                                          (when (not is-linux?) ; Don't copy libtiff for Linux - it's statically linked into libproj.so
+                                            (fs/copy (fs/path libtiff-install-dir "lib" libtiff-libname) dest-dir {:replace-existing true}))
+                                          (fs/copy (fs/path build-dir "data" "proj.db") (fs/path "resources") {:replace-existing true})
+                                          (fs/copy (fs/path build-dir "data" "proj.ini") (fs/path "resources") {:replace-existing true})))))))]
+
+               ;; Now execute the build phases
                (when debug?
                  (println "DEBUG: Detected host-os:" host-os)
                  (println "DEBUG: Detected host-arch:" host-arch))
@@ -669,8 +1055,14 @@
                (download-file (str "https://gitlab.com/libtiff/libtiff/-/archive/v" libtiff-version "/" libtiff-archive) (fs/path target-dir libtiff-archive))
                (extract-archive libtiff-archive libtiff-dir target-dir)
 
-               (download-file (str "https://github.com/OSGeo/PROJ/archive/refs/tags/" proj-archive) (fs/path target-dir proj-archive))
-               (extract-archive proj-archive proj-dir target-dir)
+               ;; Download and extract PROJ only if not using local version
+               (when-not (:local-proj opts)
+                 (download-file (str "https://github.com/OSGeo/PROJ/archive/refs/tags/" proj-archive) (fs/path target-dir proj-archive))
+                 (extract-archive proj-archive proj-dir target-dir))
+
+               ;; Prepare local PROJ if needed (runs autogen.sh if required)
+               (when (:local-proj opts)
+                 (prepare-local-proj (fs/path target-dir proj-dir)))
 
                ;; --- Phase 4: Native Build ---
                (when native?
@@ -688,6 +1080,15 @@
                        cc (or (System/getenv "CC") "clang")
                        cxx (or (System/getenv "CXX") "clang++")
                        library-dir (str (name effective-os) "-" (name effective-arch))
+                       ;; Determine host triple for cross-compilation
+                       host-triple (when target-str
+                                     (cond
+                                       (= target-str "linux-amd64") "x86_64-pc-linux-musl"
+                                       (= target-str "linux-aarch64") "aarch64-pc-linux-musl"
+                                       (= target-str "windows-amd64") "x86_64-w64-mingw32"
+                                       (= target-str "windows-arm64") "aarch64-w64-mingw32"
+                                       :else nil))
+                       host-flag (when host-triple (str "--host=" host-triple))
                        libtiff-libname (cond is-windows? "libtiff.dll" is-darwin? "libtiff.dylib" :else "libtiff.a")
                        proj-lib-unversioned (cond is-windows? "proj.dll" is-darwin? "libproj.dylib" :else "libproj.so")
                        proj-lib-versioned (cond is-windows? (str "proj-" (first (str/split proj-version (re-pattern "\\."))) ".dll") ; e.g. proj-9.dll
@@ -698,30 +1099,46 @@
 
                    (println "--> Starting native build for" (if target-str (str target-str " (cross-compile)") library-dir))
 
-                   (build-sqlite {:type :native
-                                  :install-dir sqlite-install-dir
-                                  :cc cc
-                                  :debug? debug?})
+                   ;; Check if PROJ needs to be built before building dependencies
+                   (let [final-proj-lib (fs/path "resources" library-dir
+                                                 (cond is-windows? "proj.dll"
+                                                       is-darwin? "libproj.dylib"
+                                                       is-linux? "libproj.so"
+                                                       :else "libproj.a"))]
+                     (if (fs/exists? final-proj-lib)
+                       (println "Skipping build - PROJ library already exists at:" (str final-proj-lib))
+                       (do
+                         ;; Only build dependencies if PROJ needs to be built
+                         (build-sqlite {:type :native
+                                        :install-dir sqlite-install-dir
+                                        :cc cc
+                                        :host-flag host-flag
+                                        :is-linux? is-linux?
+                                        :is-windows? is-windows?
+                                        :debug? debug?})
 
-                   (build-libtiff {:type :native
-                                   :install-dir libtiff-install-dir
-                                   :cc cc
-                                   :cxx cxx
-                                   :is-darwin? is-darwin?
-                                   :is-linux? is-linux?
-                                   :debug? debug?})
+                         (build-libtiff {:type :native
+                                         :install-dir libtiff-install-dir
+                                         :cc cc
+                                         :cxx cxx
+                                         :host-flag host-flag
+                                         :is-darwin? is-darwin?
+                                         :is-linux? is-linux?
+                                         :is-windows? is-windows?
+                                         :debug? debug?})
 
-                   (build-proj {:type :native
-                                :library-dir library-dir
-                                :cc cc
-                                :cxx cxx
-                                :is-linux? is-linux?
-                                :is-darwin? is-darwin?
-                                :is-windows? is-windows?
-                                :sqlite-install-dir sqlite-install-dir
-                                :libtiff-install-dir libtiff-install-dir
-                                :debug? debug?
-                                :target-str target-str})))
+                         (build-proj {:type :native
+                                      :library-dir library-dir
+                                      :cc cc
+                                      :cxx cxx
+                                      :host-flag host-flag
+                                      :is-linux? is-linux?
+                                      :is-darwin? is-darwin?
+                                      :is-windows? is-windows?
+                                      :sqlite-install-dir sqlite-install-dir
+                                      :libtiff-install-dir libtiff-install-dir
+                                      :debug? debug?
+                                      :target-str target-str}))))))
 
                ;; --- Phase 5: WASM Build ---
                (when wasm?
@@ -731,30 +1148,36 @@
 
                    (println "--> Starting WASM build...")
 
-                   (build-sqlite {:type :wasm
-                                  :install-dir sqlite-install-dir-wasm
-                                  :cc "emcc"
-                                  :host-flag nil
-                                  :debug? debug?})
+                   ;; Check if WASM PROJ needs to be built before building dependencies
+                   (let [final-wasm-lib (fs/path "resources" "wasm" "proj-emscripten.js")]
+                     (if (fs/exists? final-wasm-lib)
+                       (println "Skipping build - WASM library already exists at:" (str final-wasm-lib))
+                       (do
+                         ;; Only build dependencies if PROJ WASM needs to be built
+                         (build-sqlite {:type :wasm
+                                        :install-dir sqlite-install-dir-wasm
+                                        :cc "emcc"
+                                        :host-flag nil
+                                        :debug? debug?})
 
-                   (build-libtiff {:type :wasm
-                                   :install-dir libtiff-install-dir-wasm
-                                   :cc "emcc"
-                                   :cxx "em++"
-                                   :host-flag "--host=wasm32"
-                                   :is-darwin? (= host-os :darwin)
-                                   :is-linux? (= host-os :linux)
-                                   :debug? debug?})
+                         (build-libtiff {:type :wasm
+                                         :install-dir libtiff-install-dir-wasm
+                                         :cc "emcc"
+                                         :cxx "em++"
+                                         :host-flag "--host=wasm32"
+                                         :is-darwin? (= host-os :darwin)
+                                         :is-linux? (= host-os :linux)
+                                         :debug? debug?})
 
-                   (build-proj {:type :wasm
-                                :library-dir "wasm"
-                                :cc "emcc"
-                                :cxx "em++"
-                                :is-darwin? (= host-os :darwin)
-                                :is-windows? false
-                                :sqlite-install-dir sqlite-install-dir-wasm
-                                :libtiff-install-dir libtiff-install-dir-wasm
-                                :debug? debug?})
+                         (build-proj {:type :wasm
+                                      :library-dir "wasm"
+                                      :cc "emcc"
+                                      :cxx "em++"
+                                      :is-darwin? (= host-os :darwin)
+                                      :is-windows? false
+                                      :sqlite-install-dir sqlite-install-dir-wasm
+                                      :libtiff-install-dir libtiff-install-dir-wasm
+                                      :debug? debug?}))))
 
                    ;; --- Copy WASM Artifacts ---
                    (let [proj-build-dir-wasm (fs/path target-dir proj-dir "proj-build-wasm")]
@@ -782,36 +1205,128 @@
                      (println "Neither podman nor docker found, skipping cross-compilation.")
                      (do
                        (println "--> Using" (str container-cmd) "for cross-platform builds.")
-                       (let [default-platforms ["linux/amd64" "linux/aarch64" #_"windows/amd64" #_"windows/arm64"]
-                             target-platforms (if-let [p (:cross-platform opts)] [p] default-platforms)
-                             docker-image "nixos/nix"
-                             host-uid (str/trim (:out (tasks/shell {:out :string} "id -u")))
-                             host-gid (str/trim (:out (tasks/shell {:out :string} "id -g")))]
+                       (println "Using Containerfile for builds...")
+                       (let [default-platforms ["linux/amd64" "linux/aarch64"]
+                             target-platforms (if-let [p (:cross-platform opts)] [p] default-platforms)]
                          (doseq [platform target-platforms]
-                           (let [is-windows-build? (str/starts-with? platform "windows")
-                                 nix-shell-fragment (cond
-                                                      (= platform "windows/amd64") ".#windowsAmd64Cross"
-                                                      (= platform "windows/arm64") ".#windowsArm64Cross"
-                                                      :else ".")
-                                 docker-platform (if is-windows-build? "linux/amd64" platform)
-                                 target-flag (str "--target " (str/replace platform "/" "-"))
-                                 chown-library-dir (str/replace platform "/" "-")
-                                 nix-cmd (str "nix develop " nix-shell-fragment " --option filter-syscalls false --extra-experimental-features 'nix-command flakes' --command bb build --native --debug " target-flag)
-                                 docker-cmd (str/join " " ["set -ex;"
-                                                           (str "echo 'Running build for " platform " in " nix-shell-fragment " shell...';")
-                                                           nix-cmd ";"
-                                                           "echo 'Correcting ownership of generated files...';"
-                                                           (str "chown -R $HOST_UID:$HOST_GID "
-                                                                "target/sqlite-install-" chown-library-dir " "
-                                                                "target/libtiff-install-" chown-library-dir " "
-                                                                "target/" proj-dir "/proj-build-" chown-library-dir " "
-                                                                "resources/" chown-library-dir " || true;")])]
+                           (let [platform-tag (str/replace platform "/" "-")
+                                 output-dir (str "artifacts-" platform-tag)
+                                 ;; Determine if we're cross-compiling
+                                 current-arch (str/trim (:out (tasks/shell {:out :string} "uname -m")))
+                                 is-cross-compile? (not (or (and (= platform "linux/amd64")
+                                                                 (contains? (set ["x86_64" "amd64"]) current-arch))
+                                                            (and (= platform "linux/aarch64")
+                                                                 (contains? (set ["aarch64" "arm64"]) current-arch))))]
                              (println "--> Starting cross-platform build for" platform)
-                             (tasks/shell {:extra-env {"HOST_UID" host-uid "HOST_GID" host-gid}}
-                                          container-cmd "run" "--rm" "--platform" docker-platform
-                                          "-v" (str (fs/cwd) ":/work") "-w" "/work"
-                                          docker-image
-                                          "bash" "-c" docker-cmd))))))))
+                             (when is-cross-compile?
+                               (println "    (Cross-compiling from" current-arch "to" platform ")"))
+                             ;; Build the container for the specific platform
+                             (println "Building container for" platform "...")
+                             (let [;; For cross-compilation, always use Linux containers
+                                   ;; Windows builds use Linux container with MinGW cross-compiler
+                                   container-platform (if (str/starts-with? platform "windows/")
+                                                        "linux/amd64" ; Use Linux container for Windows cross-compilation
+                                                        platform) ; Use native platform for Linux builds
+                                   base-args [container-cmd "build"
+                                              "--platform" container-platform
+                                              "--target" "native-build"
+                                              "-t" (str "clj-proj-build:" platform-tag)]
+                                   ;; Add volume mount for local PROJ if using --local-proj
+                                   ;; Always pass TARGET_PLATFORM to select correct nix shell
+                                   base-args-with-platform (concat base-args
+                                                                   ["--build-arg" (str "TARGET_PLATFORM=" platform)])
+                                   final-args (if (:local-proj opts)
+                                                (do
+                                                  (println "    Mounting local PROJ from vendor/PROJ")
+                                                  (concat base-args-with-platform
+                                                          ["--volume" (str (fs/canonicalize "vendor/PROJ") ":/build/vendor/PROJ:ro")
+                                                           "--build-arg" "USE_LOCAL_PROJ=1"
+                                                           "."]))
+                                                (concat base-args-with-platform ["."]))]
+                               (apply tasks/shell final-args))
+
+                             ;; Extract artifacts from the container
+                             (println "Extracting artifacts from container...")
+                             (fs/delete-tree output-dir)
+                             (fs/create-dirs output-dir)
+
+                             ;; Create a temporary container and copy files out
+                             (let [container-id (str/trim (:out (tasks/shell {:out :string}
+                                                                             container-cmd "create"
+                                                                             (str "clj-proj-build:" platform-tag))))
+                                   proj-dir-path (str "/build/target/PROJ-" proj-version)]
+                               (try
+                                 ;; Copy the built artifacts
+                                 ;; First list what's in the platform directory
+                                 ;; Copy the built artifacts directly using cp without exec
+                                 ;; Copy all files from the resources directory
+                                 (tasks/shell {:continue true} container-cmd "cp"
+                                              (str container-id ":/build/resources/" platform-tag "/.")
+                                              output-dir)
+                                 ;; Copy shared files
+                                 (tasks/shell container-cmd "cp"
+                                              (str container-id ":/build/resources/proj.db")
+                                              output-dir)
+                                 (tasks/shell container-cmd "cp"
+                                              (str container-id ":/build/resources/proj.ini")
+                                              output-dir)
+
+                                 ;; Also copy the build directories for debugging if needed
+                                 (when debug?
+                                   (println "DEBUG: Copying build directories...")
+                                   (tasks/shell {:continue true} container-cmd "cp"
+                                                (str container-id ":/build/target/sqlite-install-" platform-tag)
+                                                output-dir)
+                                   (tasks/shell {:continue true} container-cmd "cp"
+                                                (str container-id ":/build/target/libtiff-install-" platform-tag)
+                                                output-dir)
+                                   (tasks/shell {:continue true} container-cmd "cp"
+                                                (str container-id ":" proj-dir-path "/proj-build-" platform-tag)
+                                                output-dir))
+
+                                 ;; Move artifacts to the correct location
+                                 (let [dest-dir (fs/path "resources" platform-tag)
+                                       ;; For Windows, look for DLL files in the proj-build-*/lib directory
+                                       proj-build-dir (first (fs/glob output-dir "proj-build-*/lib"))
+                                       ;; Find platform-specific library files
+                                       lib-files (cond
+                                                   (str/includes? platform-tag "windows")
+                                                   (concat (when proj-build-dir (fs/glob proj-build-dir "*.dll"))
+                                                           (fs/glob output-dir "*.dll"))
+
+                                                   :else
+                                                   (concat (when proj-build-dir (fs/glob proj-build-dir "*.so"))
+                                                           (fs/glob output-dir "*.so")
+                                                           (fs/glob output-dir "*.dylib")))]
+                                   (fs/create-dirs dest-dir)
+                                   ;; Copy library files
+                                   (doseq [lib-file lib-files]
+                                     (let [filename (fs/file-name lib-file)
+                                           ;; Rename Windows PROJ DLLs to libproj.dll for consistency
+                                           target-name (if (and (str/includes? platform-tag "windows")
+                                                                (re-matches (re-pattern ".*proj.*\\.dll") filename))
+                                                         "libproj.dll"
+                                                         filename)]
+                                       (println "Copying" (str lib-file) "to" (str (fs/path dest-dir target-name)))
+                                       (fs/copy lib-file (fs/path dest-dir target-name)
+                                                {:replace-existing true})))
+                                   ;; Copy shared files if they exist
+                                   (when (fs/exists? (fs/path output-dir "proj.db"))
+                                     (fs/copy (fs/path output-dir "proj.db")
+                                              (fs/path "resources" "proj.db")
+                                              {:replace-existing true}))
+                                   (when (fs/exists? (fs/path output-dir "proj.ini"))
+                                     (fs/copy (fs/path output-dir "proj.ini")
+                                              (fs/path "resources" "proj.ini")
+                                              {:replace-existing true})))
+
+                                 (finally
+                                   ;; Clean up the container
+                                   (tasks/shell container-cmd "rm" container-id)
+                                   ;; Clean up the temporary output directory
+                                   (fs/delete-tree output-dir))))
+
+                             (println "✓ Completed build for" platform))))))))
                (println "Build task finished."))))}
   update-macro-fn-keys
   {:doc "Extract fndefs-raw from fndefs.cljc and inject into macros.cljs with constants resolved"

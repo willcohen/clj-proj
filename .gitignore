@@ -73,4 +73,5 @@ src/cljc/net/willcohen/proj/macros.mjs
 src/cljc/net/willcohen/proj/wasm.mjs
 test/browser/playwright-report
 test/browser/test-results
+vendor
 WORKPLAN.md

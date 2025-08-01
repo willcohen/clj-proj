@@ -163,11 +163,6 @@ Coordinate arrays are implemented differently per platform:
 (graal?)  ; => true if using GraalVM
 ```
 
-#### Platform-Specific Optimization
-The library includes platform-specific optimizations:
-- **macOS**: Uses `install_name_tool` to fix library paths
-- **Native memory**: Leverages `dtype-next` for efficient array operations
-
 #### Cross-Platform Testing
 The test framework ensures consistent behavior across all implementations:
 ```clojure
@@ -212,13 +207,11 @@ The JVM implementation supports two backends:
 
 Currently supported platforms (native):
 - macOS/darwin Apple Silicon (arm64)
+- Linux x64 and arm64 (build process still needs improvement)
 
-Planned native platform support, currently GraalWasm fallback only:
-- Linux x64 and arm64 (build still failing during cross-compilation)
-
-Possible native platform support, currently GraalWasm fallback only:
-- macOS/darwin Intel (x86_64)
-- Windows x64 and arm64
+Not yet implemented:
+- macOS/darwin Intel (x86_64) - Not built/tested
+- Windows x64 and arm64 - Build completes but DLL has runtime dependency issues
 
 ### JDK 11+ with native library
 
@@ -269,12 +262,12 @@ On a computer where the native library was built:
 
 Idiomatic Java API is not yet present, but is possible.
 
-### JDK 23+ with GraalVM WebAssembly
+### JDK 21+ with GraalVM WebAssembly
 
 On platforms where no native library is available, this library falls back to
 running the WebAssembly transpiled version of PROJ through GraalVM's WebAssembly support.
 
-Users needing this transpiled PROJ must use at least JDK 23 due to GraalVM's requirements
+Users needing this transpiled PROJ must use at least JDK 21 due to GraalVM's requirements
 and should enable JVMCI to improve performance.
 
 #### How GraalVM Implementation Works
@@ -368,136 +361,183 @@ $ node index.mjs
 # Transformed coordinates will be displayed
 ```
 
+# clj-proj Build Guide
+
+## Prerequisites
+
+**Docker/Podman users**: 
+- Install Docker or Podman
+- **Resource requirements**: 150GB disk, 8GB RAM  
+- **Podman setup**: `podman machine init --disk-size 150 --memory 8192`
+
+**Babashka + Nix users**:
+- Install [Nix](https://nixos.org/download.html) and [direnv](https://direnv.net/)
+- **One-time setup**: `direnv allow`
+
 ## Building
 
-The project uses Babashka (bb) tasks for all build, test, and development operations:
+### Quick Reference
 
 ```bash
-bb tasks  # List all available tasks with descriptions
-
-# For tasks with options (build, clean), use --help to see details:
-bb build --help  # Shows build options
-bb clean --help  # Shows clean options
+bb tasks          # List all available commands
+bb build --help   # Show build options
+bb clean --help   # Show clean options
 ```
 
-### Quick Start
-
+**Docker/Podman users**: First build the development container:
 ```bash
-# Complete test run (builds everything, runs all tests)
-bb test-run
-
-# Build only what you need
-bb build:all      # Build native and WASM artifacts
-bb jar           # Create JAR file
-bb cherry        # Build JavaScript/ES6 module
+docker build --target dev -t clj-proj:dev .
+# or: podman build --target dev -t clj-proj:dev .
 ```
 
-### Build Commands
+**Rebuild the container when:**
+- Containerfile changes
+- flake.nix dependencies change  
+- After pulling latest changes that modify build environment
+- Add `--no-cache` flag to force complete rebuild if needed
 
+### Common Build Tasks
+
+**Native libraries (current platform):**
 ```bash
-# Build native libraries for current platform
+# Babashka + Nix
 bb build --native
-bb build -n        # Short alias
 
-# Build WebAssembly version
-bb build --wasm
-bb build -w        # Short alias
-
-# Build with debug output
-bb build --native --debug
-bb build --wasm --debug
-
-# Build all artifacts (native and WASM)
-bb build:all
-
-# Cross-compile for other platforms (requires Docker/Podman)
-# If on Mac, podman will need a machine initialized with
-# `podman machine init`, and will need at least 4GB of memory allocated:
-# `podman machine set --memory=4096
-bb build --cross-platform linux/amd64 # not quite working
-bb build --cross-platform linux/aarch64 # not quite working
-bb build --cross-platform windows/amd64 # windows may need rethinking
-bb build --cross   # Build for all default platforms
-
-# Clean build artifacts
-bb clean           # Clean everything
-bb clean --native  # Clean only native artifacts
-bb clean --wasm    # Clean only WASM artifacts
-bb clean --resources  # Clean proj.db, proj.ini
+# Docker/Podman alternative  
+docker run --rm -v $(pwd):/workspace clj-proj:dev bb build --native
 ```
 
-### Packaging Commands
-
+**WebAssembly build:**
 ```bash
-# Build JAR file
+# Babashka + Nix  
+bb build --wasm
+
+# Docker/Podman alternative
+docker run --rm -v $(pwd):/workspace clj-proj:dev bb build --wasm
+```
+
+**Cross-platform builds:**
+```bash
+# Babashka + Nix (uses Docker internally)
+bb build --cross-platform linux/amd64     # ✅ Working
+bb build --cross-platform linux/arm64     # ✅ Working  
+bb build --cross-platform windows/amd64   # ⚠️  Builds but DLL won't load
+bb build --cross                          # Build all default platforms
+
+# Docker/Podman direct
+docker build --platform linux/amd64 --target export --output type=local,dest=./artifacts .
+docker build --platform linux/arm64 --target export --output type=local,dest=./artifacts .
+```
+
+**Complete build + test:**
+```bash
+# Babashka + Nix
+bb test-run       # Builds everything, runs all tests
+
+# Docker/Podman
+docker build --target test-all .
+```
+
+### Development Setup
+
+**Babashka + Nix:**
+```bash
+direnv allow      # One-time setup
+bb dev            # Rich REPL with Portal
+bb demo           # Browser demo at localhost:8080
+```
+
+**Docker/Podman:**
+```bash
+# First-time setup: build the development container
+docker build --target dev -t clj-proj:dev .
+
+# Then start interactive development environment
+docker run -it --rm -v $(pwd):/workspace -p 7888:7888 -p 8080:8080 clj-proj:dev
+# Inside container: bb dev, bb demo, etc.
+```
+
+### Packaging
+
+**JVM (JAR file):**
+```bash
+# Babashka + Nix
 bb jar
 
-# Update pom.xml
-bb pom
-
-# Build JavaScript ES6 module
-bb cherry         # Compiles ClojureScript and bundles with esbuild
-bb update-macro-fn-keys  # Update macros (runs automatically with cherry)
-
-# Validate package contents
-bb jar-contents   # List all files in the JAR
-bb npm-contents   # List all files that would be in npm package
+# Docker/Podman  
+docker run --rm -v $(pwd):/workspace clj-proj:dev bb jar
 ```
 
-### Build Process Details
+**JavaScript (ES6 module):**
+```bash
+# Babashka + Nix
+bb cherry
 
-1. **Native builds** compile PROJ with its dependencies (SQLite, LibTIFF) for the host platform
-   - Artifacts go to `resources/{platform}/` (e.g., `resources/darwin-aarch64/`)
-   - Automatically detects host OS and architecture
-   - Builds are cached - use `bb clean` to force rebuild
+# Docker/Podman
+docker run --rm -v $(pwd):/workspace clj-proj:dev bb cherry
+```
 
-2. **WASM builds** use emscripten to compile PROJ into WebAssembly with JavaScript glue
-   - Requires emscripten tools (`emcc`, `emcmake`, `emmake`) in PATH
-   - Artifacts go to `resources/wasm/` AND `src/cljc/net/willcohen/proj/`
-   - The `cherry` task builds the JavaScript ES6 wrapper module
+### Build Process Overview
+
+1. **Native builds** compile PROJ + dependencies (SQLite, LibTIFF) for the host platform
+   - **Output**: `resources/{platform}/` (e.g., `resources/darwin-aarch64/`)
+   - **Linux**: Fully static linking
+   - **Windows**: Static linking (still has runtime dependency issues, being fixed)
+
+2. **WASM builds** use emscripten to compile PROJ into WebAssembly
+   - **Output**: `resources/wasm/` and `src/cljc/net/willcohen/proj/`
+   - **Requirements**: emscripten tools in PATH (automatically provided in containers)
 
 3. **Cross-platform builds** use Docker containers with Nix for reproducible builds
-   - Requires Docker or Podman installed
-   - Uses NixOS flake environments for consistent toolchains
-   - Windows build appear possible but not yet functional
-
-The build system handles:
-- Downloading and compiling dependencies (SQLite, LibTIFF, zlib)
-- Platform-specific configuration and library naming
-- Library path management (e.g., `@loader_path` on macOS)
-- Artifact organization into appropriate directories
+   - **Requirements**: Docker or Podman installed  
+   - **Resource requirements**: 150GB disk, 8GB RAM
+   - **Podman setup**: `podman machine init --disk-size 150 --memory 8192`
 
 ## Testing
 
-Run tests individually or all at once:
-
+**Run all tests:**
 ```bash
-# Run all tests (includes unit, integration, and downstream tests)
+# Babashka + Nix  
 bb test:all
 
-# Test native FFI implementation
-bb test:ffi
-
-# Test GraalVM WebAssembly implementation  
-bb test:graal
-
-# Test JavaScript/Node.js implementation
-bb test:node
-
-# Run browser integration tests
-bb test:playwright
-
-# Test JAR as a downstream Clojure dependency
-bb test:jar
-
-# Test npm package as a downstream JavaScript dependency  
-bb test:npm
-
-# Test on Linux platforms via Docker
-bb test:linux
+# Docker/Podman
+docker build --target test-all .
 ```
 
-The test framework uses a macro to run the same tests against each implementation, ensuring consistent behavior across platforms. The downstream tests (`test:jar` and `test:npm`) verify that the published artifacts work correctly when consumed by real projects.
+**Test specific implementations:**
+```bash
+# Native FFI
+bb test:ffi                    # Babashka + Nix
+docker run --rm -v $(pwd):/workspace clj-proj:dev bb test:ffi
+
+# GraalVM WebAssembly  
+bb test:graal                  # Babashka + Nix
+docker run --rm -v $(pwd):/workspace clj-proj:dev bb test:graal
+
+# JavaScript/Node.js
+bb test:node                   # Babashka + Nix
+docker run --rm -v $(pwd):/workspace clj-proj:dev bb test:node
+
+# Browser integration
+bb test:playwright             # Babashka + Nix (requires display)
+# (Not available in headless containers)
+```
+
+**Test packaged artifacts:**
+```bash  
+# JAR as downstream dependency
+bb test:jar                    # Babashka + Nix
+docker run --rm -v $(pwd):/workspace clj-proj:dev bb test:jar
+
+# npm package as downstream dependency
+bb test:npm                    # Babashka + Nix  
+docker run --rm -v $(pwd):/workspace clj-proj:dev bb test:npm
+
+# Linux cross-platform testing
+bb test:linux                  # Uses Docker internally
+```
+
+The test framework runs identical tests against all implementations, ensuring consistent behavior across platforms.
 
 ## Architecture Notes
 
@@ -601,41 +641,81 @@ bb quickdoc  # Generates docs from source
 bb download-grids
 ```
 
-### 6. Complete Task Reference
+### 6. Task Reference
 
-Run `bb tasks` to see all available tasks. Here's a quick reference:
+Run `bb tasks` for complete list. Key commands:
 
-**Build & Package Tasks:**
-- `build` - Build artifacts with options (use `--help` for details)
-- `build:all` - Build both native and WASM artifacts
-- `jar` - Build JAR file for JVM distribution
-- `pom` - Generate/update pom.xml
-- `cherry` - Compile ClojureScript and bundle with esbuild
-- `update-macro-fn-keys` - Update macros (runs automatically with cherry)
+**Build & Package:**
+- `bb build --help` - Show build options (native/wasm/cross)
+- `bb build:all` - Build native + WASM artifacts  
+- `bb jar` - Build JAR file for JVM
+- `bb cherry` - Build JavaScript ES6 module
+- `bb pom` - Generate/update pom.xml
 
-**Test Tasks:**
-- `test:all` - Run all test suites
-- `test:ffi` - Test native FFI implementation
-- `test:graal` - Test GraalVM WASM implementation
-- `test:node` - Test JavaScript/Node.js implementation
-- `test:cljs` - Run ClojureScript tests in Node.js
-- `test:playwright` - Run browser integration tests
-- `test:jar` - Test JAR as downstream dependency
-- `test:npm` - Test npm package as downstream dependency
-- `test:linux` - Test on Linux platforms via Docker
-- `test-run` - Complete build and test cycle
+**Testing:**
+- `bb test:all` - Run all tests
+- `bb test:ffi` / `bb test:node` / `bb test:graal` - Test specific implementations
+- `bb test-run` - Complete build + test cycle
 
-**Development Tasks:**
-- `dev` - Rich REPL with Portal and development tools
-- `nrepl` - Basic nREPL server on port 7888
-- `demo` - Browser demo at http://localhost:8080/docs/
+**Development:**
+- `bb dev` - Rich REPL with Portal
+- `bb nrepl` - nREPL server (port 7888)
+- `bb demo` - Browser demo (localhost:8080)
 
-**Utility Tasks:**
-- `clean` - Clean artifacts with options (use `--help` for details)
-- `jar-contents` - List all files in the JAR
-- `npm-contents` - List files that would be in npm package
-- `download-grids` - Download PROJ grid files (work in progress)
-- `quickdoc` - Generate API documentation
+**Utilities:**
+- `bb clean --help` - Show clean options
+- `bb jar-contents` - List files in JAR
+- `bb npm-contents` - List files in npm package
+- `bb proj:clone --help` - Local PROJ development
+
+### 7. Local PROJ Development Workflow
+
+For developers working on the PROJ C library itself, clj-proj provides a workflow to test local PROJ changes against the bindings before submitting upstream.
+
+**Setup:**
+```bash
+# Clone PROJ repository locally
+bb proj:clone                    # Clone to vendor/PROJ (master branch)
+bb proj:clone --branch=feature   # Clone specific branch
+bb proj:clone --update           # Update existing clone
+```
+
+**Development Workflow:**
+```bash
+# Make changes to PROJ C code
+cd vendor/PROJ
+# ... edit C files, add features, fix bugs ...
+git commit -m "experimental change"
+cd ../..
+
+# Test changes against clj-proj
+bb build --native --local-proj --debug    # Use local PROJ instead of release
+bb test:ffi                                # Verify bindings still work
+
+# Test WASM compatibility
+bb build --wasm --local-proj
+bb test:node
+
+# Cross-platform verification
+bb build --cross --local-proj             # Test musl builds with local PROJ
+```
+
+**Local PROJ Tasks:**
+- `proj:clone` - Clone OSGeo/PROJ repository with options (`--help` for details)
+
+**Local PROJ Build Flags:**
+- `--local-proj` - Use `vendor/PROJ` instead of released PROJ version (works with any build task)
+
+**Directory Structure:**
+```
+clj-proj/
+├── vendor/           # gitignored - your local development area
+│   └── PROJ/         # cloned OSGeo/PROJ repository
+├── bb.edn
+└── ...
+```
+
+This workflow enables tight integration testing between PROJ C library development and clj-proj bindings, catching API changes and build issues early in the development cycle.
 
 ## License
 
@@ -730,3 +810,129 @@ LIABILITY, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
 OF THIS SOFTWARE.
 
 ```
+
+--
+
+This project bundles SQLite, which is in the public domain. See 
+[SQLite Copyright](https://www.sqlite.org/copyright.html) for details.
+
+--
+
+This project uses [zlib](https://zlib.net), which is distributed under the following terms:
+
+```
+Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler
+
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+```
+
+--
+
+This project statically links [musl libc](https://musl.libc.org/) for Linux builds,
+which is distributed under the following terms:
+
+```
+Copyright © 2005-2020 Rich Felker, et al.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+--
+
+This project statically links MinGW-w64 runtime libraries for Windows builds.
+The MinGW-w64 runtime is distributed under various permissive licenses:
+
+```
+MinGW-w64 runtime licensing
+***************************
+
+This program or library was built using MinGW-w64 and statically
+linked against the MinGW-w64 runtime. Some parts of the runtime
+are under licenses which require that the copyright and license
+notices are included when distributing the code in binary form.
+These notices are listed below.
+
+
+========================
+Overall copyright notice
+========================
+
+Copyright (c) 2009, 2010, 2011, 2012, 2013 by the mingw-w64 project
+
+This license has been certified as open source. It has also been designated
+as GPL compatible by the Free Software Foundation (FSF).
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+   1. Redistributions in source code must retain the accompanying copyright
+      notice, this list of conditions, and the following disclaimer.
+   2. Redistributions in binary form must reproduce the accompanying
+      copyright notice, this list of conditions, and the following disclaimer
+      in the documentation and/or other materials provided with the
+      distribution.
+   3. Names of the copyright holders must not be used to endorse or promote
+      products derived from this software without prior written permission
+      from the copyright holders.
+   4. The right to distribute this software or to use it for any purpose does
+      not give you the right to use Servicemarks (sm) or Trademarks (tm) of
+      the copyright holders.  Use of them is covered by separate agreement
+      with the copyright holders.
+   5. If any files are modified, you must cause the modified files to carry
+      prominent notices stating that you changed the files and the date of
+      any change.
+
+Disclaimer
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY EXPRESSED
+OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
+OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+See [MinGW-w64 runtime licensing](https://sourceforge.net/p/mingw-w64/mingw-w64/ci/master/tree/COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt)
+
+--
+
+### Data Files
+
+This project includes PROJ data files (proj.db, proj.ini) which contain
+coordinate system definitions from various sources including EPSG. These
+are distributed under the same terms as PROJ itself (MIT/X11 style license).

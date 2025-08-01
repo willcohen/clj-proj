@@ -4,6 +4,16 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **Container-Based Build System**:
+  - `Containerfile` with builds for native, WASM, and development targets
+  - Cross-platform compilation support for `linux/amd64` and `linux/aarch64`
+  - Local PROJ development workflow with `--build-arg USE_LOCAL_PROJ=1`
+
+- **Local PROJ Development Workflow**:
+  - `bb proj:clone` task to clone OSGeo/PROJ repository to `vendor/PROJ`
+  - `--local-proj` flag for all build tasks to use local PROJ instead of release version
+
 ## [0.1.0-alpha2] - 2025-07-24
 
 ### Added

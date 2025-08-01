@@ -28,20 +28,23 @@
     (case arch
       "amd64" :amd64
       "x86_64" :amd64
+      "x86-64" :amd64
       "i386" :x86
       "i486" :x86
       "i586" :x86
       "i686" :x86
       "i786" :x86
       "i886" :x86
-      "aarch64" :aarch64)))
+      "aarch64" :aarch64
+      ; Default case - convert to keyword and handle unknown archs
+      (keyword (s/replace arch #"[_-]" "")))))
 
 (defn get-proj-filename
   [os]
   (case os
     :android "libproj"
     :darwin "libproj"
-    :windows "projlib"
+    :windows "proj" ; JNA on Windows expects just "proj" not "libproj"
     :linux "libproj"))
 
 (defn get-libtiff-filename
@@ -67,7 +70,6 @@
     :darwin ".dylib"
     :windows ".dll"
     :linux ".so"))
-
 
 (defn copy-file
   [p f]
@@ -180,15 +182,17 @@
                  pf (locate-proj-file tmpdir)
                  pd (locate-proj-db tmpdir)
                  _ (locate-grids tmpdir)
-                 tf (locate-libtiff-file tmpdir)
+                 os (get-os)
+                 ;; Only load separate libtiff for Darwin (macOS) - Linux has it statically linked
+                 tf (when (= os :darwin) (locate-libtiff-file tmpdir))
                  p (.getCanonicalPath (.getParentFile pf))
-                 t (.getCanonicalPath (.getParentFile tf))
+                 t (when tf (.getCanonicalPath (.getParentFile tf)))
                  pl (-> (.getName pf)
                         (.replaceFirst "[.][^.]+$" "")
                         (.replaceFirst "lib" ""))
-                 tl (-> (.getName tf)
-                        (.replaceFirst "[.][^.]+$" "")
-                        (.replaceFirst "lib" ""))
+                 tl (when tf (-> (.getName tf)
+                                 (.replaceFirst "[.][^.]+$" "")
+                                 (.replaceFirst "lib" "")))
                  s (dt-ffi/library-singleton #'fn-defs)]
                ;; (when (dt-ffi/jdk-ffi?)
                ;;   (System/setProperty "java.library.path" (.toString tmpdir)))

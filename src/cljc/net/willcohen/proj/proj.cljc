@@ -545,8 +545,8 @@
      (when (nil? @implementation)
        (throw (js/Error. "proj/init! must be called and awaited before using proj functions")))))
 
-;; TODO: This fn is too long. I need it extracted to helpers. Consider the ideas in WORKPLAN
-;; about eliminating cs and just integrating it here.
+;; TODO: This fn is too long, need to extract it into helpers.
+;; Consider integrating cs into this functionality.
 (defn extract-args
   "Extract arguments from opts map based on function definition, applying defaults.
    Supports both underscore and hyphenated parameter names for better usability."
