@@ -52,12 +52,20 @@ describe('proj-wasm Node.js API', () => {
   test('can create coordinate transformation', () => {
     const context = proj.context_create();
     
-    const transformer = proj.proj_create_crs_to_crs({
-      source_crs: "EPSG:4326",
-      target_crs: "EPSG:3857",
-      context: context
-    });
+    let transformer = null;
+    let error = null;
     
+    try {
+      transformer = proj.proj_create_crs_to_crs({
+        source_crs: "EPSG:4326",
+        target_crs: "EPSG:3857",
+        context: context
+      });
+    } catch (e) {
+      error = e;
+    }
+    
+    assert(!error, `Should not throw error for valid CRS transformation: ${error?.message}`);
     assert(transformer, 'transformation should be created');
     assert(transformer !== 0, 'transformation should not be null pointer');
   });
@@ -139,31 +147,52 @@ describe('proj-wasm Node.js API', () => {
   test('handles invalid CRS gracefully', () => {
     const context = proj.context_create();
     
-    // PROJ throws exceptions for invalid CRS, so we need to catch them
-    let caught = false;
+    // Test 1: Invalid CRS should throw an exception or return null
+    let invalidCaught = false;
+    let invalidTransformer = null;
     try {
-      const transformer = proj.proj_create_crs_to_crs({
+      invalidTransformer = proj.proj_create_crs_to_crs({
         source_crs: "INVALID:999999",
         target_crs: "EPSG:4326",
         context: context
       });
-      
-      // If no exception, should return null/0
-      assert(
-        !transformer || transformer === 0,
-        'Invalid CRS should return null or 0'
-      );
     } catch (error) {
-      // Exception is acceptable for invalid CRS
-      caught = true;
+      invalidCaught = true;
+      // Invalid CRS error should mention the invalid CRS
       assert(
-        error.message.includes('crs not found') || error.message.includes('NoSuchAuthorityCodeException'),
-        `Expected CRS error, got: ${error.message}`
+        error.message.includes('INVALID:999999') || 
+        error.message.includes('crs not found') || 
+        error.message.includes('NoSuchAuthorityCodeException'),
+        `Expected CRS error for invalid CRS, got: ${error.message}`
       );
     }
     
-    // Either exception thrown or null/0 returned is acceptable
-    assert(caught || true, 'Invalid CRS handled gracefully');
+    // Test 2: Valid CRS should NOT throw an exception (this tests that the database is working)
+    let validCaught = false;
+    let validTransformer = null;
+    try {
+      validTransformer = proj.proj_create_crs_to_crs({
+        source_crs: "EPSG:4326",
+        target_crs: "EPSG:3857",
+        context: context
+      });
+    } catch (error) {
+      validCaught = true;
+      assert.fail(`Valid CRS EPSG:4326 to EPSG:3857 should not throw an exception, but got: ${error.message}`);
+    }
+    
+    // Verify the results
+    if (!invalidCaught) {
+      assert(
+        !invalidTransformer || invalidTransformer === 0,
+        'Invalid CRS should return null or 0 if no exception'
+      );
+    }
+    
+    assert(
+      validTransformer && validTransformer !== 0,
+      'Valid CRS transformation should return a non-null transformer'
+    );
   });
 
   test('can query context errors', () => {

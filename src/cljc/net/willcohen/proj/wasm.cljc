@@ -192,20 +192,38 @@
   #?(:clj
       ;; GraalVM implementation with exception handling
      (let [p-instance @p
-           ccall-fn (.getMember p-instance "ccall")]
-       (when *runtime-log-level* (log/log *runtime-log-level* (str "Graal ccall: " f " " return-type " " arg-types " " args)))
+           ccall-fn (.getMember p-instance "ccall")
+           ;; Convert args - pointers to integers, nil to 0
+           ;; TrackablePointer is a record with :address key
+           ;; Context atoms contain {:ptr TrackablePointer ...}
+           convert-arg (fn [arg]
+                         (cond
+                           ;; TrackablePointer record -> extract address
+                           (and (record? arg) (contains? arg :address)) (:address arg)
+                           ;; Context atom -> extract :ptr's :address
+                           (and (instance? clojure.lang.IDeref arg)
+                                (map? @arg)
+                                (contains? @arg :ptr))
+                           (let [ptr (:ptr @arg)]
+                             (if (and (record? ptr) (contains? ptr :address))
+                               (:address ptr)
+                               ptr))
+                           (nil? arg) 0
+                           :else arg))
+           converted-args (mapv convert-arg args)]
+       (when *runtime-log-level* (log/log *runtime-log-level* (str "Graal ccall: " f " " return-type " " arg-types " " converted-args)))
        (try
          (tsgcd
           (.execute ccall-fn (into-array Object [f
                                                  (name return-type)
                                                  (ProxyArray/fromArray (object-array (map name arg-types)))
-                                                 (ProxyArray/fromArray (object-array args))])))
+                                                 (ProxyArray/fromArray (object-array converted-args))])))
          (catch Exception e
            ;; Handle C++ exceptions from WASM - these should return nil for pointer types
            (when *runtime-log-level* (log/log *runtime-log-level* (str "Graal ccall exception for " f ": " (.getMessage e))))
            (case return-type
              :pointer nil ; Return nil for pointer functions that fail
-             :string nil ; Return nil for string functions that fail  
+             :string nil ; Return nil for string functions that fail
              :int32 0 ; Return 0 for int functions that fail
              :float64 0.0 ; Return 0.0 for float functions that fail
              :size-t 0 ; Return 0 for size-t functions that fail
@@ -214,9 +232,18 @@
      :cljs
       ;; ClojureScript implementation
      (let [p-instance @p
-           ccall-fn (.-ccall p-instance)]
-       (when *runtime-log-level* (js/console.log "CLJS ccall:" f return-type arg-types args))
-       (ccall-fn f (name return-type) (clj->js (map name arg-types)) (clj->js args)))))
+           ccall-fn (.-ccall p-instance)
+           ;; Convert args - context objects to pointers, nil to 0
+           convert-arg (fn [arg]
+                         (cond
+                           ;; JS context object {ptr: ..., type: "proj-context"} -> extract ptr
+                           (and (object? arg) (.-ptr arg)) (.-ptr arg)
+                           ;; nil -> 0 for NULL pointers
+                           (nil? arg) 0
+                           :else arg))
+           converted-args (map convert-arg args)]
+       (when *runtime-log-level* (js/console.log "CLJS ccall:" f return-type arg-types (clj->js converted-args)))
+       (ccall-fn f (name return-type) (clj->js (map name arg-types)) (clj->js converted-args)))))
 
 #?(:clj
    (defprotocol Pointerlike

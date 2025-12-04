@@ -1,6 +1,7 @@
 (ns net.willcohen.proj.proj-test
   #?(:clj (:require [clojure.test :refer :all]
                     [net.willcohen.proj.proj :as proj] ; Public API for PROJ
+                    [net.willcohen.proj.wasm :as wasm] ; For debug logging
                     [clojure.tools.logging :as log]
                     [tech.v3.resource :as resource])
      :cljs (:require [cljs.test :refer-macros [deftest is testing]]
@@ -67,7 +68,10 @@
        ;; The `with-each-implementation` macro will call `proj/force-ffi!` or `proj/force-graal!`.
        ;; `proj/proj-init` is idempotent and will ensure the library is loaded.
        ;(proj/proj-init :info)
-       (f) ; Run the tests
+       ;; WASM/GraalVM ccall logging - logs at the specified level (e.g. :info, :warn, :debug)
+       ;; Set to nil to disable ccall logging entirely
+       (binding [wasm/*runtime-log-level* nil]
+         (f)) ; Run the tests
        ;(log/info "Global test teardown: (if necessary, clean up global PROJ state here).")
        ;; If there's a global `proj/proj-reset` or similar cleanup, it would go here.
        )))

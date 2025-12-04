@@ -72,6 +72,9 @@ src/cljc/net/willcohen/proj/fndefs.mjs
 src/cljc/net/willcohen/proj/macros.mjs
 src/cljc/net/willcohen/proj/wasm.mjs
 test/browser/playwright-report
+test/browser/proj.db
+test/browser/proj.ini
+test/browser/proj-emscripten.wasm
 test/browser/test-results
 vendor
 WORKPLAN.md

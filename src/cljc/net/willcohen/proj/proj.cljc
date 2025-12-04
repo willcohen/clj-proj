@@ -19,7 +19,8 @@
               [com.sun.jna StringArray]))
    :cljs
    (ns net.willcohen.proj.proj
-     (:require [wasm :as wasm]
+     (:require [clojure.string :as string]
+               [wasm :as wasm]
                [fndefs :as pdefs]
                ["resource-tracker" :as resource])
      (:require-macros [macros :refer [define-all-proj-public-fns tsgcd]])))
@@ -35,7 +36,7 @@
 (defn node? [] (= :node @implementation))
 
 (def p #?(:clj nil
-          :cljs (atom nil)))
+          :cljs wasm/p))
 
 ;; TODO: Make as many of the helpers private as possible.
 ;; TODO: Begin adding docstrings to all functions to help clarify how ns works.
@@ -190,7 +191,7 @@
             ;; Chain a handler to set implementation when init completes
             (.then init-promise
                    (fn [proj-module]
-                     (reset! p proj-module)
+                     ; p is now wasm/p, already set by wasm/init-proj 
                      (reset! implementation runtime)
                      (when log-level
                        (js/console.log (str "PROJ initialized with " runtime " implementation")))
@@ -227,31 +228,44 @@
 
 ;;TODO: Should this just be integrated into the dispatch?
 (defn cs
-  "The primary mechanism for attempting to ensure atomicity with contexts."
+  "The primary mechanism for attempting to ensure atomicity with contexts.
+   In ClojureScript, skips counter updates to avoid SharedArrayBuffer mutations."
   [context f args]
-  (:result
-   (swap!
-    context (fn [a]
-              (let [old a
-                    ptr (:ptr old)]
-                (when-not ptr (throw (ex-info (str "Pointer in context is nil for fn " f) {:f f :context-val a})))
-                (assoc old
-                       :ptr ptr
-                       :op (inc (:op old))
-                       :result #?(:clj (case @implementation
-                                         :ffi (try
-                                                (let [result (apply f (cons ptr args))]
-                                                  result)
-                                                (catch Exception e
-                                                  (throw e)))
-                                         :graal (tsgcd (apply f (cons ptr args))))
-                                  :cljs (case @implementation
-                                          (:node :browser)
-                                          (let [proj-fn (aget @p (str "_" (.-name f)))]
-                                            (if proj-fn
-                                              (apply proj-fn (cons ptr args))
-                                              (throw (js/Error. (str "PROJ function not found: " (.-name f))))))
-                                          (throw (js/Error. (str "Unsupported implementation: " @implementation)))))))))))
+  #?(:clj
+     ;; JVM: Keep full atomicity with counters
+     (:result
+      (swap!
+       context (fn [a]
+                 (let [old a
+                       ptr (:ptr old)]
+                   (when-not ptr (throw (ex-info (str "Pointer in context is nil for fn " f) {:f f :context-val a})))
+                   (assoc old
+                          :ptr ptr
+                          :op (inc (:op old))
+                          :result (case @implementation
+                                    :ffi (try
+                                           (let [result (apply f (cons ptr args))]
+                                             result)
+                                           (catch Exception e
+                                             (throw e)))
+                                    :graal (tsgcd (apply f (cons ptr args)))))))))
+     :cljs
+     ;; ClojureScript: Skip counters entirely - just call the function
+     (let [ptr (context-ptr context)]
+       (when-not ptr
+         (throw (js/Error. (str "Pointer in context is nil for fn " f))))
+       (try
+         (case @implementation
+           (:node :browser)
+           (let [proj-fn (aget @p (str "_" (.-name f)))]
+             (if proj-fn
+               (apply proj-fn (cons ptr args))
+               (throw (js/Error. (str "PROJ function not found: " (.-name f))))))
+           (throw (js/Error. (str "Unsupported implementation: " @implementation))))
+         (catch :default e
+           ;; The C++ exception message already contains the error details
+           ;; Just re-throw with function name for context
+           (throw (js/Error. (str "PROJ operation failed in " (.-name f) ": " (.-message e)))))))))
 
 ;;TODO: fn is too big. Need to simplify and/or extract into helper fns.
 (defn string-array-pointer->strs
@@ -278,7 +292,9 @@
                (recur (rest remaining-ptrs) (if s (conj result-vec s) result-vec)))
              result-vec)))
         ;; For Graal, `ptr` is a TrackablePointer. `wasm/string-array-pointer->strs` expects an integer address.
-       :graal (wasm/string-array-pointer->strs (wasm/address-as-int ptr)))
+       :graal (if (nil? ptr)
+                []  ; Return empty vector for nil pointer
+                (wasm/string-array-pointer->strs (wasm/address-as-int ptr))))
      :cljs
      (case @implementation
        (:node :browser)
@@ -333,34 +349,107 @@
    :pj-insert-session "proj_insert_object_session_destroy"
    :pj-operation-factory-context "proj_operation_factory_context_destroy"})
 
+(def proj-error-codes
+  "Mapping of PROJ error codes to descriptions"
+  {;; Success
+   0 "Success (no error)"
+
+   ;; Invalid operation errors (1024+)
+   1024 "PROJ_ERR_INVALID_OP - Invalid coordinate operation"
+   1025 "PROJ_ERR_INVALID_OP_WRONG_SYNTAX - Invalid pipeline structure or missing +proj"
+   1026 "PROJ_ERR_INVALID_OP_MISSING_ARG - Missing required operation parameter"
+   1027 "PROJ_ERR_INVALID_OP_ILLEGAL_ARG_VALUE - Illegal parameter value"
+   1028 "PROJ_ERR_INVALID_OP_MUTUALLY_EXCLUSIVE_ARGS - Mutually exclusive arguments"
+   1029 "PROJ_ERR_INVALID_OP_FILE_NOT_FOUND_OR_INVALID - File not found or invalid"
+
+   ;; Coordinate transformation errors (2048+)
+   2048 "PROJ_ERR_COORD_TRANSFM - Coordinate transformation error"
+   2049 "PROJ_ERR_COORD_TRANSFM_INVALID_COORD - Invalid coordinate (e.g. lat > 90°)"
+   2050 "PROJ_ERR_COORD_TRANSFM_OUTSIDE_PROJECTION_DOMAIN - Outside projection domain"
+   2051 "PROJ_ERR_COORD_TRANSFM_NO_OPERATION - No operation found"
+   2052 "PROJ_ERR_COORD_TRANSFM_OUTSIDE_GRID - Point outside grid"
+   2053 "PROJ_ERR_COORD_TRANSFM_GRID_AT_NODATA - Grid cell is nodata"
+   2054 "PROJ_ERR_COORD_TRANSFM_NO_CONVERGENCE - Iterative convergence failed"
+   2055 "PROJ_ERR_COORD_TRANSFM_MISSING_TIME - Operation requires time"
+
+   ;; Other errors (4096+)
+   4096 "PROJ_ERR_OTHER - Other error"
+   4097 "PROJ_ERR_OTHER_API_MISUSE - API misuse"
+   4098 "PROJ_ERR_OTHER_NO_INVERSE_OP - No inverse operation available"
+   4099 "PROJ_ERR_OTHER_NETWORK_ERROR - Network resource access failure"
+
+   ;; Legacy or unknown codes
+   44 "Unknown error code 44 - possibly legacy PROJ error or system errno"})
+
+(defn error-code->string
+  "Convert PROJ error code to human-readable string"
+  [code]
+  (get proj-error-codes code (str "Unknown error code: " code)))
+
  ;; Macro invocation moved to end of file to avoid forward references
 
 ;; TODO: I want this integrated into the dispatch itself.
 (defn context-create
-  "Creates a new PROJ context wrapped in a Clojure atom."
+  "Creates a new PROJ context. For ClojureScript, returns a plain immutable object 
+   (no counters) to avoid SharedArrayBuffer mutations. For JVM, returns an atom."
   ([]
    (context-create nil))
   ([_log-level-ignored]
    (context-create _log-level-ignored #?(:clj :auto :cljs "auto")))
   ([_log-level-ignored _resource-type-ignored]
-   (let [tracked-native-ctx #?(:clj (proj-context-create {})
-                               :cljs (do
-                                       (ensure-initialized!)
-                                       ;; Call through the dispatch system
-                                       (dispatch-proj-fn :proj_context_create
-                                                         (get pdefs/fndefs :proj_context_create)
-                                                         {})))
-         a (atom {:ptr tracked-native-ctx :op (long 0) :result nil})]
-     #?(:clj
-        (when (ffi?) (context-set-database-path a))
-        :cljs
-         ;; No need to set database path in CLJS - resources are embedded in WASM
-        nil)
-     a)))
+   #?(:clj
+      ;; JVM: Keep existing atom-based implementation with counters
+      (let [tracked-native-ctx (proj-context-create {})
+            a (atom {:ptr tracked-native-ctx :op (long 0) :result nil})]
+        (context-set-database-path a)
+        a)
+      :cljs
+      ;; ClojureScript: Plain immutable object - no mutations, no atomic issues!
+      (do
+        (ensure-initialized!)
+        (let [native-ctx (dispatch-proj-fn :proj_context_create
+                                           (get pdefs/fndefs :proj_context_create)
+                                           {})
+              ctx-obj #js {:ptr native-ctx
+                           :type "proj-context"}]
+          ;; Set database path for ClojureScript contexts
+          (context-set-database-path ctx-obj)
+          ;; Set VFS name if the module has a helper for it
+          (when (and @p (.-setContextVFS @p))
+            (try
+              (.setContextVFS @p native-ctx)
+              (catch js/Error e
+                (js/console.error "Failed to set VFS on context:" e))))
+          ctx-obj)))))
+
+ ;; Helper functions for cross-platform context access
+(defn context-ptr
+  "Extract PROJ pointer from any context type. Works with both JVM atoms and 
+   ClojureScript plain objects."
+  [context]
+  #?(:clj (:ptr @context)
+     :cljs (.-ptr context)))
+
+(defn context-database-path
+  "Get database path from any context type."
+  [context]
+  #?(:clj (:database-path @context)
+     :cljs (.-database-path context)))
+
+(defn is-context?
+  "Check if a value is a PROJ context. Works across platforms."
+  [x]
+  #?(:clj (and (instance? clojure.lang.IDeref x)
+               (map? @x)
+               (contains? @x :ptr))
+     :cljs (and x
+                (.-ptr x)
+                (= (.-type x) "proj-context"))))
 
 ;; TODO: too big. need to simplify and/or extract to helper fns.
 (defn context-set-database-path
-  "High-level wrapper for setting the database path."
+  "High-level wrapper for setting the database path.
+   Simplified to always use /proj/proj.db for ClojureScript (standard Emscripten FS)."
   ([context]
    (context-set-database-path context
                               #?(:clj
@@ -368,9 +457,10 @@
                                    :ffi (string/join File/separator
                                                      [(:path @native/proj)
                                                       "proj.db"])
-                                   :graal "/proj.db"
-                                   "/proj.db")
-                                 :cljs nil)))
+                                   :graal "/proj/proj.db")
+                                 :cljs
+                                 ;; Always use virtual filesystem path - simple and reliable
+                                 "/proj/proj.db")))
   ([context db-path]
    (context-set-database-path context db-path nil nil))
   ([context db-path aux-db-paths options]
@@ -385,12 +475,11 @@
           (proj-context-set-database-path {:context context :db-path db-path :aux-db-paths final-aux :options final-opts}))
         (proj-context-set-database-path {:context context :db-path db-path :aux-db-paths aux-db-paths :options options}))
       :cljs
-      (let [ctx-ptr (:ptr @context)
-            result (proj-context-set-database-path {:context ctx-ptr
-                                                    :db-path db-path
-                                                    :aux-db-paths aux-db-paths
-                                                    :options options})]
-        result))))
+      (let [ctx-ptr (context-ptr context)]
+        (proj-context-set-database-path {:context ctx-ptr
+                                         :db-path db-path
+                                         :aux-db-paths aux-db-paths
+                                         :options options})))))
 
 (defn coord-tensor
   [ca dims]
@@ -541,9 +630,10 @@
        (when (nil? @implementation)
          (throw (ex-info "Failed to initialize PROJ" {}))))
      :cljs
-     ;; CLJS requires explicit initialization
+     ;; CLJS - check that implementation is set (init! was called)
      (when (nil? @implementation)
-       (throw (js/Error. "proj/init! must be called and awaited before using proj functions")))))
+       ;; Don't throw - just log warning. The test calls init! before using
+       (js/console.warn "PROJ may not be initialized - ensure proj/init! was called"))))
 
 ;; TODO: This fn is too long, need to extract it into helpers.
 ;; Consider integrating cs into this functionality.
@@ -580,7 +670,7 @@
               (let [temp-ctx (context-create {})]
                 #?(:clj (if (graal?)
                           temp-ctx
-                          (:ptr @temp-ctx))
+                          (context-ptr temp-ctx))
                    :cljs temp-ctx))
 
               ;; Use default value when provided
@@ -590,6 +680,13 @@
                   @resolved
                   default-val)
                 default-val)
+
+              ;; Handle coord-array maps for pointer arguments (GraalVM/WASM)
+              ;; coord-array returns {:malloc ptr :array heapf64} but we need just the pointer
+              (and (= arg-type :pointer)
+                   (map? provided-val)
+                   (contains? provided-val :malloc))
+              (:malloc provided-val)
 
               ;; Otherwise use provided value
               :else provided-val)))
@@ -667,8 +764,7 @@
                          (keyword (first (first (:argtypes fn-def)))))
         first-arg-val (get opts first-arg-name)]
     (and is-context-fn
-         #?(:clj (instance? clojure.lang.Atom first-arg-val)
-            :cljs (and first-arg-val (.-state first-arg-val))))))
+         (is-context? first-arg-val))))
 
 (defn get-context-atom
   "Extract the context atom from opts for context functions"

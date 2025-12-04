@@ -1,18 +1,22 @@
 # Containerfile
 # Complete build, test, and development environment for clj-proj
 # 
+# NOTE: Docker users must specify the Containerfile with -f flag:
+#   docker build -f Containerfile --target dev .
+#   (Podman users can omit -f as Containerfile is the default)
+#
 # Usage:
-#   Build everything:           docker build --target complete .
-#   WASM only:                  docker build --target wasm-build .
-#   Native only:                docker build --target native-build .
-#   Native for specific arch:   docker build --platform linux/amd64 --target native-build .
-#   Run tests:                  docker build --target test-all .
-#   Development:                docker build --target dev .
-#   Extract artifacts:          docker build --target export --output type=local,dest=./artifacts .
+#   Build everything:           docker build -f Containerfile --target complete .
+#   WASM only:                  docker build -f Containerfile --target wasm-build .
+#   Native only:                docker build -f Containerfile --target native-build .
+#   Native for specific arch:   docker build -f Containerfile --platform linux/amd64 --target native-build .
+#   Run tests:                  docker build -f Containerfile --target test-all .
+#   Development:                docker build -f Containerfile --target dev .
+#   Extract artifacts:          docker build -f Containerfile --target export --output type=local,dest=./artifacts .
 #
 # For cross-platform builds, use the --platform flag with native-build target:
-#   Linux AMD64:   docker build --platform linux/amd64 --target native-build -t clj-proj:linux-amd64 .
-#   Linux ARM64:   docker build --platform linux/aarch64 --target native-build -t clj-proj:linux-aarch64 .
+#   Linux AMD64:   docker build -f Containerfile --platform linux/amd64 --target native-build -t clj-proj:linux-amd64 .
+#   Linux ARM64:   docker build -f Containerfile --platform linux/aarch64 --target native-build -t clj-proj:linux-aarch64 .
 
 # Base stage with Nix environment
 FROM nixos/nix:latest AS base
@@ -30,8 +34,8 @@ RUN echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf && \
     echo "min-free = 128000000" >> /etc/nix/nix.conf && \
     echo "max-free = 1000000000" >> /etc/nix/nix.conf
 
-# Install git (required for flakes)
-RUN nix-env -iA nixpkgs.git --option filter-syscalls false
+# Install git (required for flakes) - skip if git-minimal already present
+RUN git --version 2>/dev/null || nix-env -iA nixpkgs.git --option filter-syscalls false
 
 # Set up environment variables for nix
 ENV PATH=/nix/var/nix/profiles/default/bin:$PATH
@@ -198,6 +202,9 @@ RUN nix-env -iA \
 
 # Set up workspace
 WORKDIR /workspace
+
+# Configure git to trust /workspace directory (common when mounting volumes)
+RUN git config --global --add safe.directory /workspace
 
 # Add some helpful aliases and startup message to ~/.bashrc
 RUN printf '%s\n' \

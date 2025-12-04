@@ -21,7 +21,7 @@
                  (.allowPolyglotAccess PolyglotAccess/ALL)
                  (.option "js.ecmascript-version" "staging")
                  (.option "js.esm-eval-returns-exports" "true")
-                 #_(.allowExperimentalOptions true)
+                 (.allowExperimentalOptions true)
                  (.option "js.webassembly" "true")
                  (.out System/out) ; Ensure JS console.log goes to the right place
                  (.err System/err)

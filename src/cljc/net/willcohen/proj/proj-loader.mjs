@@ -12,17 +12,11 @@ function detectEnvironment() {
     if (typeof window !== 'undefined' && typeof window.document !== 'undefined') {
         return 'browser';
     }
-    // GraalVM might not have 'window' or 'process' in a standard way,
-    // but it will be called from Clojure which provides the resources directly.
-    // We can treat it as a special case and rely on options being passed in.
     return 'unknown';
 }
 
 /**
  * Converts a GraalVM ByteBuffer or similar object to a Uint8Array.
- * GraalVM ByteBuffers don't expose .array() directly to JavaScript,
- * so we need to handle the conversion differently.
- * 
  * @param {*} bufferLike - A ByteBuffer-like object from GraalVM
  * @returns {Uint8Array} - The converted byte array
  */
@@ -45,7 +39,6 @@ function toUint8Array(bufferLike) {
     }
     
     // For GraalVM: Check if it's a Java byte array passed as a host object
-    // This check is early because GraalVM passes raw byte arrays
     if (bufferLike && typeof bufferLike === 'object' && bufferLike.length !== undefined) {
         try {
             console.log("Attempting array-like conversion for length:", bufferLike.length);
@@ -79,8 +72,7 @@ function toUint8Array(bufferLike) {
         }
     }
     
-    // For GraalVM ByteBuffers, we need to read the bytes differently
-    // GraalVM exposes ByteBuffer properties and methods differently
+    // For GraalVM ByteBuffers with position/limit/get
     if (bufferLike.limit && bufferLike.position !== undefined) {
         try {
             console.log("Attempting ByteBuffer position/limit/get method");
@@ -106,19 +98,27 @@ function toUint8Array(bufferLike) {
 }
 
 /**
- * Initializes the PROJ Emscripten module with embedded resources.
- * Resources (proj.db, proj.ini) are now embedded directly in the WASM binary.
- * This version is designed to work with GraalVM where the main thread might be blocked.
+ * Initializes the PROJ Emscripten module with dynamically loaded database.
+ * Uses standard Emscripten FS (no pthreads, no WASMFS, no NODERAWFS).
+ * 
+ * For GraalVM: Resources are provided via options (projDb, projIni)
+ * For Node.js: Resources are loaded from filesystem using fs.readFileSync
+ * For Browser: Resources are loaded via fetch
+ *
+ * All resources are written to Emscripten's virtual filesystem at /proj/
  *
  * @param {object} options - Initialization options.
  * @param {ArrayBuffer} [options.wasmBinary] - The proj.wasm file contents (for GraalVM).
+ * @param {Uint8Array} [options.projDb] - The proj.db database file (for GraalVM).
+ * @param {string} [options.projIni] - The proj.ini config file (for GraalVM).
+ * @param {object} [options.projGrids] - Grid files as {filename: Uint8Array} (for GraalVM).
  * @param {function(string): string} [options.locateFile] - A function to locate the .wasm file (for browsers).
  * @param {function(object)} [options.onSuccess] - Callback when initialization succeeds
  * @param {function(Error)} [options.onError] - Callback when initialization fails
  */
 function initialize(options = {}) {
     console.time("PROJ-init");
-    console.log("PROJ-DEBUG: `initialize` called with embedded resources.");
+    console.log("PROJ-DEBUG: `initialize` called.");
     
     const { onSuccess, onError } = options;
     
@@ -132,81 +132,137 @@ function initialize(options = {}) {
         return;
     }
 
-    // Run the async initialization in a separate execution context
+    // Run the async initialization
     (async () => {
         try {
-            // Dynamically import the large Emscripten module inside the async function.
-            // This avoids the static import at the top level, which can cause issues with some JS engines like GraalJS.
-            console.log("PROJ-DEBUG: About to `await import('./proj-emscripten.js')`...");
-            console.time("PROJ-import-proj-js")
+            const env = detectEnvironment();
+            console.log("PROJ-DEBUG: Detected environment:", env);
+            
+            // Load database files based on environment
+            let projDbData, projIniData;
+            
+            if (options.projDb && options.projIni) {
+                // GraalVM case - resources provided in options
+                console.log("PROJ-DEBUG: Using resources from options (GraalVM)");
+                projDbData = toUint8Array(options.projDb);
+                projIniData = options.projIni;
+            } else if (env === 'node') {
+                // Node.js - load from filesystem
+                console.log("PROJ-DEBUG: Loading resources from filesystem (Node.js)");
+                const fs = await import('fs');
+                const path = await import('path');
+                const { fileURLToPath } = await import('url');
+                
+                const __filename = fileURLToPath(import.meta.url);
+                const __dirname = path.dirname(__filename);
+                
+                projDbData = fs.readFileSync(path.join(__dirname, 'proj.db'));
+                projIniData = fs.readFileSync(path.join(__dirname, 'proj.ini'), 'utf8');
+                console.log(`PROJ-DEBUG: Loaded proj.db (${projDbData.length} bytes) and proj.ini`);
+            } else if (env === 'browser') {
+                // Browser - load via fetch
+                console.log("PROJ-DEBUG: Loading resources via fetch (Browser)");
+                const [dbResp, iniResp] = await Promise.all([
+                    fetch('./proj.db'),
+                    fetch('./proj.ini')
+                ]);
+                
+                if (!dbResp.ok || !iniResp.ok) {
+                    throw new Error(`Failed to fetch resources: db=${dbResp.status}, ini=${iniResp.status}`);
+                }
+                
+                projDbData = new Uint8Array(await dbResp.arrayBuffer());
+                projIniData = await iniResp.text();
+                console.log(`PROJ-DEBUG: Fetched proj.db (${projDbData.length} bytes) and proj.ini`);
+            } else {
+                throw new Error("Unknown environment - cannot load database files");
+            }
+            
+            // Import the Emscripten module
+            console.log("PROJ-DEBUG: Importing proj-emscripten.js");
             const { default: PROJModule } = await import('./proj-emscripten.js');
-            console.log("PROJ-DEBUG: Successfully imported `./proj-emscripten.js`. PROJModule is now available.");
+            console.log("PROJ-DEBUG: Successfully imported proj-emscripten.js");
 
-            // --- Step 1: Prepare Module Arguments ---
-            // With embedded resources, we only need to handle the WASM binary (for GraalVM)
-            // and optionally the locateFile function (for browsers)
+            // Prepare module arguments
             const moduleArgs = {
-                // Add hooks to see what Emscripten is doing internally.
+                onRuntimeInitialized: function() {
+                    console.log("PROJ-DEBUG: Runtime initialized, writing files to virtual FS");
+                    
+                    try {
+                        // Create /proj directory and write database files
+                        this.FS.mkdir('/proj');
+                        this.FS.writeFile('/proj/proj.db', projDbData);
+                        this.FS.writeFile('/proj/proj.ini', projIniData);
+                        
+                        console.log(`PROJ-DEBUG: Successfully wrote proj.db (${projDbData.length} bytes) and proj.ini to /proj/`);
+                        
+                        // Handle grid files if provided (GraalVM case)
+                        if (options.projGrids) {
+                            console.log("PROJ-DEBUG: Writing grid files to virtual FS");
+                            this.FS.mkdir('/proj/grids');
+                            
+                            for (const [name, bytes] of Object.entries(options.projGrids)) {
+                                try {
+                                    const gridBytes = toUint8Array(bytes);
+                                    this.FS.writeFile(`/proj/grids/${name}`, gridBytes);
+                                    console.log(`PROJ-DEBUG: Wrote grid file ${name} (${gridBytes.byteLength} bytes)`);
+                                } catch (e) {
+                                    console.error(`PROJ-DEBUG: Failed to write grid file ${name}:`, e);
+                                }
+                            }
+                        }
+                        
+                        // Verify files were written
+                        const files = this.FS.readdir('/proj');
+                        console.log("PROJ-DEBUG: /proj directory contents:", files);
+                        
+                        // Cache the initialized module
+                        projModuleInstance = this;
+                        console.timeEnd("PROJ-init");
+                        
+                        // Call success callback
+                        onSuccess(this);
+                    } catch (e) {
+                        console.error("PROJ-DEBUG: Error writing files to virtual FS:", e);
+                        onError(e);
+                    }
+                },
+                
                 setStatus: (text) => console.log(`PROJ-EMCC-STATUS: ${text}`),
-                monitorRunDependencies: (left) => console.log(`PROJ-EMCC-DEPS: ${left} dependencies remaining.`)
+                monitorRunDependencies: (left) => console.log(`PROJ-EMCC-DEPS: ${left} dependencies remaining`)
             };
 
-            // Handle GraalVM case where WASM binary is provided directly
+            // Handle GraalVM case with wasmBinary
             if (options.wasmBinary) {
-                console.log("PROJ-DEBUG: Using provided WASM binary from GraalVM.");
-                try {
-                    moduleArgs.wasmBinary = toUint8Array(options.wasmBinary);
-                    console.log("WASM binary converted successfully, size:", moduleArgs.wasmBinary.byteLength);
-                } catch (e) {
-                    console.error("Failed to convert WASM binary:", e);
-                    throw e;
-                }
+                console.log("PROJ-DEBUG: Using provided wasmBinary (GraalVM)");
+                const wasmBinaryArray = toUint8Array(options.wasmBinary);
+                moduleArgs.wasmBinary = wasmBinaryArray.buffer;
             }
 
-            // Handle browser case where locateFile may be needed for .wasm file
+            // Handle browser case with locateFile
             if (options.locateFile) {
-                console.log("PROJ-DEBUG: Using provided locateFile function for browser.");
+                console.log("PROJ-DEBUG: Using provided locateFile function");
                 moduleArgs.locateFile = options.locateFile;
+            } else if (env === 'browser') {
+                // Default locateFile for browser
+                moduleArgs.locateFile = (path) => {
+                    if (path.endsWith('.wasm')) {
+                        return './' + path;
+                    }
+                    return path;
+                };
             }
 
-            // --- Step 2: Instantiate the Emscripten Module ---
-            console.log("PROJ-DEBUG: Preparing to instantiate Emscripten module...");
-            console.log("PROJ-DEBUG: About to `await PROJModule(moduleArgs)`...");
-            
-            let PROJ;
-            try {
-                PROJ = await PROJModule(moduleArgs);
-                console.log("Module loaded successfully with embedded resources");
-            } catch (e) {
-                console.error("PROJModule instantiation failed:", e);
-                throw e;
-            }
-            
-            console.log("PROJ-DEBUG: Emscripten module instantiated successfully. PROJ object is available.");
-            console.log("PROJ-DEBUG: Resources (proj.db, proj.ini) are embedded in WASM - no filesystem setup needed.");
-
-            projModuleInstance = PROJ;
-            console.log("PROJ-DEBUG: Caching instance and calling success callback.");
-            console.timeEnd("PROJ-init");
-            
-            // Call the success callback
-            console.log("PROJ-DEBUG: About to call onSuccess callback");
-            console.log("PROJ-DEBUG: onSuccess type:", typeof onSuccess);
-            
-            // GraalVM ProxyExecutable objects are callable as functions
-            onSuccess(PROJ);
+            // Initialize the module
+            console.log("PROJ-DEBUG: Calling PROJModule()");
+            await PROJModule(moduleArgs);
             
         } catch (error) {
             console.error("PROJ-DEBUG: Initialization failed:", error);
-            
-            // Call error callback
-            console.log("PROJ-DEBUG: About to call onError callback");
-            console.log("PROJ-DEBUG: onError type:", typeof onError);
+            console.timeEnd("PROJ-init");
             onError(error);
         }
     })();
 }
 
-// The export is an object containing the initialize function.
-
-export { initialize };
+export { initialize, detectEnvironment };

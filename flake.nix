@@ -54,10 +54,10 @@
           binaryen
           clang
           clj-kondo
-          (clojure.override { jdk = graalvm-ce; })
+          (clojure.override { jdk = graalvmPackages.graalvm-ce; })
           clojure-lsp  # This likely pulls in dconf
           emscripten
-          graalvm-ce
+          graalvmPackages.graalvm-ce
           maven
           podman
           nodejs
@@ -66,8 +66,8 @@
         ];
 
         commonHook = ''
-          export JAVA_HOME=${pkgs.jdk24};
-          export PATH="${pkgs.jdk24}/bin:$PATH";
+          export JAVA_HOME=${pkgs.jdk25};
+          export PATH="${pkgs.jdk25}/bin:$PATH";
           export SQLITE=${buildPkgs.sqlite};
         '';
 
@@ -93,7 +93,7 @@
               # Use glibc versions of JVM tools since they don't link into our output
               pkgs.babashka
               pkgs.clojure
-              pkgs.graalvm-ce
+              pkgs.graalvmPackages.graalvm-ce
               pkgs.maven
             ];
             shellHook = commonHook + ''

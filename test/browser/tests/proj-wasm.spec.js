@@ -3,17 +3,30 @@ const { test, expect } = require('@playwright/test');
 
 test.describe('PROJ WASM Browser Tests', () => {
   test.beforeEach(async ({ page }) => {
+    // Capture console logs
+    page.on('console', msg => console.log('Browser console:', msg.type(), msg.text()));
+    page.on('pageerror', error => console.log('Browser error:', error.message));
+    
     // Navigate to the test page
     await page.goto('/test/browser/test.html');
     
     // Wait for PROJ module to be available and initialized
     await page.waitForFunction(() => window.proj !== undefined, { timeout: 30000 });
     
-    // Initialize PROJ
+    // Initialize PROJ with better error handling
     await page.evaluate(async () => {
+      console.log('Starting PROJ initialization...');
       const initFunction = window.proj.init_BANG_ || window.proj['init!'] || window.proj.init;
+      console.log('Init function found:', typeof initFunction);
       if (initFunction && typeof initFunction === 'function') {
-        await initFunction();
+        try {
+          console.log('Calling init function...');
+          await initFunction();
+          console.log('Init completed successfully');
+        } catch (error) {
+          console.error('Init failed:', error.message, error.stack);
+          throw error;
+        }
       }
     });
   });

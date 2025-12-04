@@ -14,6 +14,13 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
   - `bb proj:clone` task to clone OSGeo/PROJ repository to `vendor/PROJ`
   - `--local-proj` flag for all build tasks to use local PROJ instead of release version
 
+### Changed
+- PROJ 9.7.1, GraalVM 25.0.1, Clojure 1.12.3
+
+### Fixed
+- ClojureScript: context/nil pointer conversion in ccall
+- test:playwright copies required resources
+
 ## [0.1.0-alpha2] - 2025-07-24
 
 ### Added
