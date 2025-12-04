@@ -61,12 +61,12 @@
                                 {:proj-js-url proj-js-url :index-js-url index-js-url})))
 
             ;; Pre-load the main PROJ.js module
-            _ (tsgcd (let [source (.build (.mimeType (Source/newBuilder "js" proj-js-url) "application/javascript+module"))]
+            _ (tsgcd (let [source (.build (.mimeType (Source/newBuilder "js" (io/file (.toURI proj-js-url))) "application/javascript+module"))]
                        (log/info "Pre-loading PROJ.js module to assist module resolution:" (str proj-js-url))
                        (.eval context source)))
 
             ;; Load the main index module
-            index-js-module (tsgcd (let [source (.build (.mimeType (Source/newBuilder "js" index-js-url) "application/javascript+module"))]
+            index-js-module (tsgcd (let [source (.build (.mimeType (Source/newBuilder "js" (io/file (.toURI index-js-url))) "application/javascript+module"))]
                                      (log/info "Loading JS module" (str index-js-url))
                                      (.eval context source)))
 

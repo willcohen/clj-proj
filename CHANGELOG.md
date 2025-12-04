@@ -7,7 +7,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - **Container-Based Build System**:
   - `Containerfile` with builds for native, WASM, and development targets
-  - Cross-platform compilation support for `linux/amd64` and `linux/aarch64`
+  - Cross-platform compilation support for `linux/amd64`, `linux/aarch64`, and `windows/amd64`
   - Local PROJ development workflow with `--build-arg USE_LOCAL_PROJ=1`
 
 - **Local PROJ Development Workflow**:

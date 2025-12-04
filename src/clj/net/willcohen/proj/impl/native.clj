@@ -44,7 +44,7 @@
   (case os
     :android "libproj"
     :darwin "libproj"
-    :windows "proj" ; JNA on Windows expects just "proj" not "libproj"
+    :windows "libproj"
     :linux "libproj"))
 
 (defn get-libtiff-filename

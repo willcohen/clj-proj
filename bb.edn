@@ -197,7 +197,7 @@
 
        (when cross?
          (println "\nCleaning cross-compiled artifacts...")
-         (let [default-platforms ["linux/amd64" "linux/aarch64" "windows/amd64" "windows/arm64"]
+         (let [default-platforms ["linux/amd64" "linux/aarch64" "windows/amd64"]
                target-platforms (if-let [p (:cross-platform opts)] [p] default-platforms)]
            (doseq [platform target-platforms]
              (clean-target (str/replace platform "/" "-")))))

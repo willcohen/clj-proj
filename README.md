@@ -207,11 +207,12 @@ The JVM implementation supports two backends:
 
 Currently supported platforms (native):
 - macOS/darwin Apple Silicon (arm64)
-- Linux x64 and arm64 (build process still needs improvement)
+- Linux x64 and arm64
+- Windows x64
 
 Not yet implemented:
 - macOS/darwin Intel (x86_64) - Not built/tested
-- Windows x64 and arm64 - Build completes but DLL has runtime dependency issues
+- Windows ARM64 - Cross-compiler not available in nixpkgs
 
 ### JDK 11+ with native library
 
@@ -419,9 +420,9 @@ docker run --rm -v $(pwd):/workspace clj-proj:dev bb build --wasm
 **Cross-platform builds:**
 ```bash
 # Babashka + Nix (uses Docker internally)
-bb build --cross-platform linux/amd64     # ✅ Working
-bb build --cross-platform linux/arm64     # ✅ Working  
-bb build --cross-platform windows/amd64   # ⚠️  Builds but DLL won't load
+bb build --cross-platform linux/amd64     # Working
+bb build --cross-platform linux/aarch64   # Working
+bb build --cross-platform windows/amd64   # Working
 bb build --cross                          # Build all default platforms
 
 # Docker/Podman direct
