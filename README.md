@@ -1,12 +1,11 @@
 # clj-proj
 
-**[Live Demo](https://willcohen.github.io/clj-proj/)** | [Clojars](https://clojars.org/net.willcohen/proj) | [npm](https://www.npmjs.com/package/proj-wasm)
+**[Live Demo](https://willcohen.github.io/clj-proj/)**
 
-![NPM Version](https://img.shields.io/npm/v/proj-wasm)
-![Clojars Version](https://img.shields.io/clojars/v/net.willcohen%2Fproj)
+[![NPM Version](https://img.shields.io/npm/v/proj-wasm)](https://www.npmjs.com/package/proj-wasm)
+[![Clojars Version](https://img.shields.io/clojars/v/net.willcohen%2Fproj)](https://clojars.org/net.willcohen/proj)
 
-This project provides a native (or transpiled) version of PROJ for both the JVM
-and JS ecosystems.
+This project provides a native (or transpiled) version of [PROJ](https://proj.org/) ([GitHub](https://github.com/OSGeo/PROJ)) for both the JVM and JS ecosystems.
 
 The goal of this project is to provide a long-missing component of geospatial
 analysis for these platforms: a performant version of PROJ that can closely
