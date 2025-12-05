@@ -1,9 +1,8 @@
 # clj-proj
 
-## Current Versions of Primary Packages
+**[Live Demo](https://willcohen.github.io/clj-proj/)** | [Clojars](https://clojars.org/net.willcohen/proj) | [npm](https://www.npmjs.com/package/proj-wasm)
 
 ![NPM Version](https://img.shields.io/npm/v/proj-wasm)
-
 ![Clojars Version](https://img.shields.io/clojars/v/net.willcohen%2Fproj)
 
 This project provides a native (or transpiled) version of PROJ for both the JVM
