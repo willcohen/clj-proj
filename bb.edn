@@ -1665,6 +1665,12 @@ public class JavaJarTest {
                                   updated (str/replace content (re-pattern (str "proj-" old-version "\\.jar")) (str "proj-" new-version ".jar"))]
                               (spit "bb.edn" updated)
                               (println (str "  bb.edn: " old-version " -> " new-version)))
+                            ;; Update deps.edn deploy artifact path
+                            (let [content (slurp "deps.edn")
+                                  old-version (second (re-find (re-pattern "proj-(\\d+\\.\\d+\\.\\d+-alpha\\d+)\\.jar") content))
+                                  updated (str/replace content (re-pattern (str "proj-" old-version "\\.jar")) (str "proj-" new-version ".jar"))]
+                              (spit "deps.edn" updated)
+                              (println (str "  deps.edn: " old-version " -> " new-version)))
                             (println)
                             (println "Version bump complete.")
                             (println)

@@ -24,7 +24,7 @@
                     :exec-fn deps-deploy.deps-deploy/deploy
                     :exec-args {:installer :remote
                                 :sign-releases? false
-                                :artifact "target/proj-0.1.0-alpha3.jar"}}
+                                :artifact "target/proj-0.1.0-alpha4.jar"}}
     ;; Include all paths you want available for development
            :nrepl {:extra-paths ["test"]
                    :extra-deps {nrepl/nrepl {:mvn/version "1.5.1"}}
