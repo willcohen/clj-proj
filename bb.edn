@@ -1565,7 +1565,17 @@ public class JavaJarTest {
    :task (do
            (println "Building JAR file...")
            (tasks/shell "clj" "-T:build" "jar")
+           ;; Copy pom.xml to root for deploy
+           (babashka.fs/copy "target/classes/META-INF/maven/net.willcohen/proj/pom.xml" "pom.xml" {:replace-existing true})
            (println "JAR built: target/proj-0.1.0-alpha3.jar"))}
+
+  deploy
+  {:doc "Deploy JAR to Clojars"
+   :depends [jar]
+   :task (do
+           (println "Deploying to Clojars...")
+           (tasks/shell "clj" "-X:deploy")
+           (println "Deployed to Clojars"))}
 
   test:all
   {:doc "Run all test suites"
