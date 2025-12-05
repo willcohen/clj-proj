@@ -24,13 +24,13 @@
                     :exec-fn deps-deploy.deps-deploy/deploy
                     :exec-args {:installer :remote
                                 :sign-releases? false
-                                :artifact "target/proj-0.1.0-alpha2.jar"}}
+                                :artifact "target/proj-0.1.0-alpha3.jar"}}
     ;; Include all paths you want available for development
-    :nrepl {:extra-paths ["test"]
-            :extra-deps {nrepl/nrepl {:mvn/version "1.5.1"}}
+           :nrepl {:extra-paths ["test"]
+                   :extra-deps {nrepl/nrepl {:mvn/version "1.5.1"}}
 			;; this allows nrepl to interrupt runaway repl evals
-            :jvm-opts ["-Djdk.attach.allowAttachSelf"]
-            :main-opts ["-m" "nrepl.cmdline" "--port" "7888"]}}
+                   :jvm-opts ["-Djdk.attach.allowAttachSelf"]
+                   :main-opts ["-m" "nrepl.cmdline" "--port" "7888"]}}
 
  :jvm-opts ["--add-modules" "jdk.incubator.foreign,jdk.incubator.vector"
             "--enable-native-access=ALL-UNNAMED"]}

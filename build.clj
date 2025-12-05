@@ -2,7 +2,7 @@
   (:require [clojure.tools.build.api :as b]))
 
 (def lib 'net.willcohen/proj)
-(def version "0.1.0-alpha2")
+(def version "0.1.0-alpha3")
 (def class-dir "target/classes")
 (def jar-file (format "target/%s-%s.jar" (name lib) version))
 

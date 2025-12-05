@@ -686,7 +686,7 @@ Run `bb tasks` for complete list. Key commands:
 
 **Build & Package:**
 - `bb build --help` - Show build options (native/wasm/cross)
-- `bb build:all` - Build native + WASM artifacts  
+- `bb build:all` - Build native + WASM + cross-platform artifacts
 - `bb jar` - Build JAR file for JVM
 - `bb cherry` - Build JavaScript ES6 module
 - `bb pom` - Generate/update pom.xml
@@ -695,6 +695,7 @@ Run `bb tasks` for complete list. Key commands:
 - `bb test:all` - Run all tests
 - `bb test:ffi` / `bb test:node` / `bb test:graal` - Test specific implementations
 - `bb test-run` - Complete build + test cycle
+- `bb pre-deploy` - Full build, test, and package verification before deploy
 
 **Development:**
 - `bb dev` - Rich REPL with Portal

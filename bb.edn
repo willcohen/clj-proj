@@ -330,10 +330,6 @@
                     (tasks/shell {:dir "test-npm-package"} "npm" "install")
                     (tasks/shell {:dir "test-npm-package"} "npm" "test"))}
 
-  ;; Task to run all ClojureScript tests
-  test:cljs {:doc "Run ClojureScript tests in Node.js."
-             :depends [test:node]}
-
   ;; Task to run browser integration tests with Playwright
   test:playwright {:doc "Run browser integration tests with Playwright."
                    :task (do
@@ -416,7 +412,7 @@
                     (println "1. Testing FFI mode from JAR...")
                     (let [result (clojure.java.shell/sh
                                   "clj" "-J--enable-native-access=ALL-UNNAMED"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha2.jar"}}})
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha3.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -443,7 +439,7 @@
                     (let [result (clojure.java.shell/sh
                                   "clj" "-J--enable-native-access=ALL-UNNAMED"
                                   "-J-Dpolyglot.engine.WarnInterpreterOnly=false"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha2.jar"}}})
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha3.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -469,7 +465,7 @@
                     (println "3. Testing coordinate transformation from JAR...")
                     (let [result (clojure.java.shell/sh
                                   "clj" "-J--enable-native-access=ALL-UNNAMED"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha2.jar"}}})
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha3.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -501,7 +497,7 @@
                     (println)
                     (println "4. Testing Java API from JAR...")
                     (let [test-dir "target/java-jar-test"
-                          jar-path "target/proj-0.1.0-alpha2.jar"
+                          jar-path "target/proj-0.1.0-alpha3.jar"
                           clj-cp (-> (tasks/shell {:out :string} "clj" "-Spath") :out str/trim)]
                       ;; Create test directory and Java test file
                       (fs/create-dirs test-dir)
@@ -1569,19 +1565,21 @@ public class JavaJarTest {
    :task (do
            (println "Building JAR file...")
            (tasks/shell "clj" "-T:build" "jar")
-           (println "JAR built: target/proj-0.1.0-alpha2.jar"))}
+           (println "JAR built: target/proj-0.1.0-alpha3.jar"))}
 
   test:all
   {:doc "Run all test suites"
-   :depends [test:ffi test:graal test:cljs test:playwright test:jar test:npm]}
+   :depends [test:ffi test:graal test:node test:playwright test:jar test:npm]}
 
   build:all
-  {:doc "Build all artifacts (native and wasm only)"
+  {:doc "Build all artifacts (native, wasm, and cross-platform)"
    :task (do
            (println "Building native artifacts...")
            (tasks/shell "bb" "build" "--native")
            (println "Building WASM artifacts...")
            (tasks/shell "bb" "build" "--wasm")
+           (println "Building cross-platform artifacts...")
+           (tasks/shell "bb" "build" "--cross")
            (println "All builds complete!"))}
 
   test-run
@@ -1599,7 +1597,7 @@ public class JavaJarTest {
                 :task (do
                         (println "\nJAR contents:")
                         (println "=============")
-                        (tasks/shell "jar" "tf" "target/proj-0.1.0-alpha2.jar")
+                        (tasks/shell "jar" "tf" "target/proj-0.1.0-alpha3.jar")
                         (println))}
 
   npm-contents {:doc "List all files that would be in npm package"
@@ -1607,4 +1605,8 @@ public class JavaJarTest {
                         (println "\nNPM package contents:")
                         (println "====================")
                         (tasks/shell {:dir "src/cljc/net/willcohen/proj"} "npm" "pack" "--dry-run")
-                        (println))}}}
+                        (println))}
+
+  pre-deploy {:doc "Run all tests and show package contents before deploy"
+              :depends [test-run jar-contents npm-contents]
+              :task (println "\nPre-deploy checks complete. Ready for deploy.")}}}

@@ -4,6 +4,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.0-alpha3] - 2025-12-04
+
 ### Added
 - `proj_create_crs_to_crs_from_pj` function
 - **Java API**: `PROJ.java` wrapper, `PROJTest.java` tests, `bb test:java-ffi`, `bb test:java-graal`, `bb test:clj-ffi`
@@ -114,5 +116,6 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - Initial proof-of-concept functionality, released to NPM and Clojars.
 
-[Unreleased]: https://github.com/net.willcohen/clj-proj/compare/0.1.0-alpha2...HEAD
-[0.1.0-alpha2]: https://github.com/net.willcohen/clj-proj/compare/0.1.0-alpha1...0.1.0-alpha2
+[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha3...HEAD
+[0.1.0-alpha3]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha2...0.1.0-alpha3
+[0.1.0-alpha2]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha1...0.1.0-alpha2
