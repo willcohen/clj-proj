@@ -337,6 +337,14 @@
                            (fs/copy (fs/path "resources" "proj.db") (fs/path "test/browser" "proj.db") {:replace-existing true})
                            (fs/copy (fs/path "resources" "proj.ini") (fs/path "test/browser" "proj.ini") {:replace-existing true})
                            (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj-emscripten.wasm") (fs/path "test/browser" "proj-emscripten.wasm") {:replace-existing true})
+                           ;; Set up cdn-style test directory (module in subdirectory, simulates CDN loading)
+                           (println "Setting up cdn-style test directory...")
+                           (fs/create-dirs "test/browser/cdn-style/dist")
+                           (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj.mjs") (fs/path "test/browser/cdn-style/dist" "proj.mjs") {:replace-existing true})
+                           (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj.mjs.map") (fs/path "test/browser/cdn-style/dist" "proj.mjs.map") {:replace-existing true})
+                           (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj-emscripten.wasm") (fs/path "test/browser/cdn-style/dist" "proj-emscripten.wasm") {:replace-existing true})
+                           (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj.db") (fs/path "test/browser/cdn-style/dist" "proj.db") {:replace-existing true})
+                           (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj.ini") (fs/path "test/browser/cdn-style/dist" "proj.ini") {:replace-existing true})
                            (println "Installing Playwright dependencies...")
                            (tasks/shell {:dir "test/browser"} "npm" "install")
                            (println "Installing Playwright browsers...")
@@ -412,7 +420,7 @@
                     (println "1. Testing FFI mode from JAR...")
                     (let [result (clojure.java.shell/sh
                                   "clj" "-J--enable-native-access=ALL-UNNAMED"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha3.jar"}}})
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha4.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -439,7 +447,7 @@
                     (let [result (clojure.java.shell/sh
                                   "clj" "-J--enable-native-access=ALL-UNNAMED"
                                   "-J-Dpolyglot.engine.WarnInterpreterOnly=false"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha3.jar"}}})
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha4.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -465,7 +473,7 @@
                     (println "3. Testing coordinate transformation from JAR...")
                     (let [result (clojure.java.shell/sh
                                   "clj" "-J--enable-native-access=ALL-UNNAMED"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha3.jar"}}})
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha4.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -497,7 +505,7 @@
                     (println)
                     (println "4. Testing Java API from JAR...")
                     (let [test-dir "target/java-jar-test"
-                          jar-path "target/proj-0.1.0-alpha3.jar"
+                          jar-path "target/proj-0.1.0-alpha4.jar"
                           clj-cp (-> (tasks/shell {:out :string} "clj" "-Spath") :out str/trim)]
                       ;; Create test directory and Java test file
                       (fs/create-dirs test-dir)
@@ -1567,15 +1575,23 @@ public class JavaJarTest {
            (tasks/shell "clj" "-T:build" "jar")
            ;; Copy pom.xml to root for deploy
            (babashka.fs/copy "target/classes/META-INF/maven/net.willcohen/proj/pom.xml" "pom.xml" {:replace-existing true})
-           (println "JAR built: target/proj-0.1.0-alpha3.jar"))}
+           (println "JAR built: target/proj-0.1.0-alpha4.jar"))}
 
-  deploy
+  clojars-deploy
   {:doc "Deploy JAR to Clojars"
    :depends [jar]
    :task (do
            (println "Deploying to Clojars...")
            (tasks/shell "clj" "-X:deploy")
            (println "Deployed to Clojars"))}
+
+  npm-publish
+  {:doc "Publish npm package"
+   :depends [cherry]
+   :task (do
+           (println "Publishing to npm...")
+           (tasks/shell {:dir "src/cljc/net/willcohen/proj"} "npm" "publish")
+           (println "Published to npm"))}
 
   test:all
   {:doc "Run all test suites"
@@ -1607,7 +1623,7 @@ public class JavaJarTest {
                 :task (do
                         (println "\nJAR contents:")
                         (println "=============")
-                        (tasks/shell "jar" "tf" "target/proj-0.1.0-alpha3.jar")
+                        (tasks/shell "jar" "tf" "target/proj-0.1.0-alpha4.jar")
                         (println))}
 
   npm-contents {:doc "List all files that would be in npm package"
@@ -1619,4 +1635,40 @@ public class JavaJarTest {
 
   pre-deploy {:doc "Run all tests and show package contents before deploy"
               :depends [test-run jar-contents npm-contents]
-              :task (println "\nPre-deploy checks complete. Ready for deploy.")}}}
+              :task (println "\nPre-deploy checks complete. Ready for deploy.")}
+
+  version-bump {:doc "Bump version across all files. Usage: bb version-bump <new-version>"
+                :task (let [new-version (first *command-line-args*)]
+                        (if (nil? new-version)
+                          (do
+                            (println "Usage: bb version-bump <new-version>")
+                            (println "Example: bb version-bump 0.1.0-alpha5")
+                            (System/exit 1))
+                          (do
+                            (println (str "Bumping version to " new-version "..."))
+                            (println)
+                            ;; Update build.clj
+                            (let [content (slurp "build.clj")
+                                  old-version (second (re-find (re-pattern "def version \"([^\"]+)\"") content))
+                                  updated (str/replace content (re-pattern (str "def version \"" old-version "\"")) (str "def version \"" new-version "\""))]
+                              (spit "build.clj" updated)
+                              (println (str "  build.clj: " old-version " -> " new-version)))
+                            ;; Update package.json
+                            (let [content (slurp "src/cljc/net/willcohen/proj/package.json")
+                                  old-version (second (re-find (re-pattern "\"version\": \"([^\"]+)\"") content))
+                                  updated (str/replace content (re-pattern (str "\"version\": \"" old-version "\"")) (str "\"version\": \"" new-version "\""))]
+                              (spit "src/cljc/net/willcohen/proj/package.json" updated)
+                              (println (str "  package.json: " old-version " -> " new-version)))
+                            ;; Update bb.edn jar references
+                            (let [content (slurp "bb.edn")
+                                  old-version (second (re-find (re-pattern "proj-(\\d+\\.\\d+\\.\\d+-alpha\\d+)\\.jar") content))
+                                  updated (str/replace content (re-pattern (str "proj-" old-version "\\.jar")) (str "proj-" new-version ".jar"))]
+                              (spit "bb.edn" updated)
+                              (println (str "  bb.edn: " old-version " -> " new-version)))
+                            (println)
+                            (println "Version bump complete.")
+                            (println)
+                            (println "Don't forget to update CHANGELOG.md manually:")
+                            (println "  1. Move [Unreleased] items to new version section")
+                            (println "  2. Add date to version heading")
+                            (println "  3. Add link reference at bottom of file"))))}}}

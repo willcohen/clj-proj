@@ -1,6 +1,6 @@
 {
   "name": "proj-wasm",
-  "version": "0.1.0-alpha3",
+  "version": "0.1.0-alpha4",
   "description": "This project provides a native (or transpiled) version of PROJ for the JS ecosystem.",
   "homepage": "https://github.com/willcohen/clj-proj",
   "main": "dist/proj.mjs",

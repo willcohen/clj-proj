@@ -160,11 +160,12 @@ function initialize(options = {}) {
                 projIniData = fs.readFileSync(path.join(__dirname, 'proj.ini'), 'utf8');
                 console.log(`PROJ-DEBUG: Loaded proj.db (${projDbData.length} bytes) and proj.ini`);
             } else if (env === 'browser') {
-                // Browser - load via fetch
+                // Browser - load via fetch relative to this module's URL
                 console.log("PROJ-DEBUG: Loading resources via fetch (Browser)");
+                const baseUrl = new URL('./', import.meta.url).href;
                 const [dbResp, iniResp] = await Promise.all([
-                    fetch('./proj.db'),
-                    fetch('./proj.ini')
+                    fetch(baseUrl + 'proj.db'),
+                    fetch(baseUrl + 'proj.ini')
                 ]);
                 
                 if (!dbResp.ok || !iniResp.ok) {
@@ -244,12 +245,10 @@ function initialize(options = {}) {
                 console.log("PROJ-DEBUG: Using provided locateFile function");
                 moduleArgs.locateFile = options.locateFile;
             } else if (env === 'browser') {
-                // Default locateFile for browser
+                // Default locateFile for browser - resolve relative to this module's URL
+                const baseUrl = new URL('./', import.meta.url).href;
                 moduleArgs.locateFile = (path) => {
-                    if (path.endsWith('.wasm')) {
-                        return './' + path;
-                    }
-                    return path;
+                    return baseUrl + path;
                 };
             }
 

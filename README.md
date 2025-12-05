@@ -702,6 +702,11 @@ Run `bb tasks` for complete list. Key commands:
 - `bb nrepl` - nREPL server (port 7888)
 - `bb demo` - Browser demo (localhost:8080)
 
+**Deployment:**
+- `bb clojars-deploy` - Deploy JAR to Clojars
+- `bb npm-publish` - Publish npm package
+- `bb version-bump <version>` - Bump version across all files
+
 **Utilities:**
 - `bb clean --help` - Show clean options
 - `bb jar-contents` - List files in JAR

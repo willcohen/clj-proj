@@ -4,6 +4,11 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.0-alpha4] - 2025-12-05
+
+### Fixed
+- Browser: WASM loader now resolves `proj.db`, `proj.ini`, and `proj-emscripten.wasm` relative to module URL instead of HTML page (fixes CDN loading)
+
 ## [0.1.0-alpha3] - 2025-12-04
 
 ### Added
@@ -116,6 +121,7 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - Initial proof-of-concept functionality, released to NPM and Clojars.
 
-[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha3...HEAD
+[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha4...HEAD
+[0.1.0-alpha4]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha3...0.1.0-alpha4
 [0.1.0-alpha3]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha2...0.1.0-alpha3
 [0.1.0-alpha2]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha1...0.1.0-alpha2
