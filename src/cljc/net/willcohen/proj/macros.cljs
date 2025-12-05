@@ -47,9 +47,10 @@
                                           ['code :string]
                                           ['category :int32] ; PJ_CATEGORY
                                           ['use-proj-alternative-grid-names :int32]
-                                          ['options :pointer]]
-                               :argsemantics [['use-proj-alternative-grid-names :boolean :default false] ; pass 0 by default
-                                              ['options :string-array? :default nil]]
+                                          ['options :pointer?]] ; optional null pointer
+                               :argsemantics [['category :int32 :default 3] ; default to CRS
+                                              ['use-proj-alternative-grid-names :boolean :default false] ; pass 0 by default
+                                              ['options :string-array? :default nil]] ; NULL pointer
                                :proj-returns :pj}
    :proj_uom_get_info_from_database {:rettype :int32
                                      :argtypes [['context :pointer]
@@ -390,6 +391,15 @@
                                        ['area :pointer?]]
                             :argsemantics [['area :pj-area :default 0]]
                             :proj-returns :pj}
+   :proj_create_crs_to_crs_from_pj {:rettype :pointer ; PJ *
+                                    :argtypes [['context :pointer]
+                                               ['source_crs :pointer] ; const PJ *source_crs
+                                               ['target_crs :pointer] ; const PJ *target_crs
+                                               ['area :pointer?] ; PJ_AREA *area
+                                               ['options :pointer?]] ; const char *const *options
+                                    :argsemantics [['area :pj-area :default 0]
+                                                   ['options :string-array? :default nil]]
+                                    :proj-returns :pj}
    :proj_normalize_for_visualization {:rettype :pointer ; PJ *
                                       :argtypes [['context :pointer]
                                                  ['obj :pointer]] ; const PJ *obj

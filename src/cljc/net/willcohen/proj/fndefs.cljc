@@ -214,9 +214,10 @@
                                           ['code :string]
                                           ['category :int32] ; PJ_CATEGORY
                                           ['use-proj-alternative-grid-names :int32]
-                                          ['options :pointer]]
-                               :argsemantics [['use-proj-alternative-grid-names :boolean :default false] ; pass 0 by default
-                                              ['options :string-array? :default nil]]
+                                          ['options :pointer?]] ; optional null pointer
+                               :argsemantics [['category :int32 :default PJ_CATEGORY_CRS] ; default to CRS
+                                              ['use-proj-alternative-grid-names :boolean :default false] ; pass 0 by default
+                                              ['options :string-array? :default nil]] ; NULL pointer
                                :proj-returns :pj}
    :proj_uom_get_info_from_database {:rettype :int32
                                      :argtypes [['context :pointer]
@@ -557,6 +558,15 @@
                                        ['area :pointer?]]
                             :argsemantics [['area :pj-area :default 0]]
                             :proj-returns :pj}
+   :proj_create_crs_to_crs_from_pj {:rettype :pointer ; PJ *
+                                    :argtypes [['context :pointer]
+                                               ['source_crs :pointer] ; const PJ *source_crs
+                                               ['target_crs :pointer] ; const PJ *target_crs
+                                               ['area :pointer?] ; PJ_AREA *area
+                                               ['options :pointer?]] ; const char *const *options
+                                    :argsemantics [['area :pj-area :default 0]
+                                                   ['options :string-array? :default nil]]
+                                    :proj-returns :pj}
    :proj_normalize_for_visualization {:rettype :pointer ; PJ *
                                       :argtypes [['context :pointer]
                                                  ['obj :pointer]] ; const PJ *obj
@@ -924,65 +934,4 @@
 (def fndefs
   #?(:clj fndefs-raw
      :cljs (clj->js fndefs-raw)))
-
-;; (defn c-name->clj-name [c-fn-keyword]
-;;   (-> (name c-fn-keyword)
-;;       (string/replace (re-pattern "_") "-")
-;;       (symbol)))
-
-;; (defn is-c-context-fn?
-;;   "Determines if a function is context-aware based on its definition."
-;;   [fn-key fn-def]
-;;   (let [arg-specs (:argtypes fn-def)]
-;;     (cond
-;;       ;; Explicit override in fn-defs takes precedence
-;;       (contains? fn-def :is-context-fn)
-;;       (:is-context-fn fn-def)
-
-;;       ;; Explicitly mark known destroy functions that take a context as non-context-managed
-;;       (#{:proj_context_destroy :proj_operation_factory_context_destroy} fn-key)
-;;       false
-
-;;       ;; Heuristic: if first arg is context or ctx, it's a context function
-;;       :else (boolean (and (sequential? arg-specs)
-;;                           (seq arg-specs)
-;;                           (let [first-arg (first arg-specs)]
-;;                             (and (sequential? first-arg)
-;;                                  (seq first-arg)
-;;                                  (#{'context 'ctx} (first first-arg)))))))))
-
-;; (defn generate-docstring
-;;   "Generates a docstring for a public function based on its fn-def."
-;;   [fn-key fn-def is-c-context-fn?]
-;;   (let [c-name-str (name fn-key)
-;;         arg-specs (:argtypes fn-def)
-;;         arg-semantics-map (into {} (map (fn [[name & semantics]]
-;;                                           [(keyword name) semantics])
-;;                                         (:argsemantics fn-def)))
-;;         proj-returns-type (:proj-returns fn-def)
-;;         rettype (:rettype fn-def)
-;;         arg-lines (for [[arg-name c-type & rest-spec] arg-specs]
-;;                     (let [kw-arg-name (keyword arg-name)
-;;                           semantics (get arg-semantics-map kw-arg-name)
-;;                           default-val (if semantics
-;;                                         (get (apply hash-map (rest semantics)) :default)
-;;                                         (get (apply hash-map rest-spec) :default))
-;;                           type-str (name c-type)
-;;                           arg-desc (when (and is-c-context-fn? (= arg-name (ffirst arg-specs)))
-;;                                      "PROJ context. If not provided, a new one is created.")]
-;;                       (str "  - `:" (name kw-arg-name) "` (`" type-str "`)"
-;;                            (when arg-desc (str ": " arg-desc))
-;;                            (when (some? default-val)
-;;                              (str " (Default: `" (pr-str default-val) "`)")))))
-;;         return-desc (cond
-;;                       proj-returns-type (str "Returns a " (name proj-returns-type) " object.")
-;;                       rettype (str "Returns a value of type `" (name rettype) "`.")
-;;                       :else "Returns a value.")]
-;;     (str "Calls the native `" c-name-str "` function.\n\n"
-;;          "Takes an options map with the following keys:\n"
-;;          (if (seq arg-lines) (string/join "\n" arg-lines) "  (None)")
-;;          "\n\n"
-;;          return-desc)))
-
-
 

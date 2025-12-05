@@ -152,29 +152,31 @@
    (init! nil))
   ([log-level]
    #?(:clj
-      (try
-        (when log-level (println (str "Attempting to initialize PROJ library...")))
-        (if @force-graal
-          (do (when log-level (println "Forcing GraalVM implementation."))
-              (wasm/init-proj))
-          (try
-            (when log-level (println "Attempting FFI implementation."))
-            (native/init-proj)
-            (catch Throwable e
-              (println "-------------------- FFI Initialization Failure --------------------")
-              (println "FFI initialization failed, falling back to GraalVM.")
-              (println (str "Top-level exception: " (.getClass e) " - " (.getMessage e)))
-              (when-let [cause (.getCause e)]
-                (println (str "Root cause: " (.getClass cause) " - " (.getMessage cause))))
-              (.printStackTrace e)
-              (println "------------------------------------------------------------------")
-              (wasm/init-proj))))
-        (reset! implementation
-                (cond @force-graal :graal
-                      (not (nil? (:singleton @native/proj))) :ffi
-                      :else :graal))
-        (when log-level (println (str "PROJ library initialized with " (name @implementation) " implementation.")))
-        nil) ;; Return nil for Clojure
+      (let [ffi-succeeded? (atom false)]
+        (try
+          (when log-level (println (str "Attempting to initialize PROJ library...")))
+          (if @force-graal
+            (do (when log-level (println "Forcing GraalVM implementation."))
+                (wasm/init-proj))
+            (try
+              (when log-level (println "Attempting FFI implementation."))
+              (native/init-proj)
+              (reset! ffi-succeeded? true)
+              (catch Throwable e
+                (println "-------------------- FFI Initialization Failure --------------------")
+                (println "FFI initialization failed, falling back to GraalVM.")
+                (println (str "Top-level exception: " (.getClass e) " - " (.getMessage e)))
+                (when-let [cause (.getCause e)]
+                  (println (str "Root cause: " (.getClass cause) " - " (.getMessage cause))))
+                (.printStackTrace e)
+                (println "------------------------------------------------------------------")
+                (wasm/init-proj))))
+          (reset! implementation
+                  (cond @force-graal :graal
+                        @ffi-succeeded? :ffi
+                        :else :graal))
+          (when log-level (println (str "PROJ library initialized with " (name @implementation) " implementation.")))
+          nil)) ;; Return nil for Clojure
       :cljs
       (do
         (when log-level (js/console.log "Attempting to initialize PROJ library for ClojureScript..."))
@@ -639,58 +641,101 @@
 ;; Consider integrating cs into this functionality.
 (defn extract-args
   "Extract arguments from opts map based on function definition, applying defaults.
-   Supports both underscore and hyphenated parameter names for better usability."
-  [argtypes opts]
-  (mapv (fn [arg-spec]
-          (let [[arg-name arg-type & rest-spec] arg-spec
-                arg-map (when (seq rest-spec) (apply hash-map rest-spec))
-                default-val (get arg-map :default)
-                ;; Try both underscore and hyphenated versions of the parameter name
-                arg-kw-underscore (keyword arg-name)
-                ;; Use JavaScript String.replace for ClojureScript, clojure.string/replace for Clojure  
-                arg-kw-hyphenated (keyword
-                                   #?(:clj (clojure.string/replace (name arg-name) #"_" "-")
-                                      :cljs (-> (name arg-name)
-                                                (.replace (js/RegExp. "_" "g") "-"))))
-                ;; In CLJS, opts might be a JS object - use aget for JS objects
-                provided-val #?(:clj (or (get opts arg-kw-underscore)
-                                         (get opts arg-kw-hyphenated))
-                                :cljs (if (object? opts)
-                                        (or (aget opts (name arg-name))
-                                            (aget opts (-> (name arg-name)
-                                                           (.replace (js/RegExp. "_" "g") "-"))))
-                                        (or (get opts arg-kw-underscore)
-                                            (get opts arg-kw-hyphenated))))]
-            ;; Special handling for context arguments
-            (cond
-              ;; If context is required but not provided, create a temporary one
-              (and (= arg-name 'context)
-                   (nil? provided-val)
-                   (not (contains? arg-map :default)))
-              (let [temp-ctx (context-create {})]
+   Supports both underscore and hyphenated parameter names for better usability.
+   Checks both :argtypes inline defaults and :argsemantics for default values."
+  [fn-def opts & {:keys [skip-first?] :or {skip-first? false}}]
+  (let [argtypes (if skip-first?
+                   (rest (:argtypes fn-def))
+                   (:argtypes fn-def))
+        ;; Build a map of arg-name -> semantics from :argsemantics
+        ;; Format is [['arg-name :type :default val] ...] - preserve type in :semantic-type
+        argsemantics-map (into {}
+                               (map (fn [[arg-name semantic-type & rest-semantics]]
+                                      [(symbol (name arg-name))
+                                       (merge {:semantic-type semantic-type}
+                                              (if (seq rest-semantics)
+                                                (apply hash-map rest-semantics)
+                                                {}))])
+                                    (:argsemantics fn-def)))]
+    (mapv (fn [arg-spec]
+            (let [[arg-name arg-type & rest-spec] arg-spec
+                  arg-map (when (seq rest-spec) (apply hash-map rest-spec))
+                  ;; Check both argtypes inline default and argsemantics default
+                  semantics-for-arg (get argsemantics-map arg-name)
+                  default-val (or (get arg-map :default)
+                                  (get semantics-for-arg :default))
+                  has-default? (or (contains? arg-map :default)
+                                   (contains? semantics-for-arg :default))
+                  ;; Try both underscore and hyphenated versions of the parameter name
+                  arg-kw-underscore (keyword arg-name)
+                  ;; Use JavaScript String.replace for ClojureScript, clojure.string/replace for Clojure
+                  arg-kw-hyphenated (keyword
+                                     #?(:clj (clojure.string/replace (name arg-name) #"_" "-")
+                                        :cljs (-> (name arg-name)
+                                                  (.replace (js/RegExp. "_" "g") "-"))))
+                  ;; In CLJS, opts might be a JS object - use aget for JS objects
+                  provided-val #?(:clj (or (get opts arg-kw-underscore)
+                                           (get opts arg-kw-hyphenated))
+                                  :cljs (if (object? opts)
+                                          (or (aget opts (name arg-name))
+                                              (aget opts (-> (name arg-name)
+                                                             (.replace (js/RegExp. "_" "g") "-"))))
+                                          (or (get opts arg-kw-underscore)
+                                              (get opts arg-kw-hyphenated))))]
+              ;; Special handling for context arguments
+              (cond
+                ;; If context is provided as an atom, extract the pointer for FFI
+                (and (= arg-name 'context)
+                     (some? provided-val)
+                     (is-context? provided-val))
                 #?(:clj (if (graal?)
-                          temp-ctx
-                          (context-ptr temp-ctx))
-                   :cljs temp-ctx))
+                          provided-val
+                          (context-ptr provided-val))
+                   :cljs provided-val)
 
-              ;; Use default value when provided
-              (and (nil? provided-val) (contains? arg-map :default))
-              (if (symbol? default-val)
-                (if-let [resolved (ns-resolve 'net.willcohen.proj.fndefs default-val)]
-                  @resolved
-                  default-val)
-                default-val)
+                ;; If context is required but not provided, create a temporary one
+                (and (= arg-name 'context)
+                     (nil? provided-val)
+                     (not has-default?))
+                (let [temp-ctx (context-create {})]
+                  #?(:clj (if (graal?)
+                            temp-ctx
+                            (context-ptr temp-ctx))
+                     :cljs temp-ctx))
 
-              ;; Handle coord-array maps for pointer arguments (GraalVM/WASM)
-              ;; coord-array returns {:malloc ptr :array heapf64} but we need just the pointer
-              (and (= arg-type :pointer)
-                   (map? provided-val)
-                   (contains? provided-val :malloc))
-              (:malloc provided-val)
+                ;; Use default value when not provided but default exists
+                (and (nil? provided-val) has-default?)
+                (cond
+                  ;; Handle symbol defaults (e.g., PJ_WKT2_2019)
+                  (symbol? default-val)
+                  (if-let [resolved (ns-resolve 'net.willcohen.proj.fndefs default-val)]
+                    @resolved
+                    default-val)
+                  ;; Handle boolean defaults for int32 args (convert to 0/1)
+                  (and (= arg-type :int32) (boolean? default-val))
+                  (if default-val 1 0)
+                  ;; Otherwise use the default as-is
+                  :else default-val)
 
-              ;; Otherwise use provided value
-              :else provided-val)))
-        argtypes))
+                ;; Handle coord-array maps for pointer arguments (GraalVM/WASM)
+                ;; coord-array returns {:malloc ptr :array heapf64} but we need just the pointer
+                (and (= arg-type :pointer)
+                     (map? provided-val)
+                     (contains? provided-val :malloc))
+                (:malloc provided-val)
+
+                ;; Handle string-array? semantic - convert vector of strings to char**
+                (and (some? provided-val)
+                     (sequential? provided-val)
+                     (= :string-array? (:semantic-type semantics-for-arg)))
+                #?(:clj (if (graal?)
+                          (wasm/string-array-to-polyglot-array provided-val)
+                          (StringArray. (into-array String provided-val)))
+                   :cljs (wasm/string-array-to-polyglot-array provided-val))
+
+                ;; Otherwise use provided value
+                :else provided-val)))
+          argtypes)))
 
 (defn dispatch-to-platform-with-args
   "Dispatch to platform implementation with pre-extracted args"
@@ -778,8 +823,7 @@
   [opts fn-def]
   (let [first-arg-name (when (seq (:argtypes fn-def))
                          (keyword (first (first (:argtypes fn-def)))))]
-    (extract-args (rest (:argtypes fn-def))
-                  (dissoc opts first-arg-name))))
+    (extract-args fn-def (dissoc opts first-arg-name) :skip-first? true)))
 
 (defn dispatch-proj-fn
   "Central dispatcher for all PROJ functions"
@@ -792,7 +836,7 @@
           result (dispatch-context-fn fn-key fn-def context-atom remaining-args)]
       (process-return-value-with-tracking result fn-def))
     ;; Regular function or context is not an atom
-    (let [args (extract-args (:argtypes fn-def) opts)
+    (let [args (extract-args fn-def opts)
           result (dispatch-to-platform-with-args fn-key fn-def args)]
       (process-return-value-with-tracking result fn-def))))
 

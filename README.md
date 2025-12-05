@@ -261,7 +261,45 @@ On a computer where the native library was built:
 ;; cleaned up when they go out of scope or during garbage collection
 ```
 
-Idiomatic Java API is not yet present, but is possible.
+### Java API
+
+A Java wrapper class (`net.willcohen.proj.PROJ`) provides idiomatic Java access to the library:
+
+```java
+import net.willcohen.proj.PROJ;
+
+// Initialize (auto-selects best backend: native FFI or GraalVM WASM)
+PROJ.init();
+
+// Create a context and transformation
+Object ctx = PROJ.contextCreate();
+Object transform = PROJ.createCrsToCrs(ctx, "EPSG:4326", "EPSG:2249");
+
+// Transform coordinates (EPSG:4326 uses lat/lon order)
+Object coords = PROJ.coordArray(1);
+PROJ.setCoords(coords, new double[][]{{42.3603222, -71.0579667}}); // Boston City Hall
+PROJ.transArray(transform, coords, 1);
+// coords now contains transformed coordinates in EPSG:2249 (MA State Plane)
+
+// Query available authorities
+List<String> authorities = PROJ.getAuthoritiesFromDatabase();
+// => ["EPSG", "ESRI", "PROJ", "OGC", ...]
+
+// Create transformation from CRS objects (for advanced use)
+Object sourceCrs = PROJ.createFromDatabase(ctx, "EPSG", "4326");
+Object targetCrs = PROJ.createFromDatabase(ctx, "EPSG", "2249");
+Object transformFromPj = PROJ.createCrsToCrsFromPj(ctx, sourceCrs, targetCrs);
+
+// No manual cleanup needed - resources are automatically tracked!
+```
+
+The Java API mirrors the Clojure API and supports:
+- All initialization and backend control methods (`init()`, `forceGraal()`, `forceFfi()`)
+- Context management (`contextCreate()`, `isContext()`)
+- CRS transformations (`createCrsToCrs()`, `createCrsToCrsFromPj()`, `createFromDatabase()`)
+- Coordinate arrays (`coordArray()`, `setCoords()`, `transArray()`)
+- Database queries (`getAuthoritiesFromDatabase()`, `getCodesFromDatabase()`)
+- Direction constants (`PJ_FWD`, `PJ_INV`, `PJ_IDENT`)
 
 ### JDK 21+ with GraalVM WebAssembly
 

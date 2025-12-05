@@ -17,7 +17,7 @@
                 :lib lib
                 :version version
                 :basis @basis
-                :src-dirs ["src/clj" "src/cljc"]
+                :src-dirs ["src/clj" "src/cljc" "src/java"]
                 :pom-data [[:licenses
                             [:license
                              [:name "MIT License"]
@@ -33,6 +33,11 @@
 (defn jar [_]
   (clean nil)
   (pom nil)
+  ;; Compile Java sources
+  (b/javac {:src-dirs ["src/java"]
+            :class-dir class-dir
+            :basis @basis
+            :javac-opts ["--release" "21"]})
   (b/copy-dir {:src-dirs ["src/clj" "src/cljc" "resources"]
                :target-dir class-dir})
   ;; Delete npm/node related files that shouldn't be in the jar
@@ -57,5 +62,9 @@
   (b/delete {:path "target/classes/net/willcohen/proj/proj-emscripten.wasm"})
   ;; Delete clj-kondo exports
   (b/delete {:path "target/classes/clj-kondo.exports"})
+  ;; Delete duplicate/misplaced files
+  (b/delete {:path "target/classes/.keep"})
+  (b/delete {:path "target/classes/net/willcohen/proj/proj"})  ; duplicate proj.db
+  (b/delete {:path "target/classes/net/willcohen/proj/sqlite3.wasm"})
   (b/jar {:class-dir class-dir
           :jar-file jar-file}))

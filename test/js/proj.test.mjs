@@ -304,29 +304,138 @@ describe('proj-wasm Node.js API', () => {
     // Import resource-tracker
     const resourceTracker = await import('resource-tracker');
     const releasing = resourceTracker.releasing_BANG_ || resourceTracker.releasing;
-    
+
     // Test 2: Use releasing block for deterministic cleanup
     await releasing(async () => {
       const context = proj.context_create();
-      
+
       // Create resources inside releasing block
       const crs = proj.proj_create_from_database({
         context: context,
         auth_name: "EPSG",
         code: "4326"
       });
-      
+
       const authorities = proj.proj_get_authorities_from_database({
         context: context
       });
-      
+
       assert(crs, 'CRS should be created in releasing block');
-      
+
       // All resources created in this block will be cleaned up when it exits
     });
-    
+
     assert(true, 'Resources cleaned up after releasing block');
   });
 
+  test('can create transformation from PJ objects (proj_create_crs_to_crs_from_pj)', () => {
+    const context = proj.context_create();
+
+    // PJ_CATEGORY_CRS = 3
+    const PJ_CATEGORY_CRS = proj.PJ_CATEGORY_CRS || 3;
+
+    // Create CRS objects from database
+    const sourceCrs = proj.proj_create_from_database({
+      context: context,
+      auth_name: "EPSG",
+      code: "4326",
+      category: PJ_CATEGORY_CRS
+    });
+
+    const targetCrs = proj.proj_create_from_database({
+      context: context,
+      auth_name: "EPSG",
+      code: "2249",
+      category: PJ_CATEGORY_CRS
+    });
+
+    assert(sourceCrs, 'Source CRS should be created from database');
+    assert(targetCrs, 'Target CRS should be created from database');
+
+    // Create transformation from PJ objects
+    const transformer = proj.proj_create_crs_to_crs_from_pj({
+      context: context,
+      source_crs: sourceCrs,
+      target_crs: targetCrs
+    });
+
+    assert(transformer, 'Transformation should be created from PJ objects');
+    assert(transformer !== 0, 'Transformation should not be null pointer');
+
+    // Verify the transformation works by transforming a coordinate
+    const coordArray = proj.coord_array(1);
+    proj.set_coords_BANG_(coordArray, [[42.3603222, -71.0579667, 0, 0]]); // Boston City Hall
+
+    let malloc;
+    if (coordArray.get) {
+      malloc = coordArray.get('malloc');
+    } else {
+      malloc = coordArray.malloc;
+    }
+
+    const PJ_FWD = proj.PJ_FWD || 1;
+    proj.proj_trans_array({
+      p: transformer,
+      direction: PJ_FWD,
+      n: 1,
+      coord: malloc
+    });
+
+    let array;
+    if (coordArray.get) {
+      array = coordArray.get('array');
+    } else {
+      array = coordArray.array;
+    }
+
+    // Verify coordinates are in expected MA State Plane range
+    const transformedX = array[0];
+    const transformedY = array[1];
+
+    assert(
+      transformedX > 775000 && transformedX < 776000,
+      `Transformed X should be around 775,200 feet: ${transformedX}`
+    );
+    assert(
+      transformedY > 2956000 && transformedY < 2957000,
+      `Transformed Y should be around 2,956,400 feet: ${transformedY}`
+    );
+  });
+
+  test('can create transformation from PJ objects with options', () => {
+    const context = proj.context_create();
+
+    // PJ_CATEGORY_CRS = 3
+    const PJ_CATEGORY_CRS = proj.PJ_CATEGORY_CRS || 3;
+
+    // Create CRS objects from database
+    const sourceCrs = proj.proj_create_from_database({
+      context: context,
+      auth_name: "EPSG",
+      code: "4326",
+      category: PJ_CATEGORY_CRS
+    });
+
+    const targetCrs = proj.proj_create_from_database({
+      context: context,
+      auth_name: "EPSG",
+      code: "2249",
+      category: PJ_CATEGORY_CRS
+    });
+
+    assert(sourceCrs, 'Source CRS should be created from database');
+    assert(targetCrs, 'Target CRS should be created from database');
+
+    // Create transformation from PJ objects with options
+    const transformer = proj.proj_create_crs_to_crs_from_pj({
+      context: context,
+      source_crs: sourceCrs,
+      target_crs: targetCrs,
+      options: ["ALLOW_BALLPARK=NO"]
+    });
+
+    assert(transformer, 'Transformation should be created from PJ objects with options');
+    assert(transformer !== 0, 'Transformation should not be null pointer');
+  });
 
 });

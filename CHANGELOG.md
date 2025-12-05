@@ -5,6 +5,9 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- `proj_create_crs_to_crs_from_pj` function
+- **Java API**: `PROJ.java` wrapper, `PROJTest.java` tests, `bb test:java-ffi`, `bb test:java-graal`, `bb test:clj-ffi`
+
 - **Container-Based Build System**:
   - `Containerfile` with builds for native, WASM, and development targets
   - Cross-platform compilation support for `linux/amd64`, `linux/aarch64`, and `windows/amd64`
@@ -18,6 +21,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - PROJ 9.7.1, GraalVM 25.0.1, Clojure 1.12.3
 
 ### Fixed
+- `extract-args` now uses `:argsemantics` defaults (fixes `proj_create_from_database` NPE)
+- `proj_create_from_database` options parameter changed to `:pointer?` for proper null handling
 - ClojureScript: context/nil pointer conversion in ccall
 - test:playwright copies required resources
 

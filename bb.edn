@@ -235,20 +235,82 @@
            (println "Starting nREPL on port 7888")
            (tasks/shell "clj" "-Sdeps" deps-str "-J-XX:+UnlockExperimentalVMOptions" "-J-XX:+EnableJVMCI" "-J--enable-native-access=ALL-UNNAMED" "-J-Djdk.attach.allowAttachSelf" "-M" "-m" "nrepl.cmdline" "--port" "7888"))}
 
-  ;; Task to run FFI tests on JVM
+  ;; Task to compile Java test sources
+  compile-java-tests {:doc "Compile Java test sources"
+                      :task (do
+                              (println "Compiling Java sources and tests...")
+                              (fs/create-dirs "target/test-classes")
+                              ;; Compile main Java source first
+                              (tasks/shell "javac" "--release" "21"
+                                           "-cp" (str "src/clj:src/cljc:resources:"
+                                                      (str/join ":" (map str (fs/glob "." "**/*.jar")))
+                                                      ":"
+                                                      (-> (tasks/shell {:out :string} "clj" "-Spath")
+                                                          :out
+                                                          str/trim))
+                                           "-d" "target/test-classes"
+                                           "src/java/net/willcohen/proj/PROJ.java")
+                              ;; Compile test Java source
+                              (tasks/shell "javac" "--release" "21"
+                                           "-cp" (str "target/test-classes:"
+                                                      (-> (tasks/shell {:out :string} "clj" "-Spath")
+                                                          :out
+                                                          str/trim))
+                                           "-d" "target/test-classes"
+                                           "test/java/net/willcohen/proj/PROJTest.java")
+                              (println "Java compilation complete."))}
 
-  test:ffi {:doc "Run Clojure tests for FFI implementation."
-            :task (do
-                    (println "Running FFI tests...")
-                    ;; Pass the desired implementation as a system property
-                    (let [result (clojure.java.shell/sh "clj" "-J-Dnet.willcohen.proj.proj-test.implementation=ffi" "-J-XX:+UnlockExperimentalVMOptions" "-J-XX:+EnableJVMCI" "-J-Dpolyglot.engine.WarnInterpreterOnly=false" "-M:test")]
-                      (print (:out result))
-                      (print (:err result))))}
+  ;; Task to run Java API tests with FFI backend
+  test:java-ffi {:doc "Run Java API tests with FFI backend"
+                 :depends [compile-java-tests]
+                 :task (do
+                         (println "Running Java API tests (FFI)...")
+                         (tasks/shell "java"
+                                      "-XX:+UnlockExperimentalVMOptions"
+                                      "-XX:+EnableJVMCI"
+                                      "--enable-native-access=ALL-UNNAMED"
+                                      "-Dpolyglot.engine.WarnInterpreterOnly=false"
+                                      "-cp" (str "target/test-classes:src/clj:src/cljc:resources:"
+                                                 (-> (tasks/shell {:out :string} "clj" "-Spath")
+                                                     :out
+                                                     str/trim))
+                                      "net.willcohen.proj.PROJTest"))}
+
+  ;; Task to run Java API tests with GraalVM backend
+  test:java-graal {:doc "Run Java API tests with GraalVM backend"
+                   :depends [compile-java-tests]
+                   :task (do
+                           (println "Running Java API tests (GraalVM)...")
+                           (tasks/shell "java"
+                                        "-Dpolyglot.engine.WarnInterpreterOnly=false"
+                                        "-cp" (str "target/test-classes:src/clj:src/cljc:resources:"
+                                                   (-> (tasks/shell {:out :string} "clj" "-Spath")
+                                                       :out
+                                                       str/trim))
+                                        "net.willcohen.proj.PROJTest"
+                                        "--graal"))}
+
+  ;; Task to run Clojure FFI tests on JVM (without Java tests)
+  test:clj-ffi {:doc "Run Clojure tests for FFI implementation (no Java tests)."
+                :task (do
+                        (println "Running Clojure FFI tests...")
+                        ;; Pass the desired implementation as a system property
+                        (let [result (clojure.java.shell/sh "clj" "-J-Dnet.willcohen.proj.proj-test.implementation=ffi" "-J-XX:+UnlockExperimentalVMOptions" "-J-XX:+EnableJVMCI" "-J-Dpolyglot.engine.WarnInterpreterOnly=false" "-M:test")]
+                          (print (:out result))
+                          (print (:err result))
+                          (when (not= 0 (:exit result))
+                            (throw (ex-info "Clojure FFI tests failed" {:exit (:exit result)})))))}
+
+  ;; Task to run FFI tests on JVM (both Clojure and Java)
+  test:ffi {:doc "Run Clojure and Java tests for FFI implementation."
+            :depends [test:clj-ffi test:java-ffi]
+            :task (println "All FFI tests complete.")}
 
   ;; Task to run GraalVM tests on JVM
-  test:graal {:doc "Run Clojure tests for GraalVM implementation."
+  test:graal {:doc "Run Clojure and Java tests for GraalVM implementation."
+              :depends [test:java-graal]
               :task (do
-                      (println "Running GraalVM tests...")
+                      (println "Running Clojure GraalVM tests...")
                       ;; Pass the desired implementation as a system property
                       (let [result (clojure.java.shell/sh "clj" "-J-Dnet.willcohen.proj.proj-test.implementation=graal" "-J-Dpolyglot.engine.WarnInterpreterOnly=false" "-M:test")]
                         (print (:out result))
@@ -434,6 +496,59 @@
                         (print (:out result))
                         (print (:err result))
                         (System/exit 1)))
+
+                    ;; Test Java API
+                    (println)
+                    (println "4. Testing Java API from JAR...")
+                    (let [test-dir "target/java-jar-test"
+                          jar-path "target/proj-0.1.0-alpha2.jar"
+                          clj-cp (-> (tasks/shell {:out :string} "clj" "-Spath") :out str/trim)]
+                      ;; Create test directory and Java test file
+                      (fs/create-dirs test-dir)
+                      (spit (str test-dir "/JavaJarTest.java")
+                            "import net.willcohen.proj.PROJ;
+
+public class JavaJarTest {
+    public static void main(String[] args) {
+        try {
+            PROJ.init();
+            Object ctx = PROJ.contextCreate();
+            if (ctx == null) throw new RuntimeException(\"Context creation failed\");
+            Object transform = PROJ.createCrsToCrs(ctx, \"EPSG:4326\", \"EPSG:3857\");
+            if (transform == null) throw new RuntimeException(\"Transform creation failed\");
+            System.out.println(\"   OK Java API test passed\");
+        } catch (Exception e) {
+            System.err.println(\"Java API test failed: \" + e.getMessage());
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+}
+")
+                      ;; Compile and run
+                      (let [compile-result (clojure.java.shell/sh
+                                            "javac" "--release" "21"
+                                            "-cp" (str jar-path ":" clj-cp)
+                                            "-d" test-dir
+                                            (str test-dir "/JavaJarTest.java"))]
+                        (when (not= 0 (:exit compile-result))
+                          (println "Java compilation failed!")
+                          (print (:out compile-result))
+                          (print (:err compile-result))
+                          (System/exit 1)))
+                      (let [run-result (clojure.java.shell/sh
+                                        "java"
+                                        "-XX:+UnlockExperimentalVMOptions"
+                                        "-XX:+EnableJVMCI"
+                                        "--enable-native-access=ALL-UNNAMED"
+                                        "-Dpolyglot.engine.WarnInterpreterOnly=false"
+                                        "-cp" (str test-dir ":" jar-path ":" clj-cp)
+                                        "JavaJarTest")]
+                        (print (:out run-result))
+                        (when (not= 0 (:exit run-result))
+                          (println "Java run failed!")
+                          (print (:err run-result))
+                          (System/exit 1))))
 
                     (println)
                     (println "All JAR tests passed! ✓"))}
@@ -905,7 +1020,7 @@
                                     (cond
                                       (= type :wasm)
                                       (let [;; Exported runtime methods from scripts/exported_runtime_methods.json
-                                            exported-runtime-methods "[\"FS\",\"ENV\",\"HEAPF64\",\"err\",\"ccall\",\"cwrap\",\"stackAlloc\",\"stackSave\",\"stackRestore\",\"getValue\",\"setValue\",\"stringToNewUTF8\"]"
+                                            exported-runtime-methods "[\"FS\",\"ENV\",\"HEAPF64\",\"err\",\"ccall\",\"cwrap\",\"stackAlloc\",\"stackSave\",\"stackRestore\",\"getValue\",\"setValue\",\"stringToNewUTF8\",\"stringToUTF8\"]"
 
                                             ;; Extract function names from fndefs
                                             fndefs-content (slurp "src/cljc/net/willcohen/proj/fndefs.cljc")
@@ -1000,12 +1115,23 @@
                                             libtiff-libname (cond
                                                               is-darwin? "libtiff.dylib"
                                                               is-linux? "libtiff.a" ; Always static on Linux
-                                                              :else "libtiff.a")]
+                                                              :else "libtiff.a")
+                                            ;; Find the actual versioned libtiff name that libproj links to
+                                            libtiff-versioned-name (when is-darwin?
+                                                                     (let [otool-result (shell/sh "otool" "-L" (str (fs/path build-dir "lib" proj-lib-versioned)))
+                                                                           lines (str/split-lines (:out otool-result))
+                                                                           libtiff-line (first (filter (fn [line] (str/includes? line "libtiff")) lines))]
+                                                                       (when libtiff-line
+                                                                         (second (re-find (re-pattern "([^\\s]+libtiff[^\\s]+)") libtiff-line)))))]
                                         (when is-darwin?
-                                          (tasks/shell {:dir build-dir} "install_name_tool" "-change"
-                                                       (fs/path libtiff-install-dir "lib" libtiff-libname)
-                                                       (str "@loader_path/" libtiff-libname)
-                                                       (fs/path "lib" proj-lib-versioned)))
+                                          (if libtiff-versioned-name
+                                            (do
+                                              (println "Fixing libtiff reference:" libtiff-versioned-name "-> @loader_path/libtiff.dylib")
+                                              (tasks/shell {:dir build-dir} "install_name_tool" "-change"
+                                                           libtiff-versioned-name
+                                                           "@loader_path/libtiff.dylib"
+                                                           (fs/path "lib" proj-lib-versioned)))
+                                            (println "WARNING: Could not detect libtiff reference in libproj")))
                                         (let [dest-dir (fs/path "resources" library-dir)]
                                           (println "Copying native build artifacts...")
                                           (fs/create-dirs dest-dir)
@@ -1406,7 +1532,7 @@
 
                     (doseq [file files]
                       (println (str "Compiling " file "..."))
-                      (tasks/shell {:dir proj-dir :continue true} "npx" "cherry" "compile" file))
+                      (tasks/shell {:dir proj-dir :continue true} "npx" "cherry" "run" file))
 
                     (println "Cherry compilation complete.")
 

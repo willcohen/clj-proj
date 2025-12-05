@@ -37,9 +37,9 @@
             ;; and ensures initialization after the force-X! call.
             (try
               ~@body
-              (finally
+              (finally))))))
               ;; No proj/proj-reset here; relying on resource tracking for cleanup.
-                ))))))
+
    :cljs
    (defmacro with-each-implementation [& body]
      ;; For CLJS, you'll typically run tests separately for node and browser.
@@ -71,10 +71,9 @@
        ;; WASM/GraalVM ccall logging - logs at the specified level (e.g. :info, :warn, :debug)
        ;; Set to nil to disable ccall logging entirely
        (binding [wasm/*runtime-log-level* nil]
-         (f)) ; Run the tests
+         (f))))) ; Run the tests
        ;(log/info "Global test teardown: (if necessary, clean up global PROJ state here).")
        ;; If there's a global `proj/proj-reset` or similar cleanup, it would go here.
-       )))
 
 ;; --- Tests ---
 
@@ -180,9 +179,8 @@
                                                       :source_crs "EPSG:4326"
                                                       :target_crs "EPSG:2249"})]
           ;; When fixed, should be:
-          (is (not (nil? transform)) "Transform should not be nil")
+          (is (not (nil? transform)) "Transform should not be nil"))))))
           ;; not a thing... (is (resource/tracked? transform) "Transform should be resource tracked")
-          )))))
 
 (deftest database-codes-error-test
   (with-each-implementation
@@ -316,30 +314,22 @@
           (when (nil? @proj/implementation)
             (proj/init!))
 
-          (try
-            (resource/stack-resource-context
-             ;; Create various resources that should be auto-cleaned
-             (let [ctx (proj/context-create)]
-               ;; These might fail, so create them carefully
-               (when ctx
-                 (try
-                   (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-                   (catch Exception e nil))
-                 (try
-                   (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "3857"})
-                   (catch Exception e nil))
-                 ;; This should work and return a string list
-                 (try
-                   (proj/proj-get-authorities-from-database {:context ctx})
-                   (catch Exception e nil)))))
+          (resource/stack-resource-context
+           ;; Create various resources that should be auto-cleaned
+           (let [ctx (proj/context-create)]
+             (is (some? ctx) "Context should be created")
+             (let [crs-4326 (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
+               (is (some? crs-4326) "Should create CRS from database for EPSG:4326"))
+             (let [crs-3857 (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "3857"})]
+               (is (some? crs-3857) "Should create CRS from database for EPSG:3857"))
+             ;; This should work and return a string list
+             (let [authorities (proj/proj-get-authorities-from-database {:context ctx})]
+               (is (coll? authorities) "Should get authorities from database"))))
 
-            ;; After leaving context, check cleanup was called
-            ;; We should see at least some cleanup calls
-            (is (pos? (count @cleanup-called))
-                (str "Some cleanup functions should have been called. Called: " @cleanup-called))
-            (catch Exception e
-              ;; If the whole test fails, at least check that resource tracking is set up
-              (is true "Resource tracking mechanism is in place, even if resource creation failed"))))))))
+          ;; After leaving context, check cleanup was called
+          ;; We should see at least some cleanup calls
+          (is (pos? (count @cleanup-called))
+              (str "Some cleanup functions should have been called. Called: " @cleanup-called)))))))
 
 ;; Error handling tests
 
@@ -373,3 +363,72 @@
         :graal (is true "GraalVM implementation has slower initialization (5-30s)")
         :cljs (is true "ClojureScript initializes at namespace load")
         (is false (str "Unknown implementation: " impl))))))
+
+(deftest create-crs-to-crs-from-pj-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj_create_crs_to_crs_from_pj creates transformation from PJ objects"
+        ;; Strategy: create CRS objects from the database, then use them to create
+        ;; a transformation via proj-create-crs-to-crs-from-pj
+        (let [;; Create CRS objects from database
+              source-crs (proj/proj-create-from-database {:context ctx
+                                                          :auth_name "EPSG"
+                                                          :code "4326"})
+              target-crs (proj/proj-create-from-database {:context ctx
+                                                          :auth_name "EPSG"
+                                                          :code "2249"})]
+          (is (some? source-crs) "Should create source CRS from database")
+          (is (some? target-crs) "Should create target CRS from database")
+
+          ;; Now create a transformation using the CRS PJ* objects
+          (let [transform-from-pj (proj/proj-create-crs-to-crs-from-pj
+                                   {:context ctx
+                                    :source_crs source-crs
+                                    :target_crs target-crs})]
+            (is (some? transform-from-pj) "Should create transformation from PJ objects")
+
+            ;; Verify the new transformation works by transforming a coordinate
+            (when transform-from-pj
+              (let [coord-array (proj/coord-array 1)]
+                ;; Boston City Hall (lat, lon for EPSG:4326)
+                (proj/set-coords! coord-array [[42.3603222 -71.0579667 0 0]])
+                (let [result (proj/proj-trans-array
+                              {:p transform-from-pj
+                               :direction 1 ; PJ_FWD
+                               :n 1
+                               :coord coord-array})]
+                  (is (or (nil? result) (= 0 result)) "Transform should succeed")
+                  ;; Verify coordinates transformed to reasonable MA State Plane values
+                  #?(:clj
+                     (when-not (map? coord-array) ; FFI mode
+                       (let [x (get-in coord-array [0 0])
+                             y (get-in coord-array [0 1])]
+                         (is (< 775000 x 776000)
+                             "X coordinate should be around 775,200 feet")
+                         (is (< 2956000 y 2957000)
+                             "Y coordinate should be around 2,956,400 feet")))
+                     :cljs
+                     (is true "Coordinate access differs in CLJS")))))))))))
+
+(deftest create-crs-to-crs-from-pj-with-options-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj_create_crs_to_crs_from_pj with options parameter"
+        ;; Create CRS objects from database
+        (let [source-crs (proj/proj-create-from-database {:context ctx
+                                                          :auth_name "EPSG"
+                                                          :code "4326"})
+              target-crs (proj/proj-create-from-database {:context ctx
+                                                          :auth_name "EPSG"
+                                                          :code "2249"})]
+          (is (some? source-crs) "Should create source CRS from database")
+          (is (some? target-crs) "Should create target CRS from database")
+
+          ;; Create transformation with options (e.g., ALLOW_BALLPARK=NO)
+          (let [transform (proj/proj-create-crs-to-crs-from-pj
+                           {:context ctx
+                            :source_crs source-crs
+                            :target_crs target-crs
+                            :options ["ALLOW_BALLPARK=NO"]})]
+            (is (some? transform)
+                "Should create transformation from database CRS objects with options")))))))
