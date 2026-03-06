@@ -1130,15 +1130,7 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
                 content.classList.remove('loading-state');
 
                 document.querySelectorAll('#tab-bar .tab').forEach(btn => {
-                    btn.addEventListener('click', () => {
-                        document.querySelectorAll('#tab-bar .tab').forEach(t => t.classList.remove('active'));
-                        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-                        btn.classList.add('active');
-                        document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
-                        if (btn.dataset.tab === 'console' && monacoEditor) {
-                            monacoEditor.layout();
-                        }
-                    });
+                    btn.addEventListener('click', () => switchToTab(btn.dataset.tab));
                 });
 
                 setupTransformSection();
@@ -1449,12 +1441,18 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             const te = document.getElementById('target-epoch').value;
             if (document.getElementById('source-epoch-enable').checked && se) params.set('se', se);
             if (document.getElementById('target-epoch-enable').checked && te) params.set('te', te);
+            if (monacoEditor) {
+                const code = monacoEditor.getValue().trim();
+                if (code) params.set('code', code);
+            }
+            const activeTab = document.querySelector('#tab-bar .tab.active');
+            if (activeTab) params.set('tab', activeTab.dataset.tab);
 
             [...params.entries()].forEach(([k, v]) => { if (!v) params.delete(k); });
             window.history.replaceState(null, '', '?' + params.toString());
         }
 
-        function switchToTab(tabName) {
+        function switchToTab(tabName, skipUrl) {
             document.querySelectorAll('#tab-bar .tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
             const btn = document.querySelector('#tab-bar .tab[data-tab="' + tabName + '"]');
@@ -1462,6 +1460,7 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             const panel = document.getElementById('panel-' + tabName);
             if (panel) panel.classList.add('active');
             if (tabName === 'console' && monacoEditor) monacoEditor.layout();
+            if (!skipUrl) updateURLParams();
         }
 
         function loadFromURLParams() {
@@ -1479,7 +1478,14 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
                 document.getElementById('target-epoch').disabled = false;
                 document.getElementById('target-epoch').value = p.get('te');
             }
-            if (p.has('src') || p.has('tgt')) switchToTab('transform');
+            if (p.has('code')) window._pendingCode = p.get('code');
+            if (p.has('tab')) {
+                switchToTab(p.get('tab'), true);
+            } else if (p.has('code')) {
+                switchToTab('console', true);
+            } else if (p.has('src') || p.has('tgt')) {
+                switchToTab('transform', true);
+            }
             return p.get('run') === '1';
         }
 
@@ -1687,24 +1693,16 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
 
                 monaco.languages.registerCompletionItemProvider('javascript', {
                     provideCompletionItems: function (model, position) {
-                        const suggestions = [
-                            'contextCreate', 'projCreateCrsToCrs', 'projCreateFromDatabase',
-                            'coordArray', 'setCoords', 'getCoordArray', 'projTransArray',
-                            'projAsWkt', 'projAsProjjson', 'projAsProjString',
-                            'projGetName', 'projGetType', 'projGetRemarks',
-                            'projGetAuthoritiesFromDatabase', 'projGetCodesFromDatabase',
-                            'projCrsPromoteTo3D', 'projCoordinateMetadataCreate',
-                            'projCreateCrsToCrsFromPj', 'projContextSetEnableNetwork',
-                            'projGetIdAuthName', 'projGetIdCode',
-                            'projContextErrno', 'projIsCrs',
-                            'getCrsInfoListFromDatabase',
-                            'PJ_FWD', 'PJ_INV', 'PJ_WKT2_2019', 'PJ_PROJ_5', 'PJ_CATEGORY_CRS',
-                        ].map(label => ({
-                            label: 'proj.' + label,
-                            kind: monaco.languages.CompletionItemKind.Function,
-                            insertText: label,
-                            detail: 'proj-wasm'
-                        }));
+                        const suggestions = Object.keys(proj)
+                            .filter(k => !k.startsWith('_'))
+                            .map(label => ({
+                                label: 'proj.' + label,
+                                kind: typeof proj[label] === 'function'
+                                    ? monaco.languages.CompletionItemKind.Function
+                                    : monaco.languages.CompletionItemKind.Constant,
+                                insertText: label,
+                                detail: 'proj-wasm'
+                            }));
                         return { suggestions };
                     }
                 });
@@ -1712,6 +1710,19 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
                 document.getElementById('exampleSelect').disabled = false;
                 document.getElementById('btn-run').disabled = false;
                 document.getElementById('btn-clear').disabled = false;
+
+                if (window._pendingCode) {
+                    monacoEditor.setValue(window._pendingCode);
+                    delete window._pendingCode;
+                    const p = new URLSearchParams(window.location.search);
+                    if (p.get('run') === '1') setTimeout(runREPL, 100);
+                }
+
+                let codeUrlTimer = null;
+                monacoEditor.onDidChangeModelContent(() => {
+                    clearTimeout(codeUrlTimer);
+                    codeUrlTimer = setTimeout(updateURLParams, 1000);
+                });
             });
 
             document.getElementById('btn-run').addEventListener('click', runREPL);
@@ -1819,6 +1830,7 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             monacoEditor.setValue(examples[key]);
             monacoEditor.focus();
             select.value = '';
+            updateURLParams();
         }
 
         // --- CRS Selector Component ---
