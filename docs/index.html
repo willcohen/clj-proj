@@ -1700,7 +1700,7 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
                                 kind: typeof proj[label] === 'function'
                                     ? monaco.languages.CompletionItemKind.Function
                                     : monaco.languages.CompletionItemKind.Constant,
-                                insertText: label,
+                                insertText: 'proj.' + label,
                                 detail: 'proj-wasm'
                             }));
                         return { suggestions };
