@@ -4,6 +4,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.0-alpha7] - 2026-03-06
+
 ### Added
 - CLJS: Automatic cross-worker PJ reconciliation. When PJ args to a function live on different workers (e.g., after round-robin context creation), they are transparently recreated on the target worker via PROJJSON export and `proj_create_crs_to_crs`/`proj_get_source_crs` roundtrip, producing ISO-19111 compatible objects. A `console.warn` is emitted suggesting explicit contexts for better performance.
 - `force-worker-idx` parameter on `proj-emscripten-helper` and `def-wasm-fn-runtime` for routing calls to a specific worker
@@ -160,7 +162,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - Initial proof-of-concept functionality, released to NPM and Clojars.
 
-[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha6...HEAD
+[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha7...HEAD
+[0.1.0-alpha7]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha6...0.1.0-alpha7
 [0.1.0-alpha6]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha5...0.1.0-alpha6
 [0.1.0-alpha5]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha4...0.1.0-alpha5
 [0.1.0-alpha4]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha3...0.1.0-alpha4
