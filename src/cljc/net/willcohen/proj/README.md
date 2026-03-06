@@ -22,12 +22,9 @@ import * as proj from 'proj-wasm';
 // Initialize PROJ (required before using any functions)
 await proj.init();
 
-// Create a context
-const ctx = proj.contextCreate();
-
 // Create a coordinate transformation from WGS84 to Web Mercator
-const transformer = proj.projCreateCrsToCrs({
-  context: ctx,
+// (context is auto-created; pass one explicitly to control network or pin to a worker)
+const transformer = await proj.projCreateCrsToCrs({
   source_crs: "EPSG:4326",  // WGS84
   target_crs: "EPSG:3857"   // Web Mercator
 });
@@ -79,9 +76,10 @@ camelCase aliases omit it.
 ### Core Functions
 
 - `init()` - Initialize the PROJ library (must be called first)
-- `contextCreate()` - Create a new PROJ context
+- `contextCreate(options?)` - Create a new PROJ context (optional; auto-created when omitted)
+  - `options.network` - Enable/disable network grid fetching (default: `true`)
 - `projCreateCrsToCrs(options)` - Create a transformation between two coordinate reference systems
-  - `options.context` - The PROJ context
+  - `options.context` - PROJ context (optional; auto-created if omitted)
   - `options.source_crs` - Source CRS (e.g., "EPSG:4326")
   - `options.target_crs` - Target CRS (e.g., "EPSG:3857")
 

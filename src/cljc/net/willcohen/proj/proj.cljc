@@ -710,17 +710,13 @@
                           (context-ptr provided-val))
                    :cljs provided-val)
 
-                ;; If context is required but not provided, create a temporary one
-                ;; In CLJS, pass 0 (NULL) to let PROJ use default context
-                ;; (async context creation causes Promise serialization issues)
+                ;; Context required but not provided — should not happen,
+                ;; dispatch-proj-fn auto-creates context before we get here.
+                ;; Defensive fallback: return 0 (NULL) rather than crashing.
                 (and is-context-arg
                      (nil? provided-val)
                      (not has-default?))
-                #?(:clj (let [temp-ctx (context-create {})]
-                          (if (graal?)
-                            temp-ctx
-                            (context-ptr temp-ctx)))
-                   :cljs 0)  ; NULL - PROJ will use default context
+                0
 
                 ;; Use default value when not provided but default exists
                 (and (nil? provided-val) has-default?)
@@ -869,20 +865,138 @@
                                  (if (= first-arg-name :ctx) :context :ctx))
                   :skip-first? true)))
 
-(defn dispatch-proj-fn
+(defn- needs-auto-context?
+  "Check if a context function was called without a context argument"
+  [fn-key fn-def opts]
+  (and (is-c-context-fn? fn-key fn-def)
+       (let [first-arg-name (when (seq (:argtypes fn-def))
+                              (keyword (first (first (:argtypes fn-def)))))]
+         (nil?
+          #?(:clj (resolve-context-val opts first-arg-name)
+             :cljs (if (object? opts)
+                     (or (aget opts (name first-arg-name))
+                         (when (#{:ctx :context} first-arg-name)
+                           (aget opts (if (= first-arg-name :ctx) "context" "ctx"))))
+                     (resolve-context-val opts first-arg-name)))))))
+
+(defn- context-from-pj-args
+  "Extract a stored context from the first PJ arg in opts."
+  [fn-def opts]
+  (some (fn [[arg-spec _]]
+          (let [v #?(:clj (get opts (keyword arg-spec))
+                     :cljs (if (object? opts)
+                             (aget opts (name arg-spec))
+                             (get opts (keyword arg-spec))))]
+            #?(:clj (when (and v (map? (meta v)) (:proj-context (meta v)))
+                      (:proj-context (meta v)))
+               :cljs (when (and (object? v) (some? (.-_proj_context v)))
+                       (.-_proj_context v)))))
+        (rest (:argtypes fn-def))))
+
+(defn- attach-context-to-result
+  "Attach the context used for creation onto a PJ result object."
+  [result ctx]
+  (when result
+    #?(:clj (if (instance? clojure.lang.IObj result)
+              (vary-meta result assoc :proj-context ctx)
+              result)
+       :cljs (when (object? result)
+               (aset result "_proj_context" ctx)
+               result))))
+
+#?(:cljs
+   (defn- ^:async reconcile-cross-worker-args!
+     "When PJ/context args come from different workers, recreate mismatched ones
+      on the target worker via PROJJSON roundtrip."
+     [fn-def opts]
+     (let [worker-count (wasm/get-worker-count)]
+       (if (or (nil? worker-count) (<= worker-count 1))
+         opts
+         (let [pj-args (into []
+                             (keep (fn [[arg-spec _]]
+                                     (let [arg-name (name arg-spec)
+                                           v (if (object? opts)
+                                               (aget opts arg-name)
+                                               (get opts (keyword arg-spec)))]
+                                       (when (and (object? v)
+                                                  (or (= (.-type v) "pj")
+                                                      (= (.-type v) "proj-context")))
+                                         {:arg-name arg-name :value v :worker-idx (.-worker_idx v) :type (.-type v)}))))
+                             (:argtypes fn-def))
+               worker-indices (into #{} (map :worker-idx) pj-args)]
+           (if (<= (count worker-indices) 1)
+             opts
+             (let [target-worker (.-worker_idx (:value (first (filter #(= (:type %) "pj") pj-args))))
+                   desc (str "proj-wasm: PJ args are on different workers ("
+                             (string/join ", " (map #(str (:arg-name %) " on worker " (:worker-idx %)) pj-args))
+                             "). Recreating on worker " target-worker ". For better performance, use an explicit context.")]
+               (js/console.warn desc)
+               (let [target-ctx (or (some (fn [{:keys [value worker-idx type]}]
+                                            (when (and (= worker-idx target-worker) (= type "pj"))
+                                              (.-_proj_context value)))
+                                          pj-args)
+                                    (js-await (context-create {:worker target-worker})))]
+                 (doseq [{:keys [arg-name value worker-idx type]} pj-args]
+                   (when (and (not= worker-idx target-worker) (= type "pj"))
+                     (let [src-ctx (or (.-_proj_context value) (js-await (context-create {:worker worker-idx})))
+                           projjson (js-await (wasm/def-wasm-fn-runtime
+                                                :proj_as_projjson
+                                                (get pdefs/fndefs-raw :proj_as_projjson)
+                                                [src-ctx value 0]))]
+                       (when (or (nil? projjson) (= projjson ""))
+                         (throw (js/Error. (str "Cannot reconcile " arg-name " across workers: PROJJSON export failed. Use an explicit context."))))
+                       (let [identity-op (js-await (wasm/def-wasm-fn-runtime
+                                                     :proj_create_crs_to_crs
+                                                     (get pdefs/fndefs-raw :proj_create_crs_to_crs)
+                                                     [target-ctx projjson projjson 0]
+                                                     target-worker))
+                             new-pj (js-await (wasm/def-wasm-fn-runtime
+                                                :proj_get_source_crs
+                                                (get pdefs/fndefs-raw :proj_get_source_crs)
+                                                [target-ctx identity-op]
+                                                target-worker))]
+                         (aset new-pj "_proj_context" target-ctx)
+                         (aset opts arg-name new-pj))))
+                   (when (and (not= worker-idx target-worker) (= type "proj-context"))
+                     (aset opts arg-name target-ctx)))
+                 opts))))))))
+
+(defn ^:async dispatch-proj-fn
   "Central dispatcher for all PROJ functions"
   [fn-key fn-def opts]
   (ensure-initialized!)
-  (if (should-use-context-dispatch? fn-key fn-def opts)
-    ;; Context function with atom - use cs for atomicity
-    (let [context-atom (get-context-atom opts fn-def)
-          remaining-args (get-remaining-args opts fn-def)
-          result (dispatch-context-fn fn-key fn-def context-atom remaining-args)]
-      (process-return-value-with-tracking result fn-def))
-    ;; Regular function or context is not an atom
-    (let [args (extract-args fn-def opts)
-          result (dispatch-to-platform-with-args fn-key fn-def args)]
-      (process-return-value-with-tracking result fn-def))))
+  (let [opts (if (needs-auto-context? fn-key fn-def opts)
+               (let [ctx (or (context-from-pj-args fn-def opts)
+                             #?(:clj (context-create {})
+                                :cljs (js-await (context-create {}))))]
+                 #?(:clj (assoc opts :context ctx)
+                    :cljs (if (object? opts)
+                            (do (aset opts "context" ctx) opts)
+                            (assoc opts :context ctx))))
+               opts)
+        opts #?(:clj opts
+                :cljs (js-await (reconcile-cross-worker-args! fn-def opts)))
+        ctx-for-result (when (= :pj (:proj-returns fn-def))
+                         (let [first-arg-name (when (seq (:argtypes fn-def))
+                                                (keyword (first (first (:argtypes fn-def)))))]
+                           #?(:clj (resolve-context-val opts first-arg-name)
+                              :cljs (if (object? opts)
+                                      (or (aget opts (name first-arg-name))
+                                          (when (#{:ctx :context} first-arg-name)
+                                            (aget opts (if (= first-arg-name :ctx) "context" "ctx"))))
+                                      (resolve-context-val opts first-arg-name)))))]
+    (if (should-use-context-dispatch? fn-key fn-def opts)
+      (let [context-atom (get-context-atom opts fn-def)
+            remaining-args (get-remaining-args opts fn-def)
+            result #?(:clj (dispatch-context-fn fn-key fn-def context-atom remaining-args)
+                      :cljs (js-await (dispatch-context-fn fn-key fn-def context-atom remaining-args)))
+            result (process-return-value-with-tracking result fn-def)]
+        (if ctx-for-result (attach-context-to-result result ctx-for-result) result))
+      (let [args (extract-args fn-def opts)
+            result #?(:clj (dispatch-to-platform-with-args fn-key fn-def args)
+                      :cljs (js-await (dispatch-to-platform-with-args fn-key fn-def args)))
+            result (process-return-value-with-tracking result fn-def)]
+        (if ctx-for-result (attach-context-to-result result ctx-for-result) result)))))
 
 #?(:clj
    ;; Generate all PROJ functions at runtime for ClojureScript
@@ -962,11 +1076,12 @@
       :west-lon-degree :south-lat-degree :east-lon-degree :north-lat-degree
       :area-name :projection-method-name :celestial-body-name
       Options:
-        :context   - PROJ context (required)
+        :context   - PROJ context (auto-created if omitted)
         :auth-name - authority name filter, e.g. \"EPSG\" (all authorities if omitted)"
      ([opts]
       (ensure-initialized!)
-      (let [ctx (if (object? opts) (aget opts "context") (:context opts))
+      (let [ctx (or (if (object? opts) (aget opts "context") (:context opts))
+                    (js-await (context-create)))
             auth-name (if (object? opts)
                         (or (aget opts "auth_name") (aget opts "auth-name"))
                         (or (:auth-name opts) (:auth_name opts)))

@@ -154,6 +154,200 @@ test.describe('PROJ WASM Browser Tests', () => {
     expect(result.yInRange).toBe(true);
   });
 
+  test('CRS transformation without explicit context', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+
+      try {
+        const transformer = await proj.proj_create_crs_to_crs({
+          source_crs: "EPSG:4326",
+          target_crs: "EPSG:3857"
+        });
+
+        if (!transformer || transformer === 0) {
+          return { error: 'transformer is null/0' };
+        }
+
+        const coordArray = await proj.coord_array(1);
+        await proj.set_coords_BANG_(coordArray, [[42.3603, -71.0591, 0, 0]]);
+
+        await proj.proj_trans_array({
+          p: transformer,
+          direction: proj.PJ_FWD || 1,
+          n: 1,
+          coord: coordArray
+        });
+
+        const coords = await proj.get_coord_array(coordArray, 0);
+        return {
+          hasTransformer: true,
+          x: coords[0],
+          y: coords[1],
+          xLarge: Math.abs(coords[0]) > 1000
+        };
+      } catch (e) {
+        return { error: e.message };
+      }
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.hasTransformer).toBe(true);
+    expect(result.xLarge).toBe(true);
+  });
+
+  test('full transform pipeline without any context (demo page pattern)', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+
+      try {
+        const transformer = await proj.projCreateCrsToCrs({
+          source_crs: "EPSG:4326",
+          target_crs: "EPSG:3857"
+        });
+
+        const coords = await proj.coordArray(1);
+        await proj.setCoords(coords, [[42.3603, -71.0591, 0, 0]]);
+
+        await proj.projTransArray({
+          p: transformer,
+          direction: proj.PJ_FWD || 1,
+          n: 1,
+          coord: coords
+        });
+
+        const r = await proj.getCoords(coords, 0);
+        return {
+          success: true,
+          x: r[0],
+          y: r[1],
+          xInRange: Math.abs(r[0]) > 100000,
+          yInRange: Math.abs(r[1]) > 100000
+        };
+      } catch (e) {
+        return { error: e.message };
+      }
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.success).toBe(true);
+    expect(result.xInRange).toBe(true);
+    expect(result.yInRange).toBe(true);
+  });
+
+  test('get authorities without explicit context', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+
+      try {
+        const authorities = await proj.proj_get_authorities_from_database({});
+
+        if (authorities === null || authorities === undefined) {
+          return { nullResult: true };
+        }
+
+        return {
+          isArray: Array.isArray(authorities),
+          hasEPSG: authorities.includes('EPSG'),
+          count: authorities.length
+        };
+      } catch (e) {
+        return { error: e.message };
+      }
+    });
+
+    expect(result.error).toBeUndefined();
+    if (!result.nullResult) {
+      expect(result.isArray).toBe(true);
+      expect(result.hasEPSG).toBe(true);
+    }
+  });
+
+  test('projAsWkt returns WKT for CRS created without explicit context', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+
+      try {
+        const crs = await proj.projCreateFromDatabase({
+          auth_name: "EPSG", code: "4326", category: proj.PJ_CATEGORY_CRS
+        });
+
+        if (!crs || crs === 0) {
+          return { error: 'CRS is null/0' };
+        }
+
+        const wkt = await proj.projAsWkt({
+          pj: crs, type: proj.PJ_WKT2_2019, options: null
+        });
+
+        return {
+          wktType: typeof wkt,
+          wktLength: (wkt || '').length,
+          hasWGS84: (wkt || '').includes('WGS 84'),
+          wktPreview: (wkt || '').substring(0, 100)
+        };
+      } catch (e) {
+        return { error: e.message };
+      }
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.wktType).toBe('string');
+    expect(result.wktLength).toBeGreaterThan(0);
+    expect(result.hasWGS84).toBe(true);
+  });
+
+  test('promote to 3D and transform without explicit context (warns on cross-worker reconciliation)', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const warnings = [];
+      const origWarn = console.warn;
+      console.warn = (...args) => { warnings.push(args.join(' ')); };
+
+      try {
+        const src2d = await proj.projCreateFromDatabase({
+          auth_name: "EPSG", code: "4326", category: proj.PJ_CATEGORY_CRS
+        });
+        const tgt2d = await proj.projCreateFromDatabase({
+          auth_name: "EPSG", code: "4150", category: proj.PJ_CATEGORY_CRS
+        });
+
+        const src3d = await proj.projCrsPromoteTo3D({ crs_3D_name: "", crs_2D: src2d });
+        if (!src3d || src3d === 0) return { error: 'src3d is null/0' };
+
+        const tgt3d = await proj.projCrsPromoteTo3D({ crs_3D_name: "", crs_2D: tgt2d });
+        if (!tgt3d || tgt3d === 0) return { error: 'tgt3d is null/0' };
+
+        const t3d = await proj.projCreateCrsToCrsFromPj({
+          source_crs: src3d, target_crs: tgt3d
+        });
+        if (!t3d || t3d === 0) return { error: 'transformer is null/0' };
+
+        const coords = await proj.coordArray(1);
+        await proj.setCoords(coords, [[46.95, 7.45, 500, 0]]);
+        await proj.projTransArray({ p: t3d, direction: proj.PJ_FWD, n: 1, coord: coords });
+        const r = await proj.getCoords(coords, 0);
+
+        return {
+          z: r[2],
+          heightChanged: Math.abs(r[2] - 500) > 1,
+          warnings: warnings
+        };
+      } catch (e) {
+        return { error: e.message };
+      } finally {
+        console.warn = origWarn;
+      }
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.heightChanged).toBe(true);
+    if (result.warnings && result.warnings.length > 0) {
+      const w = result.warnings.join('\n');
+      expect(w).toContain('different workers');
+      expect(w).toContain('Recreating');
+    }
+  });
+
   test('handles invalid CRS gracefully', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;

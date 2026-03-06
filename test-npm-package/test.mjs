@@ -8,13 +8,8 @@ async function test() {
     await proj.init();
     console.log('✓ PROJ initialized');
     
-    // Create context
-    const ctx = await proj.context_create();
-    console.log('✓ Context created');
-    
-    // Create transformer
-    const transformer = await proj.proj_create_crs_to_crs({
-      context: ctx,
+    // Create transformer (context is auto-created)
+    const transformer = await proj.projCreateCrsToCrs({
       source_crs: "EPSG:4326",
       target_crs: "EPSG:3857"
     });
@@ -27,12 +22,12 @@ async function test() {
 
     await proj.projTransArray({
       p: transformer,
-      direction: 1, // PJ_FWD
+      direction: proj.PJ_FWD,
       n: 1,
       coord: coords
     });
 
-    const result = await proj.getCoordArray(coords, 0);
+    const result = await proj.getCoords(coords, 0);
     const x = result[0];
     const y = result[1];
     console.log(`✓ Transformed Boston: [${x.toFixed(2)}, ${y.toFixed(2)}]`);

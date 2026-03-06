@@ -599,6 +599,150 @@ describe('proj-wasm Node.js API', () => {
     }
   });
 
+  test('CRS transformation without explicit context', async () => {
+    const transformer = await proj.projCreateCrsToCrs({
+      source_crs: "EPSG:4326",
+      target_crs: "EPSG:3857"
+    });
+
+    assert(transformer, 'Transformer should be created without explicit context');
+    assert(transformer !== 0, 'Transformer should not be null pointer');
+
+    const coords = await proj.coordArray(1);
+    await proj.setCoords(coords, [[42.3603, -71.0591, 0, 0]]);
+
+    await proj.projTransArray({
+      p: transformer,
+      direction: proj.PJ_FWD,
+      n: 1,
+      coord: coords
+    });
+
+    const result = await proj.getCoords(coords, 0);
+    assert(
+      Math.abs(result[0]) > 1000,
+      `Transformed X should be large (Web Mercator meters), got ${result[0]}`
+    );
+  });
+
+  test('get authorities without explicit context', async () => {
+    let authorities;
+    try {
+      authorities = await proj.projGetAuthoritiesFromDatabase({});
+    } catch (e) {
+      assert.fail(`Should not throw without context: ${e.message}`);
+    }
+
+    if (authorities !== null && authorities !== undefined) {
+      assert(Array.isArray(authorities), 'authorities should be an array');
+      assert(authorities.includes('EPSG'), 'should include EPSG');
+    }
+  });
+
+  test('projCreateFromDatabase without explicit context', async () => {
+    const crs = await proj.projCreateFromDatabase({
+      auth_name: "EPSG",
+      code: "4326"
+    });
+
+    assert(crs, 'CRS should be created without explicit context');
+    assert(crs !== 0, 'CRS should not be null pointer');
+  });
+
+  test('projAsWkt returns WKT for CRS created without explicit context', async () => {
+    const crs = await proj.projCreateFromDatabase({
+      auth_name: "EPSG",
+      code: "4326",
+      category: proj.PJ_CATEGORY_CRS
+    });
+
+    assert(crs, 'CRS should be created');
+
+    const wkt = await proj.projAsWkt({
+      pj: crs, type: proj.PJ_WKT2_2019, options: null
+    });
+
+    assert(typeof wkt === 'string', `WKT should be a string, got ${typeof wkt}`);
+    assert(wkt.length > 0, 'WKT should not be empty');
+    assert(wkt.includes('WGS 84'), `WKT should contain "WGS 84", got: ${wkt.substring(0, 100)}`);
+  });
+
+  test('promote to 3D and transform without explicit context (warns on cross-worker reconciliation)', async () => {
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+
+    try {
+      const src2d = await proj.projCreateFromDatabase({
+        auth_name: "EPSG", code: "4326", category: proj.PJ_CATEGORY_CRS
+      });
+      const tgt2d = await proj.projCreateFromDatabase({
+        auth_name: "EPSG", code: "4150", category: proj.PJ_CATEGORY_CRS
+      });
+
+      const src3d = await proj.projCrsPromoteTo3D({ crs_3D_name: "", crs_2D: src2d });
+      assert(src3d, 'src3d should be created');
+      assert(src3d !== 0, 'src3d should not be null pointer');
+
+      const tgt3d = await proj.projCrsPromoteTo3D({ crs_3D_name: "", crs_2D: tgt2d });
+      assert(tgt3d, 'tgt3d should be created');
+
+      const t3d = await proj.projCreateCrsToCrsFromPj({
+        source_crs: src3d, target_crs: tgt3d
+      });
+      assert(t3d, 'transformer should be created');
+
+      const coords = await proj.coordArray(1);
+      await proj.setCoords(coords, [[46.95, 7.45, 500, 0]]);
+      await proj.projTransArray({ p: t3d, direction: proj.PJ_FWD, n: 1, coord: coords });
+      const r = await proj.getCoords(coords, 0);
+
+      assert(
+        Math.abs(r[2] - 500) > 1,
+        `3D height should differ from input 500m, got ${r[2].toFixed(2)}`
+      );
+
+      if (warnings.length > 0) {
+        const w = warnings.join('\n');
+        assert(w.includes('different workers'), `Warning should mention "different workers", got: ${w}`);
+        assert(w.includes('Recreating'), `Warning should mention "Recreating", got: ${w}`);
+      }
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
+  test('full transform pipeline without any context', async () => {
+    // This mirrors what the demo page tries to do
+    const transformer = await proj.projCreateCrsToCrs({
+      source_crs: "EPSG:4326",
+      target_crs: "EPSG:3857"
+    });
+
+    assert(transformer, 'camelCase transformer without context should work');
+
+    const coords = await proj.coordArray(1);
+    await proj.setCoords(coords, [[42.3603, -71.0591, 0, 0]]);
+
+    await proj.projTransArray({
+      p: transformer,
+      direction: proj.PJ_FWD,
+      n: 1,
+      coord: coords
+    });
+
+    const result = await proj.getCoords(coords, 0);
+    // Web Mercator: x ~ -7,910,000, y ~ 5,210,000
+    assert(
+      Math.abs(result[0]) > 100000,
+      `X should be in Web Mercator range, got ${result[0]}`
+    );
+    assert(
+      Math.abs(result[1]) > 100000,
+      `Y should be in Web Mercator range, got ${result[1]}`
+    );
+  });
+
   test('camelCase aliases work for coordinate transformation', async () => {
     const context = await proj.contextCreate();
     const transformer = await proj.projCreateCrsToCrs({

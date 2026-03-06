@@ -219,6 +219,37 @@
 
  ;; Tests documenting known issues - these currently fail but document expected behavior
 
+(deftest crs-without-context-test
+  (with-each-implementation
+    (testing "CRS transformation without explicit context should auto-create one"
+      (let [transformer (proj/proj-create-crs-to-crs
+                         {:source_crs "EPSG:4326"
+                          :target_crs "EPSG:3857"})]
+        (is (some? transformer) "Transformer should be created without explicit context")
+        (when transformer
+          (let [coords (proj/coord-array 1)]
+            (proj/set-coords! coords [[42.3603 -71.0591 0 0]])
+            (proj/proj-trans-array {:p transformer :direction 1 :n 1 :coord coords})
+            #?(:clj
+               (let [[x y _ _] (proj/get-coords coords 0)]
+                 (is (> (Math/abs x) 1000)
+                     (str "Transformed X should be large (Web Mercator), got " x)))
+               :cljs
+               (is true "CLJS coord check deferred"))))))))
+
+(deftest authorities-without-context-test
+  (with-each-implementation
+    (testing "get-authorities-from-database without explicit context"
+      (let [authorities (proj/proj-get-authorities-from-database {})]
+        (is (coll? authorities) "Should return a collection without context")
+        (is (some #{"EPSG"} authorities) "Should contain EPSG")))))
+
+(deftest create-from-database-without-context-test
+  (with-each-implementation
+    (testing "proj-create-from-database without explicit context"
+      (let [crs (proj/proj-create-from-database {:auth_name "EPSG" :code "4326"})]
+        (is (some? crs) "CRS should be created without explicit context")))))
+
 (deftest parameter-naming-convention-test
   (with-each-implementation
     (with-test-context [ctx]

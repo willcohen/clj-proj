@@ -4,6 +4,16 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- CLJS: Automatic cross-worker PJ reconciliation. When PJ args to a function live on different workers (e.g., after round-robin context creation), they are transparently recreated on the target worker via PROJJSON export and `proj_create_crs_to_crs`/`proj_get_source_crs` roundtrip, producing ISO-19111 compatible objects. A `console.warn` is emitted suggesting explicit contexts for better performance.
+- `force-worker-idx` parameter on `proj-emscripten-helper` and `def-wasm-fn-runtime` for routing calls to a specific worker
+
+### Fixed
+- CLJS: Auto-create PROJ context when none provided, fixing "Cannot find proj.db" errors for context-requiring functions called without an explicit context (e.g., `projCreateCrsToCrs({source_crs: "EPSG:4326", target_crs: "EPSG:3857"})`)
+- Moved auto-context creation from `extract-args` to `dispatch-proj-fn` for both JVM and CLJS
+- CLJS: Auto-created contexts now pin to the same worker as existing PJ args, fixing empty results from functions like `projAsWkt` when called without an explicit context on a PJ object created on a different worker
+- CLJS: `getCrsInfoListFromDatabase` now auto-creates a context when called without one
+
 ## [0.1.0-alpha6] - 2026-03-05
 
 ### Fixed
@@ -150,7 +160,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - Initial proof-of-concept functionality, released to NPM and Clojars.
 
-[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha5...HEAD
+[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha6...HEAD
+[0.1.0-alpha6]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha5...0.1.0-alpha6
 [0.1.0-alpha5]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha4...0.1.0-alpha5
 [0.1.0-alpha4]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha3...0.1.0-alpha4
 [0.1.0-alpha3]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha2...0.1.0-alpha3

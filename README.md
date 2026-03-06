@@ -128,6 +128,8 @@ PROJ uses contexts for thread safety and operation tracking. The library provide
 (proj-get-authorities-from-database {})  ; Creates context internally
 ```
 
+In JavaScript with the worker pool, contexts are pinned to specific workers. When PJ objects from different workers are passed to the same function (e.g., after round-robin context creation), the library automatically reconciles them by recreating mismatched objects on the target worker via PROJJSON roundtrip. A `console.warn` is emitted when this happens — for best performance, use an explicit shared context.
+
 For functions that require atomic context access, the library uses the `cs` (context-swap) wrapper:
 - Ensures thread-safe access by wrapping operations in an atom's `swap!`
 - Tracks operation counts and results
@@ -225,19 +227,17 @@ PROJ transformations can require grid shift files -- TIFF-format datum correctio
 ```
 
 ```javascript
-// JavaScript - network enabled by default
-const ctx = await proj.context_create();
-
-// Disable network
-const ctxOffline = await proj.context_create({network: false});
+// JavaScript - context is optional; create one explicitly to control network
+const ctx = await proj.contextCreate();              // network enabled (default)
+const ctxOffline = await proj.contextCreate({network: false}); // network disabled
 ```
 
 ### Browser: Cross-Origin Isolation
 
 The library supports two worker modes in browsers:
 
-- **Single-threaded mode** (fallback): Each worker gets its own Emscripten module and WASM memory, using the single-threaded WASM build. No special headers needed.
-- **Pthreads mode**: Each worker still gets its own Emscripten module, but uses the pthreads WASM build which enables internal threading via SharedArrayBuffer. Requires Cross-Origin Isolation headers:
+- **Single-threaded mode** (fallback): Each worker runs the same WASM binary but without internal threading. No special headers needed.
+- **Pthreads mode**: With SharedArrayBuffer available, Emscripten can spawn internal pthreads within each worker for additional parallelism. Requires Cross-Origin Isolation headers:
   - `Cross-Origin-Opener-Policy: same-origin`
   - `Cross-Origin-Embedder-Policy: require-corp`
 
@@ -426,12 +426,10 @@ import * as proj from "proj-wasm";
 // Initialize PROJ (required before any operations in JavaScript)
 await proj.init();  // Convenience alias for init! (also available as init_BANG_)
 
-// Create a context and transformation (all operations are async)
-const context = await proj.context_create();
-const transformer = await proj.proj_create_crs_to_crs({
+// Create a transformation (all operations are async, context is auto-created)
+const transformer = await proj.projCreateCrsToCrs({
   source_crs: "EPSG:4326",
-  target_crs: "EPSG:2249",
-  context: context
+  target_crs: "EPSG:2249"
 });
 
 // Transform coordinates (EPSG:4326 uses lat/lon order)
@@ -453,6 +451,10 @@ await proj.shutdown();
 
 // Resources are automatically cleaned up - no manual cleanup needed!
 // The resource-tracker library handles cleanup when objects go out of scope
+
+// Optional: create an explicit context to disable network or pin to a worker
+// const ctx = await proj.contextCreate({ network: false });
+// const t = await proj.projCreateCrsToCrs({ context: ctx, ... });
 ```
 
 For browsers, the same API works. See the [Grid Fetching](#grid-fetching) section for Cross-Origin Isolation requirements when using pthreads mode.
@@ -670,7 +672,7 @@ clj-proj/
 │       └── PROJ.java                   # Java API wrapper
 ├── resources/
 │   ├── {platform}/                     # Native libraries per platform
-│   ├── wasm/                           # WASM artifacts (single-threaded, GraalVM)
+│   ├── wasm/                           # WASM artifacts (GraalVM single-threaded build)
 │   │   ├── proj-emscripten.js          # WASM JS glue
 │   │   ├── proj-emscripten.wasm        # WASM binary
 │   │   └── proj-loader.mjs             # proj-loader.mjs for classpath
@@ -925,7 +927,7 @@ clj-proj/
 └── ...
 ```
 
-This workflow enables tight integration testing between PROJ C library development and clj-proj bindings, catching API changes and build issues early in the development cycle.
+This workflow enables integration testing between upstream PROJ C library development and clj-proj bindings, catching upstream API changes and build proces.
 
 ## License
 

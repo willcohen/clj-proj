@@ -576,7 +576,7 @@
                         <p style="font-size: 0.9em; margin: 6px 0;"><strong>Runtime:</strong></p>
                         <ul style="font-size: 0.9em; margin: 6px 0; padding-left: 20px;">
                             <li>PROJ runs in Web Workers, keeping the main thread responsive</li>
-                            <li>With Cross-Origin Isolation (COOP/COEP headers), workers use the pthreads WASM build with SharedArrayBuffer; without it, workers fall back to a single-threaded WASM build</li>
+                            <li>The same WASM binary is used in both modes; with Cross-Origin Isolation (COOP/COEP headers), SharedArrayBuffer enables Emscripten's internal pthreads within each worker; without it, the module runs single-threaded</li>
                             <li>Each PROJ context is pinned to a specific worker; the pool uses round-robin assignment</li>
                             <li>The <code>proj.db</code> and <code>proj.ini</code> files are fetched at startup and written to Emscripten's virtual filesystem in each worker</li>
                             <li>Grid shift files (NADCON, NTv2, etc.) are fetched on demand from <a href="https://cdn.proj.org/">cdn.proj.org</a> when a transformation requires them</li>
@@ -607,6 +607,7 @@
                                 <option value="operation-info">Operation Details</option>
                                 <option value="error-handling">Error Handling</option>
                                 <option value="naming-conventions">Naming Conventions</option>
+                                <option value="manual-context">Manual Context</option>
                                 <option value="crs-catalog">CRS Catalog</option>
                                 <option value="benchmark">Benchmark</option>
                             </select>
@@ -728,9 +729,8 @@
         // --- Examples ---
         const examples = {
             'basic-transform': `// Basic coordinate transformation: WGS84 to Web Mercator
-const ctx = await proj.contextCreate();
 const transformer = await proj.projCreateCrsToCrs({
-    context: ctx, source_crs: "EPSG:4326", target_crs: "EPSG:3857"
+    source_crs: "EPSG:4326", target_crs: "EPSG:3857"
 });
 
 const coords = await proj.coordArray(1);
@@ -745,9 +745,8 @@ console.log("Input:  42.3603 N, 71.0580 W (Boston City Hall, WGS84)");
 console.log("Output:", result[0].toFixed(2), result[1].toFixed(2), "(Web Mercator, meters)");`,
 
             'batch-transform': `// Batch transform: multiple coordinates at once
-const ctx = await proj.contextCreate();
 const t = await proj.projCreateCrsToCrs({
-    context: ctx, source_crs: "EPSG:4326", target_crs: "EPSG:2249"
+    source_crs: "EPSG:4326", target_crs: "EPSG:2249"
 });
 
 const points = [
@@ -767,9 +766,8 @@ for (let i = 0; i < points.length; i++) {
 console.log("(MA State Plane, US feet)");`,
 
             'crs-info': `// Get detailed CRS information
-const ctx = await proj.contextCreate();
 const crs = await proj.projCreateFromDatabase({
-    context: ctx, auth_name: "EPSG", code: "4326", category: proj.PJ_CATEGORY_CRS
+    auth_name: "EPSG", code: "4326", category: proj.PJ_CATEGORY_CRS
 });
 
 const name = await proj.projGetName({ obj: crs });
@@ -783,7 +781,7 @@ console.log("Type:", type);
 console.log("Authority:", auth + ":" + code);
 console.log("Remarks:", remarks);
 
-const wkt = await proj.projAsWkt({ context: ctx, pj: crs, type: proj.PJ_WKT2_2019, options: null });
+const wkt = await proj.projAsWkt({ pj: crs, type: proj.PJ_WKT2_2019, options: null });
 console.log("\\nWKT2:2019:\\n" + wkt);`,
 
             'network-grids': `// Network grid fetching: NAD27 -> NAD83 (requires NADCON grid)
@@ -818,12 +816,11 @@ console.log("Difference:  ", Math.abs(rOn[0]-rOff[0]).toFixed(4), "m,", Math.abs
             'promote-3d': `// Promote to 3D: ellipsoid height shift across datums
 // WGS84 -> Swiss CH1903+ differ by ~51m in ellipsoidal height
 // Without 3D, the height difference is lost
-const ctx = await proj.contextCreate();
 const pt = [46.95, 7.45, 500, 0]; // Bern, 500m above WGS84 ellipsoid
 
 // --- 2D: height passes through unchanged ---
 const t2d = await proj.projCreateCrsToCrs({
-    context: ctx, source_crs: "EPSG:4326", target_crs: "EPSG:4150"
+    source_crs: "EPSG:4326", target_crs: "EPSG:4150"
 });
 const c2d = await proj.coordArray(1);
 await proj.setCoords(c2d, [pt]);
@@ -834,16 +831,16 @@ console.log("  lat=" + r2d[0].toFixed(7) + " lon=" + r2d[1].toFixed(7) + " Z=" +
 
 // --- 3D: ellipsoidal height is transformed ---
 let src3d = await proj.projCreateFromDatabase({
-    context: ctx, auth_name: "EPSG", code: "4326", category: proj.PJ_CATEGORY_CRS
+    auth_name: "EPSG", code: "4326", category: proj.PJ_CATEGORY_CRS
 });
 let tgt3d = await proj.projCreateFromDatabase({
-    context: ctx, auth_name: "EPSG", code: "4150", category: proj.PJ_CATEGORY_CRS
+    auth_name: "EPSG", code: "4150", category: proj.PJ_CATEGORY_CRS
 });
-src3d = await proj.projCrsPromoteTo3D({ context: ctx, crs_3D_name: "", crs_2D: src3d });
-tgt3d = await proj.projCrsPromoteTo3D({ context: ctx, crs_3D_name: "", crs_2D: tgt3d });
+src3d = await proj.projCrsPromoteTo3D({ crs_3D_name: "", crs_2D: src3d });
+tgt3d = await proj.projCrsPromoteTo3D({ crs_3D_name: "", crs_2D: tgt3d });
 
 const t3d = await proj.projCreateCrsToCrsFromPj({
-    context: ctx, source_crs: src3d, target_crs: tgt3d
+    source_crs: src3d, target_crs: tgt3d
 });
 const c3d = await proj.coordArray(1);
 await proj.setCoords(c3d, [pt]);
@@ -855,23 +852,21 @@ console.log("\\nHeight difference: " + (r3d[2] - r2d[2]).toFixed(2) + "m (Bessel
 
             'epochs': `// Plate motion over time: ITRF2014@epoch -> NAD83(2011)
 // North American plate moves ~2.5 cm/year relative to ITRF
-const ctx = await proj.contextCreate();
-
 const baseCrs = await proj.projCreateFromDatabase({
-    context: ctx, auth_name: "EPSG", code: "9000", category: proj.PJ_CATEGORY_CRS
+    auth_name: "EPSG", code: "9000", category: proj.PJ_CATEGORY_CRS
 });
 
 const tgtCrs = await proj.projCreateFromDatabase({
-    context: ctx, auth_name: "EPSG", code: "6318", category: proj.PJ_CATEGORY_CRS
+    auth_name: "EPSG", code: "6318", category: proj.PJ_CATEGORY_CRS
 });
 console.log("ITRF2014 -> NAD83(2011) at different epochs:\\n");
 
 for (const year of [2010, 2015, 2020, 2025, 2030]) {
     let srcCrs = await proj.projCoordinateMetadataCreate({
-        context: ctx, crs: baseCrs, epoch: year
+        crs: baseCrs, epoch: year
     });
     const transformer = await proj.projCreateCrsToCrsFromPj({
-        context: ctx, source_crs: srcCrs, target_crs: tgtCrs
+        source_crs: srcCrs, target_crs: tgtCrs
     });
     const coords = await proj.coordArray(1);
     await proj.setCoords(coords, [[42.3603, -71.0591, 0, 0]]);
@@ -883,11 +878,8 @@ for (const year of [2010, 2015, 2020, 2025, 2030]) {
 }`,
 
             'compound-crs': `// Compound CRS: horizontal + vertical
-const ctx = await proj.contextCreate();
-
 // EPSG:4326 (WGS84 2D) + EPSG:5773 (EGM96 geoid height)
 const transformer = await proj.projCreateCrsToCrs({
-    context: ctx,
     source_crs: "EPSG:4326+EPSG:5773",
     target_crs: "EPSG:4979"   // WGS84 3D (ellipsoidal height)
 });
@@ -902,30 +894,27 @@ console.log("Input:  lat=42.36, lon=-71.06, geoid_height=50m");
 console.log("Output: lat=" + r[0].toFixed(6) + ", lon=" + r[1].toFixed(6) + ", ellipsoid_height=" + r[2].toFixed(2) + "m");`,
 
             'authorities': `// Query the PROJ database
-const ctx = await proj.contextCreate();
-
-const authorities = await proj.projGetAuthoritiesFromDatabase({ context: ctx });
+const authorities = await proj.projGetAuthoritiesFromDatabase({});
 console.log("Available authorities:", authorities.join(", "));
 
-const epsgCodes = await proj.projGetCodesFromDatabase({ context: ctx, auth_name: "EPSG" });
+const epsgCodes = await proj.projGetCodesFromDatabase({ auth_name: "EPSG" });
 console.log("EPSG codes count:", epsgCodes.length);
 console.log("First 10:", epsgCodes.slice(0, 10).join(", "));
 console.log("Includes 4326:", epsgCodes.includes("4326"));
 console.log("Includes 3857:", epsgCodes.includes("3857"));`,
 
             'operation-info': `// Get transformation operation details
-const ctx = await proj.contextCreate();
 const t = await proj.projCreateCrsToCrs({
-    context: ctx, source_crs: "EPSG:4326", target_crs: "EPSG:3857"
+    source_crs: "EPSG:4326", target_crs: "EPSG:3857"
 });
 
 // The transformer is a CoordinateOperation -- query it directly
 const name = await proj.projGetName({ obj: t });
 const projStr = await proj.projAsProjString({
-    context: ctx, pj: t, type: proj.PJ_PROJ_5, options: null
+    pj: t, type: proj.PJ_PROJ_5, options: null
 });
 const wkt = await proj.projAsWkt({
-    context: ctx, pj: t, type: proj.PJ_WKT2_2019, options: null
+    pj: t, type: proj.PJ_WKT2_2019, options: null
 });
 
 console.log("Operation:", name);
@@ -933,41 +922,40 @@ console.log("\\nPROJ string:\\n" + projStr);
 console.log("\\nWKT2:2019:\\n" + wkt);`,
 
             'error-handling': `// Error handling patterns
-const ctx = await proj.contextCreate();
-
 // 1. Invalid CRS
 try {
     await proj.projCreateCrsToCrs({
-        context: ctx, source_crs: "INVALID:999", target_crs: "EPSG:4326"
+        source_crs: "INVALID:999", target_crs: "EPSG:4326"
     });
 } catch (e) {
     console.log("Invalid CRS error:", e.message);
 }
 
-// 2. Check error state
+// 2. Check error state (pass an explicit context to correlate errors)
+const ctx = await proj.contextCreate();
 const errno = await proj.projContextErrno({ context: ctx });
 console.log("Last error code:", errno);
 
 // 3. Valid operation still works after error
 const t = await proj.projCreateCrsToCrs({
-    context: ctx, source_crs: "EPSG:4326", target_crs: "EPSG:3857"
+    source_crs: "EPSG:4326", target_crs: "EPSG:3857"
 });
 console.log("Valid transformer created after error: OK");
 
 // 4. Check if CRS is valid
 const crs = await proj.projCreateFromDatabase({
-    context: ctx, auth_name: "EPSG", code: "4326", category: proj.PJ_CATEGORY_CRS
+    auth_name: "EPSG", code: "4326", category: proj.PJ_CATEGORY_CRS
 });
 const isCrs = await proj.projIsCrs({ obj: crs });
 console.log("Is CRS:", isCrs);`,
 
             'naming-conventions': `// clj-proj exports every function in both camelCase and snake_case.
 // Choose whichever convention fits your project.
+// Context is optional -- the library creates one automatically if omitted.
 
-// --- camelCase (idiomatic JavaScript) ---
-const ctx1 = await proj.contextCreate();
+// --- camelCase ---
 const t1 = await proj.projCreateCrsToCrs({
-    context: ctx1, source_crs: "EPSG:4326", target_crs: "EPSG:3857"
+    source_crs: "EPSG:4326", target_crs: "EPSG:3857"
 });
 const c1 = await proj.coordArray(1);
 await proj.setCoords(c1, [[42.3603, -71.0591, 0, 0]]);
@@ -976,9 +964,8 @@ const r1 = await proj.getCoords(c1, 0);
 console.log("camelCase:", r1[0].toFixed(2), r1[1].toFixed(2));
 
 // --- snake_case (mirrors the PROJ C API) ---
-const ctx2 = await proj.context_create();
 const t2 = await proj.proj_create_crs_to_crs({
-    context: ctx2, source_crs: "EPSG:4326", target_crs: "EPSG:3857"
+    source_crs: "EPSG:4326", target_crs: "EPSG:3857"
 });
 const c2 = await proj.coord_array(1);
 await proj.setCoords(c2, [[42.3603, -71.0591, 0, 0]]);
@@ -988,9 +975,39 @@ console.log("snake_case:", r2[0].toFixed(2), r2[1].toFixed(2));
 
 console.log("\\nBoth styles produce identical results.");`,
 
-            'crs-catalog': `// Browse the full CRS catalog from PROJ's database
+            'manual-context': `// Manual context creation
+// Most functions create a context automatically if you don't pass one.
+// Create an explicit context when you need to:
+//   - disable network grid fetching
+//   - pin multiple operations to the same worker
+//   - check per-context error state
+
+// Default: auto-context (simplest usage)
+const t1 = await proj.projCreateCrsToCrs({
+    source_crs: "EPSG:4326", target_crs: "EPSG:3857"
+});
+console.log("Auto-context transformer created");
+
+// Explicit context with network disabled
+const ctxOffline = await proj.contextCreate({ network: false });
+const t2 = await proj.projCreateCrsToCrs({
+    context: ctxOffline, source_crs: "EPSG:4326", target_crs: "EPSG:3857"
+});
+console.log("Offline-context transformer created");
+
+// Explicit context for error correlation
 const ctx = await proj.contextCreate();
-const all = await proj.getCrsInfoListFromDatabase({ context: ctx });
+try {
+    await proj.projCreateCrsToCrs({
+        context: ctx, source_crs: "BAD:CRS", target_crs: "EPSG:4326"
+    });
+} catch (e) {
+    const errno = await proj.projContextErrno({ context: ctx });
+    console.log("Error on ctx:", errno, "-", e.message);
+}`,
+
+            'crs-catalog': `// Browse the full CRS catalog from PROJ's database
+const all = await proj.getCrsInfoListFromDatabase({});
 console.log("Total CRS entries:", all.length);
 
 const epsg = all.filter(e => e.auth_name === "EPSG");
@@ -1671,9 +1688,8 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             require(['vs/editor/editor.main'], function () {
                 monacoEditor = monaco.editor.create(document.getElementById('editor-container'), {
                     value: '// Try: transform Boston coordinates from WGS84 to Web Mercator\n' +
-                           'const ctx = await proj.contextCreate();\n' +
                            'const t = await proj.projCreateCrsToCrs({\n' +
-                           '    context: ctx, source_crs: "EPSG:4326", target_crs: "EPSG:3857"\n' +
+                           '    source_crs: "EPSG:4326", target_crs: "EPSG:3857"\n' +
                            '});\n' +
                            'const coords = await proj.coordArray(1);\n' +
                            'await proj.setCoords(coords, [[42.36, -71.06, 0, 0]]);\n' +

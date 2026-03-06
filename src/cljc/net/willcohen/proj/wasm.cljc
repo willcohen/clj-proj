@@ -307,7 +307,7 @@
 (declare arg->js-literal arg-array->js-array-string keyword->js-string keyword-array->js-string)
 
 (defn ^:async proj-emscripten-helper
-  [f return-type arg-types args & [proj-returns]]
+  [f return-type arg-types args & [proj-returns force-worker-idx]]
   (let [proj-returns (or proj-returns nil)]
     (ensure-proj-initialized!)
     #?(:clj
@@ -353,7 +353,7 @@
        ;; ClojureScript implementation - proxy through worker
        ;; Coord arrays (JS-side Float64Arrays) are detected, their data is sent
        ;; alongside the ccall, and the worker handles temp malloc/free.
-       (let [worker-idx (worker-idx-from-args args)
+       (let [worker-idx (if (some? force-worker-idx) force-worker-idx (worker-idx-from-args args))
              coord-arrays (into []
                                 (keep-indexed
                                  (fn [idx arg]
@@ -668,7 +668,7 @@
 
 (defn ^:async def-wasm-fn-runtime
   "Runtime implementation of WASM function call"
-  [fn-key fn-def args]
+  [fn-key fn-def args & [force-worker-idx]]
   (let [c-fn-name (name fn-key)
         rettype (:rettype fn-def)
         argtypes (:argtypes fn-def)
@@ -704,7 +704,8 @@
                                                     ccall-return-type
                                                     ccall-arg-types
                                                     args
-                                                    proj-returns)))]
+                                                    proj-returns
+                                                    force-worker-idx)))]
     #?(:clj
        (case rettype
          :pointer (if (nil? result)
@@ -730,7 +731,7 @@
        ;; (e.g. proj_trans_array) route to the same worker
        (if (and (= proj-returns :pj) (some? result) (not= result 0))
          #js {:ptr result
-              :worker_idx (worker-idx-from-args args)
+              :worker_idx (if (some? force-worker-idx) force-worker-idx (worker-idx-from-args args))
               :type "pj"}
          result))))
 
