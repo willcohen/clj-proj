@@ -16,7 +16,60 @@
             (def zlib-version "1.3.2")
             (def libtiff-version "4.7.1")
             (def path-sep (System/getProperty "path.separator"))
-            (def clj-cmd (if (str/includes? (System/getProperty "os.name") "Windows") "clojure" "clj")))
+            (def clj-cmd (str (or (fs/which "clojure") (fs/which "clj") "clojure"))))
+
+  download-sources
+  {:doc "Download source archives for zlib, sqlite, libtiff, and PROJ into target/"
+   :task (let [target-dir "target"
+               archives [[(str "zlib-" zlib-version ".tar.gz")
+                          (str "https://zlib.net/zlib-" zlib-version ".tar.gz")]
+                         [(str "sqlite-autoconf-" sqlite-version-url ".tar.gz")
+                          (str "https://sqlite.org/" sqlite-year "/sqlite-autoconf-" sqlite-version-url ".tar.gz")]
+                         [(str "libtiff-v" libtiff-version ".tar.gz")
+                          (str "https://gitlab.com/libtiff/libtiff/-/archive/v" libtiff-version "/libtiff-v" libtiff-version ".tar.gz")]
+                         [(str (:ref proj-source) ".tar.gz")
+                          (str "https://github.com/OSGeo/PROJ/archive/refs/tags/" (:ref proj-source) ".tar.gz")]]]
+           (fs/create-dirs target-dir)
+           (doseq [[filename url] archives]
+             (let [dest (fs/path target-dir filename)]
+               (if (fs/exists? dest)
+                 (println filename "already exists. Skipping.")
+                 (do
+                   (println "Downloading" filename "...")
+                   (io/copy (:body (http/get url {:as :stream})) (fs/file (str dest))))))))}
+
+  download-ci-artifacts
+  {:doc "Download native and WASM build artifacts from CI. Grabs each from the most recent run that produced it. Requires gh CLI."
+   :task (let [artifact-names ["source-archives"
+                               "native-macos" "native-linux-amd64" "native-linux-aarch64" "native-windows-amd64"
+                               "wasm-browser" "wasm-graal"]
+               dest-map {"source-archives" "target"
+                         "native-macos" "resources/darwin-aarch64"
+                         "native-linux-amd64" "resources/linux-amd64"
+                         "native-linux-aarch64" "resources/linux-aarch64"
+                         "native-windows-amd64" "resources/windows-amd64"
+                         "wasm-graal" "resources/wasm"
+                         "wasm-browser" "."}]
+           (println "Downloading latest CI artifacts...")
+           (doseq [artifact-name artifact-names]
+             (let [dest (get dest-map artifact-name)
+                   tmp-dir (str (fs/create-temp-dir {:prefix (str "ci-" artifact-name "-")}))]
+               (print (str "  " artifact-name " -> " dest " ... "))
+               (flush)
+               (let [result (tasks/shell {:continue true} "gh" "run" "download" "-n" artifact-name "-D" tmp-dir)]
+                 (if (zero? (:exit result))
+                   (do
+                     (doseq [f (fs/glob tmp-dir "**")]
+                       (when (fs/regular-file? f)
+                         (let [rel (fs/relativize tmp-dir f)
+                               target (fs/path dest (str rel))]
+                           (fs/create-dirs (fs/parent target))
+                           (fs/copy f target {:replace-existing true}))))
+                     (fs/delete-tree tmp-dir)
+                     (println "ok"))
+                   (do
+                     (fs/delete-tree tmp-dir)
+                     (println "not found")))))))}
 
   download-grids
   {:doc "Downloads PROJ grid files from the CDN (WIP - work in progress)"
@@ -321,10 +374,10 @@
   test:graal {:doc "Run Clojure and Java tests for GraalVM implementation."
               :task (let [java-result (do (println "\n=== Running Java GraalVM tests ===\n")
                                           (try (run 'test:java-graal) :passed
-                                               (catch Exception e :failed)))
+                                               (catch Exception e (println "Java GraalVM error:" (.getMessage e)) :failed)))
                           clj-result (do (println "\n=== Running Clojure GraalVM tests ===\n")
                                          (try (run 'test:clojure-graal) :passed
-                                              (catch Exception e :failed)))]
+                                              (catch Exception e (println "Clojure GraalVM error:" (.getMessage e)) :failed)))]
                       (println "\n=== GraalVM Test Summary ===")
                       (println "Java tests:" (name java-result))
                       (println "Clojure tests:" (name clj-result))
@@ -568,7 +621,9 @@ public class JavaJarTest {
   build
   {:doc "Builds native, wasm, or cross-compiled artifacts. See `bb build --help`."
    :spec {:native {:alias :n, :desc "Build native artifacts for the host platform."}
-          :wasm {:alias :w, :desc "Build WASM artifacts."}
+          :wasm {:alias :w, :desc "Build all WASM artifacts (browser + graal)."}
+          :wasm-browser {:desc "Build pthreads WASM for browser/Node.js."}
+          :wasm-graal {:desc "Build single-threaded WASM for GraalVM."}
           :cross {:desc "Build cross-compiled artifacts for default platforms."}
           :cross-platform {:desc "Build for a specific cross-platform target (e.g., linux/amd64)."
                            :coerce :string}
@@ -582,7 +637,9 @@ public class JavaJarTest {
              (println "\nUsage: bb build [options]\n")
              (println "Options:")
              (println "  -n, --native                 Build native artifacts for the host platform")
-             (println "  -w, --wasm                   Build WASM artifacts")
+             (println "  -w, --wasm                   Build all WASM artifacts (browser + graal)")
+             (println "      --wasm-browser           Build pthreads WASM for browser/Node.js")
+             (println "      --wasm-graal             Build single-threaded WASM for GraalVM")
              (println "      --cross                  Build cross-compiled artifacts for default platforms")
              (println "      --cross-platform <plat>  Build for a specific cross-platform target (e.g., linux/amd64)")
              (println "      --debug                  Enable debug mode for builds")
@@ -651,7 +708,10 @@ public class JavaJarTest {
                                         (println "Running autogen.sh to prepare local PROJ build...")
                                         (tasks/shell {:dir (str proj-source-path)} "./autogen.sh")))]
 
-             (let [{native? :native, wasm? :wasm, debug? :debug, target-str :target} opts
+             (let [{native? :native, wasm-all? :wasm, wasm-browser-flag :wasm-browser, wasm-graal-flag :wasm-graal, debug? :debug, target-str :target} opts
+                   wasm-browser? (or wasm-all? wasm-browser-flag)
+                   wasm-graal? (or wasm-all? wasm-graal-flag)
+                   wasm? (or wasm-browser? wasm-graal?)
                    target-dir "target"
                    zlib-archive (str "zlib-" zlib-version ".tar.gz")
                    zlib-dir (str "zlib-" zlib-version)
@@ -812,11 +872,7 @@ public class JavaJarTest {
                                       (apply tasks/shell {:dir src-dir :extra-env env} (concat make-base-cmd ["install"]))))))
 
                    build-libtiff (fn [{:keys [type install-dir zlib-install-dir cc cxx host-flag is-darwin? is-linux? is-windows? pthreads? debug?]}]
-                                   (let [lib-path (fs/path install-dir "lib" (cond (= type :wasm) "libtiff.a"
-                                                                                   is-darwin? "libtiff.dylib"
-                                                                                   is-linux? "libtiff.a" ; Always static on Linux
-                                                                                   is-windows? "libtiff.a" ; Static on Windows too
-                                                                                   :else "libtiff.a"))]
+                                   (let [lib-path (fs/path install-dir "lib" "libtiff.a")]
                                      (when debug? (println "DEBUG: Checking for existing" (name type) "LibTIFF library at:" (str lib-path)))
                                      (when-not (fs/exists? lib-path)
                                        (println "Building LibTIFF for" (name type) (if pthreads? "(pthreads)" "(single-threaded)") "...")
@@ -834,16 +890,16 @@ public class JavaJarTest {
                                              configure-args (cond-> ["./configure" (str "--prefix=" install-dir)]
                                                               host-flag (conj host-flag)
                                                               (and container-host-flag (not host-flag)) (conj container-host-flag)
-                                                              (and (= type :native) is-linux?) (conj "--disable-shared" "--enable-static")
-                                                              (and (= type :native) is-darwin?) (conj "--enable-shared" "--disable-static")
-                                                              is-windows? (conj "--disable-shared" "--enable-static")
+                                                              (= type :native) (conj "--disable-shared" "--enable-static")
+                                                              is-windows? identity
+                                                              (= type :native) (conj "--disable-zstd")
                                                               in-container? (conj "--disable-cxx")
                                                               (and (not= type :wasm) (not= type :native)) (conj "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs")
                                                               (and (= type :native) zlib-install-dir) (conj (str "--with-zlib-include-dir=" (fs/path zlib-install-dir "include"))
                                                                                                             (str "--with-zlib-lib-dir=" (fs/path zlib-install-dir "lib")))
                                                               (= type :wasm) (conj (str "--with-zlib-include-dir=" (fs/path zlib-install-dir "include"))
                                                                                    (str "--with-zlib-lib-dir=" (fs/path zlib-install-dir "lib"))
-                                                                                   "--without-zstd" "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs" "--disable-ccitt"))
+                                                                                   "--disable-zstd" "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs" "--disable-ccitt"))
                                              env (cond-> {"CC" cc "CXX" cxx}
                                                    (and (= type :native) is-linux?) (assoc "CFLAGS" "-fPIC" "CXXFLAGS" "-fPIC")
                                                    (= type :wasm) (assoc "CPPFLAGS" "-DHAVE_FCNTL_H=1")
@@ -933,9 +989,7 @@ public class JavaJarTest {
                                                               (str "-DSQLite3_INCLUDE_DIR=" (fs/path sqlite-install-dir "include"))
                                                               (str "-DSQLite3_LIBRARY=" (fs/path sqlite-install-dir "lib" "libsqlite3.a"))
                                                               (str "-DTIFF_INCLUDE_DIR=" (fs/path libtiff-install-dir "include"))
-                                                              (str "-DTIFF_LIBRARY=" (fs/path libtiff-install-dir "lib" (cond (= type :wasm) "libtiff.a"
-                                                                                                                              is-darwin? "libtiff.dylib"
-                                                                                                                              :else "libtiff.a")))
+                                                              (str "-DTIFF_LIBRARY=" (fs/path libtiff-install-dir "lib" "libtiff.a"))
                                                               (str "-DZLIB_INCLUDE_DIR=" (fs/path zlib-install-dir "include"))
                                                               (str "-DZLIB_LIBRARY=" (fs/path zlib-install-dir "lib" "libz.a"))]
 
@@ -1001,10 +1055,12 @@ public class JavaJarTest {
                                                                                                             "-DCMAKE_SIZEOF_VOID_P=8")
                                                        (= type :native) (conj "-DENABLE_CURL=OFF"
                                                                               "-DENABLE_NETWORK=ON")
-                                                       (and (= type :native) is-darwin?) (conj "-DBUILD_SHARED_LIBS=ON")
+                                                       (and (= type :native) is-darwin?) (conj "-DBUILD_SHARED_LIBS=ON"
+                                                                                               (str "-DCMAKE_CXX_STANDARD_LIBRARIES="
+                                                                                                    (fs/path zlib-install-dir "lib" "libz.a")))
                                                        (and (= type :native) is-linux?) (conj "-DBUILD_SHARED_LIBS=ON"
-                                                                                              "-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++ -Wl,-Bstatic -lc -lm -lpthread -ldl -Wl,-Bdynamic -Wl,--no-as-needed"
-                                                                                              "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-Wl,-Bstatic -lc -lm -lpthread -ldl -Wl,-Bdynamic"
+                                                                                              "-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++ -Wl,-Bstatic -lc -lm -Wl,-Bdynamic -Wl,--no-as-needed"
+                                                                                              "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-Wl,-Bstatic -lc -lm -Wl,-Bdynamic"
                                                                                               "-DCMAKE_FIND_LIBRARY_SUFFIXES=.a"
                                                                                               "-DCMAKE_SKIP_RPATH=ON")
                                                        (and (= type :native) is-linux?) (conj (str "-DCMAKE_CXX_STANDARD_LIBRARIES="
@@ -1187,28 +1243,8 @@ public class JavaJarTest {
                                                                  (or detected-lib "none found - using fallback")
                                                                  build-dir))
                                                 (when detected-lib
-                                                  (println (format "DEBUG: Using detected file: %s" proj-lib-versioned))))
+                                                  (println (format "DEBUG: Using detected file: %s" proj-lib-versioned))))]
 
-                                            libtiff-libname (cond
-                                                              is-darwin? "libtiff.dylib"
-                                                              is-linux? "libtiff.a" ; Always static on Linux
-                                                              :else "libtiff.a")
-                                            ;; Find the actual versioned libtiff name that libproj links to
-                                            libtiff-versioned-name (when is-darwin?
-                                                                     (let [otool-result (shell/sh "otool" "-L" (str (fs/path build-dir "lib" proj-lib-versioned)))
-                                                                           lines (str/split-lines (:out otool-result))
-                                                                           libtiff-line (first (filter (fn [line] (str/includes? line "libtiff")) lines))]
-                                                                       (when libtiff-line
-                                                                         (second (re-find (re-pattern "([^\\s]+libtiff[^\\s]+)") libtiff-line)))))]
-                                        (when is-darwin?
-                                          (if libtiff-versioned-name
-                                            (do
-                                              (println "Fixing libtiff reference:" libtiff-versioned-name "-> @loader_path/libtiff.dylib")
-                                              (tasks/shell {:dir build-dir} "install_name_tool" "-change"
-                                                           libtiff-versioned-name
-                                                           "@loader_path/libtiff.dylib"
-                                                           (fs/path "lib" proj-lib-versioned)))
-                                            (println "WARNING: Could not detect libtiff reference in libproj")))
                                         (let [dest-dir (fs/path "resources" library-dir)]
                                           (println "Copying native build artifacts...")
                                           (fs/create-dirs dest-dir)
@@ -1264,8 +1300,6 @@ public class JavaJarTest {
                                                     (if (zero? (:exit ldd-result))
                                                       (println "Fallback ldd output:" (:out ldd-result))
                                                       (println "Both readelf and ldd unavailable")))))))
-                                          (when (not is-linux?)
-                                            (fs/copy (fs/path libtiff-install-dir "lib" libtiff-libname) dest-dir {:replace-existing true}))
                                           (fs/copy (fs/path build-dir "data" "proj.db") (fs/path "resources") {:replace-existing true})
                                           (fs/copy (fs/path build-dir "data" "proj.ini") (fs/path "resources") {:replace-existing true})))))))]
 
@@ -1405,42 +1439,44 @@ public class JavaJarTest {
                    (fs/create-dirs dest-js-src)
 
                    ;; Build pthreads version for browser/Node.js
-                   (when-not (fs/exists? (fs/path dest-js-src "proj-emscripten.js"))
-                     (println "Building pthreads WASM dependencies...")
-                     (build-sqlite {:type :wasm :install-dir sqlite-install-dir-wasm :cc "emcc" :pthreads? true :debug? debug?})
-                     (build-zlib {:type :wasm :install-dir zlib-install-dir-wasm :cc "emcc" :pthreads? true :debug? debug?})
-                     (build-libtiff {:type :wasm :install-dir libtiff-install-dir-wasm :zlib-install-dir zlib-install-dir-wasm
-                                     :cc "emcc" :cxx "em++" :host-flag "--host=wasm32"
-                                     :is-darwin? (= host-os :darwin) :is-linux? (= host-os :linux) :pthreads? true :debug? debug?})
-                     (build-proj {:type :wasm :library-dir "wasm" :cc "emcc" :cxx "em++"
-                                  :is-darwin? (= host-os :darwin) :is-windows? false
-                                  :sqlite-install-dir sqlite-install-dir-wasm :zlib-install-dir zlib-install-dir-wasm
-                                  :libtiff-install-dir libtiff-install-dir-wasm :pthreads? true :debug? debug?})
-                     (when (fs/exists? (fs/path proj-build-dir-wasm "proj-emscripten.js"))
-                       (println "Copying pthreads WASM to src/cljc...")
-                       (doseq [file ["proj-emscripten.js" "proj-emscripten.wasm"]]
-                         (fs/copy (fs/path proj-build-dir-wasm file) dest-js-src {:replace-existing true}))
-                       (fs/copy (fs/path proj-build-dir-wasm "proj.db") dest-resources {:replace-existing true})
-                       (fs/copy (fs/path proj-build-dir-wasm "proj.ini") dest-resources {:replace-existing true})))
+                   (when wasm-browser?
+                     (when-not (fs/exists? (fs/path dest-js-src "proj-emscripten.js"))
+                       (println "Building pthreads WASM dependencies...")
+                       (build-sqlite {:type :wasm :install-dir sqlite-install-dir-wasm :cc "emcc" :pthreads? true :debug? debug?})
+                       (build-zlib {:type :wasm :install-dir zlib-install-dir-wasm :cc "emcc" :pthreads? true :debug? debug?})
+                       (build-libtiff {:type :wasm :install-dir libtiff-install-dir-wasm :zlib-install-dir zlib-install-dir-wasm
+                                       :cc "emcc" :cxx "em++" :host-flag "--host=wasm32"
+                                       :is-darwin? (= host-os :darwin) :is-linux? (= host-os :linux) :pthreads? true :debug? debug?})
+                       (build-proj {:type :wasm :library-dir "wasm" :cc "emcc" :cxx "em++"
+                                    :is-darwin? (= host-os :darwin) :is-windows? false
+                                    :sqlite-install-dir sqlite-install-dir-wasm :zlib-install-dir zlib-install-dir-wasm
+                                    :libtiff-install-dir libtiff-install-dir-wasm :pthreads? true :debug? debug?})
+                       (when (fs/exists? (fs/path proj-build-dir-wasm "proj-emscripten.js"))
+                         (println "Copying pthreads WASM to src/cljc...")
+                         (doseq [file ["proj-emscripten.js" "proj-emscripten.wasm"]]
+                           (fs/copy (fs/path proj-build-dir-wasm file) dest-js-src {:replace-existing true}))
+                         (fs/copy (fs/path proj-build-dir-wasm "proj.db") dest-resources {:replace-existing true})
+                         (fs/copy (fs/path proj-build-dir-wasm "proj.ini") dest-resources {:replace-existing true}))))
 
                    ;; Build single-threaded version for GraalVM
-                   (when-not (fs/exists? (fs/path dest-resources-wasm "proj-emscripten.js"))
-                     (println "Building single-threaded WASM dependencies...")
-                     (build-sqlite {:type :wasm :install-dir sqlite-install-dir-wasm-st :cc "emcc" :pthreads? false :debug? debug?})
-                     (build-zlib {:type :wasm :install-dir zlib-install-dir-wasm-st :cc "emcc" :pthreads? false :debug? debug?})
-                     (build-libtiff {:type :wasm :install-dir libtiff-install-dir-wasm-st :zlib-install-dir zlib-install-dir-wasm-st
-                                     :cc "emcc" :cxx "em++" :host-flag "--host=wasm32"
-                                     :is-darwin? (= host-os :darwin) :is-linux? (= host-os :linux) :pthreads? false :debug? debug?})
-                     (build-proj {:type :wasm :library-dir "wasm" :cc "emcc" :cxx "em++"
-                                  :is-darwin? (= host-os :darwin) :is-windows? false
-                                  :sqlite-install-dir sqlite-install-dir-wasm-st :zlib-install-dir zlib-install-dir-wasm-st
-                                  :libtiff-install-dir libtiff-install-dir-wasm-st :pthreads? false :debug? debug?})
-                     (when (fs/exists? (fs/path proj-build-dir-wasm-st "proj-emscripten-st.js"))
-                       (println "Copying single-threaded WASM to resources/wasm...")
-                       (fs/copy (fs/path proj-build-dir-wasm-st "proj-emscripten-st.js")
-                                (fs/path dest-resources-wasm "proj-emscripten.js") {:replace-existing true})
-                       (fs/copy (fs/path proj-build-dir-wasm-st "proj-emscripten-st.wasm")
-                                (fs/path dest-resources-wasm "proj-emscripten.wasm") {:replace-existing true})))
+                   (when wasm-graal?
+                     (when-not (fs/exists? (fs/path dest-resources-wasm "proj-emscripten.js"))
+                       (println "Building single-threaded WASM dependencies...")
+                       (build-sqlite {:type :wasm :install-dir sqlite-install-dir-wasm-st :cc "emcc" :pthreads? false :debug? debug?})
+                       (build-zlib {:type :wasm :install-dir zlib-install-dir-wasm-st :cc "emcc" :pthreads? false :debug? debug?})
+                       (build-libtiff {:type :wasm :install-dir libtiff-install-dir-wasm-st :zlib-install-dir zlib-install-dir-wasm-st
+                                       :cc "emcc" :cxx "em++" :host-flag "--host=wasm32"
+                                       :is-darwin? (= host-os :darwin) :is-linux? (= host-os :linux) :pthreads? false :debug? debug?})
+                       (build-proj {:type :wasm :library-dir "wasm" :cc "emcc" :cxx "em++"
+                                    :is-darwin? (= host-os :darwin) :is-windows? false
+                                    :sqlite-install-dir sqlite-install-dir-wasm-st :zlib-install-dir zlib-install-dir-wasm-st
+                                    :libtiff-install-dir libtiff-install-dir-wasm-st :pthreads? false :debug? debug?})
+                       (when (fs/exists? (fs/path proj-build-dir-wasm-st "proj-emscripten-st.js"))
+                         (println "Copying single-threaded WASM to resources/wasm...")
+                         (fs/copy (fs/path proj-build-dir-wasm-st "proj-emscripten-st.js")
+                                  (fs/path dest-resources-wasm "proj-emscripten.js") {:replace-existing true})
+                         (fs/copy (fs/path proj-build-dir-wasm-st "proj-emscripten-st.wasm")
+                                  (fs/path dest-resources-wasm "proj-emscripten.wasm") {:replace-existing true}))))
 
                    (when (fs/exists? (fs/path dest-js-src "proj-loader.mjs"))
                      (fs/copy (fs/path dest-js-src "proj-loader.mjs") dest-resources-wasm {:replace-existing true}))
@@ -1488,11 +1524,14 @@ public class JavaJarTest {
                                (println "    (Cross-compiling from" current-arch "to" platform ")"))
                              ;; Build the container for the specific platform
                              (println "Building container for" platform "...")
-                             (let [;; For cross-compilation, always use Linux containers
-                                   ;; Windows builds use Linux container with MinGW cross-compiler
-                                   container-platform (if (str/starts-with? platform "windows/")
-                                                        "linux/amd64" ; Use Linux container for Windows cross-compilation
-                                                        platform) ; Use native platform for Linux builds
+                             (let [host-linux-platform (str "linux/" (case current-arch
+                                                                       ("x86_64" "amd64") "amd64"
+                                                                       ("aarch64" "arm64") "aarch64"
+                                                                       "amd64"))
+                                   container-platform (if (or (str/starts-with? platform "windows/")
+                                                              is-cross-compile?)
+                                                        host-linux-platform
+                                                        platform)
                                    base-args [container-cmd "build"
                                               "--platform" container-platform
                                               "--target" "native-build"
@@ -1633,7 +1672,12 @@ public class JavaJarTest {
 
                     (doseq [file files]
                       (println (str "Compiling " file "..."))
-                      (tasks/shell {:dir proj-dir} "npx" "cherry" "compile" file))
+                      (let [result (tasks/shell {:dir proj-dir :continue true :out :string :err :string}
+                                                "npx" "cherry" "compile" file)]
+                        (when (seq (:out result)) (print (:out result)))
+                        (when (seq (:err result)) (print (:err result)))
+                        (when (not= 0 (:exit result))
+                          (throw (ex-info (str "Cherry compilation failed for " file) {:exit (:exit result)})))))
 
                     (println "Cherry compilation complete.")
 

@@ -1,0 +1,973 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches: ["main"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ===========================================================================
+  # SOURCE DOWNLOAD (shared by all build jobs)
+  # ===========================================================================
+
+  download-sources:
+    name: Download Source Archives
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Babashka
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+
+      - name: Restore source cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: target/*.tar.gz
+          key: source-archives-${{ hashFiles('bb.edn') }}
+
+      - name: Download source archives
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bb download-sources
+
+      - name: Upload source archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-archives
+          path: target/*.tar.gz
+          retention-days: 7
+
+  # ===========================================================================
+  # BUILD STAGE (7 parallel jobs)
+  # ===========================================================================
+
+  build-native-macos:
+    name: Build Native (macOS arm64)
+    needs: [download-sources]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: resources/darwin-aarch64/
+          key: native-macos-${{ hashFiles('bb.edn', 'flake.nix', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
+
+      - name: Download source archives
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: source-archives
+          path: target/
+
+      - name: Install Nix
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Setup Nix cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build native libraries
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: nix develop --command bb build --native
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-macos
+          path: resources/darwin-aarch64/
+          retention-days: 7
+
+  build-native-linux-amd64:
+    name: Build Native (Linux amd64)
+    needs: [download-sources]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: resources/linux-amd64/
+          key: native-linux-amd64-${{ hashFiles('bb.edn', 'flake.nix', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
+
+      - name: Download source archives
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: source-archives
+          path: target/
+
+      - name: Install Nix
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Setup Nix cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build native libraries
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: nix develop --command bb build --native
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-amd64
+          path: resources/linux-amd64/
+          retention-days: 7
+
+  build-cross-linux-aarch64:
+    name: Build Cross (Linux aarch64)
+    needs: [download-sources]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: resources/linux-aarch64/
+          key: cross-linux-aarch64-${{ hashFiles('bb.edn', 'Containerfile', '.dockerignore', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
+
+      - name: Install Babashka
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+
+      - name: Download source archives
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: source-archives
+          path: target/
+
+      - name: Build via Docker + Containerfile
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bb build --cross-platform linux/aarch64
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-aarch64
+          path: resources/linux-aarch64/
+          retention-days: 7
+
+  build-cross-windows:
+    name: Build Cross (Windows amd64)
+    needs: [download-sources]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: resources/windows-amd64/
+          key: cross-windows-${{ hashFiles('bb.edn', 'Containerfile', '.dockerignore', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
+
+      - name: Install Babashka
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+
+      - name: Download source archives
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: source-archives
+          path: target/
+
+      - name: Build via Docker + Containerfile
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bb build --cross-platform windows/amd64
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-windows-amd64
+          path: resources/windows-amd64/
+          retention-days: 7
+
+  build-wasm-browser:
+    name: Build WASM (browser)
+    needs: [download-sources]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            resources/proj.db
+            resources/proj.ini
+            src/cljc/net/willcohen/proj/proj-emscripten.js
+            src/cljc/net/willcohen/proj/proj-emscripten.wasm
+          key: wasm-browser-${{ hashFiles('bb.edn', 'flake.nix', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
+
+      - name: Download source archives
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: source-archives
+          path: target/
+
+      - name: Install Nix
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Setup Nix cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build WASM browser artifacts
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: nix develop --command bb build --wasm-browser
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-browser
+          path: |
+            resources/proj.db
+            resources/proj.ini
+            src/cljc/net/willcohen/proj/proj-emscripten.js
+            src/cljc/net/willcohen/proj/proj-emscripten.wasm
+          retention-days: 7
+
+  build-wasm-graal:
+    name: Build WASM (graal)
+    needs: [download-sources]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: resources/wasm/
+          key: wasm-graal-${{ hashFiles('bb.edn', 'flake.nix', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
+
+      - name: Download source archives
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: source-archives
+          path: target/
+
+      - name: Install Nix
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Setup Nix cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build WASM graal artifacts
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: nix develop --command bb build --wasm-graal
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-graal
+          path: resources/wasm/
+          retention-days: 7
+
+  # ===========================================================================
+  # JAVA TEST STAGE (FFI, GraalVM, JAR - needs native + wasm-graal artifacts)
+  # ===========================================================================
+
+  test-java-macos:
+    name: Java Tests (macOS)
+    needs: [build-native-macos, build-wasm-browser, build-wasm-graal]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Clojure and Babashka
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+          cli: latest
+
+      - name: Setup Clojure cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2
+            ~/.gitlibs
+            ~/.clojure/.cpcache
+          key: clojure-deps-macos-${{ hashFiles('**/deps.edn', '**/bb.edn') }}
+          restore-keys: clojure-deps-macos-
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: native-macos
+          path: resources/darwin-aarch64/
+
+      - name: Download WASM browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-browser
+          path: .
+
+      - name: Download WASM graal artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-graal
+          path: resources/wasm/
+
+      - name: Run FFI tests
+        run: bb test:ffi
+
+      - name: Run GraalVM tests
+        run: bb test:graal
+
+      - name: Run JAR tests
+        run: bb test:jar
+
+  test-java-linux-amd64:
+    name: Java Tests (Linux amd64)
+    needs: [build-native-linux-amd64, build-wasm-browser, build-wasm-graal]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Clojure and Babashka
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+          cli: latest
+
+      - name: Setup Clojure cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2
+            ~/.gitlibs
+            ~/.clojure/.cpcache
+          key: clojure-deps-linux-amd64-${{ hashFiles('**/deps.edn', '**/bb.edn') }}
+          restore-keys: clojure-deps-linux-amd64-
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: native-linux-amd64
+          path: resources/linux-amd64/
+
+      - name: Download WASM browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-browser
+          path: .
+
+      - name: Download WASM graal artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-graal
+          path: resources/wasm/
+
+      - name: Run FFI tests
+        run: bb test:ffi
+
+      - name: Run GraalVM tests
+        run: bb test:graal
+
+      - name: Run JAR tests
+        run: bb test:jar
+
+  test-java-linux-aarch64:
+    name: Java Tests (Linux aarch64)
+    needs: [build-cross-linux-aarch64, build-wasm-browser, build-wasm-graal]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Clojure and Babashka
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+          cli: latest
+
+      - name: Setup Clojure cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2
+            ~/.gitlibs
+            ~/.clojure/.cpcache
+          key: clojure-deps-linux-aarch64-${{ hashFiles('**/deps.edn', '**/bb.edn') }}
+          restore-keys: clojure-deps-linux-aarch64-
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: native-linux-aarch64
+          path: resources/linux-aarch64/
+
+      - name: Download WASM browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-browser
+          path: .
+
+      - name: Download WASM graal artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-graal
+          path: resources/wasm/
+
+      - name: Run FFI tests
+        run: bb test:ffi
+
+      - name: Run GraalVM tests
+        run: bb test:graal
+
+      - name: Run JAR tests
+        run: bb test:jar
+
+  test-java-windows:
+    name: Java Tests (Windows)
+    needs: [build-cross-windows, build-wasm-browser, build-wasm-graal]
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Clojure and Babashka
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+          cli: latest
+
+      - name: Setup Clojure cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2
+            ~/.gitlibs
+            ~/.clojure/.cpcache
+          key: clojure-deps-windows-${{ hashFiles('**/deps.edn', '**/bb.edn') }}
+          restore-keys: clojure-deps-windows-
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: native-windows-amd64
+          path: resources/windows-amd64/
+
+      - name: Download WASM browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-browser
+          path: .
+
+      - name: Download WASM graal artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-graal
+          path: resources/wasm/
+
+      - name: Create clojure.cmd wrapper
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "clojure-bin"
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          '@bb clojure %*' | Set-Content (Join-Path $dir "clojure.cmd")
+          echo $dir >> $env:GITHUB_PATH
+
+      - name: Run FFI tests
+        run: bb test:ffi
+
+      - name: Run GraalVM tests
+        run: bb test:graal
+
+  # ===========================================================================
+  # WASM TEST STAGE (Node.js, npm - needs wasm-browser artifact)
+  # ===========================================================================
+
+  test-wasm-macos:
+    name: WASM Tests (macOS)
+    needs: [build-wasm-browser]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Babashka
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download WASM browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-browser
+          path: .
+
+      - name: Build JS bundle
+        run: bb cherry
+
+      - name: Cache test/js node_modules
+        uses: actions/cache@v4
+        with:
+          path: test/js/node_modules
+          key: test-js-nm-macos-${{ hashFiles('test/js/package-lock.json') }}
+          restore-keys: test-js-nm-macos-
+
+      - name: Install test dependencies
+        run: cd test/js && npm install
+
+      - name: Run Node.js tests
+        run: bb test:node
+
+      - name: Run npm tests
+        run: bb test:npm
+
+  test-wasm-linux-amd64:
+    name: WASM Tests (Linux amd64)
+    needs: [build-wasm-browser]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Babashka
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download WASM browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-browser
+          path: .
+
+      - name: Build JS bundle
+        run: bb cherry
+
+      - name: Cache test/js node_modules
+        uses: actions/cache@v4
+        with:
+          path: test/js/node_modules
+          key: test-js-nm-linux-amd64-${{ hashFiles('test/js/package-lock.json') }}
+          restore-keys: test-js-nm-linux-amd64-
+
+      - name: Install test dependencies
+        run: cd test/js && npm install
+
+      - name: Run Node.js tests
+        run: bb test:node
+
+      - name: Run npm tests
+        run: bb test:npm
+
+  test-wasm-linux-aarch64:
+    name: WASM Tests (Linux aarch64)
+    needs: [build-wasm-browser]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Babashka
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download WASM browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-browser
+          path: .
+
+      - name: Build JS bundle
+        run: bb cherry
+
+      - name: Cache test/js node_modules
+        uses: actions/cache@v4
+        with:
+          path: test/js/node_modules
+          key: test-js-nm-linux-aarch64-${{ hashFiles('test/js/package-lock.json') }}
+          restore-keys: test-js-nm-linux-aarch64-
+
+      - name: Install test dependencies
+        run: cd test/js && npm install
+
+      - name: Run Node.js tests
+        run: bb test:node
+
+      - name: Run npm tests
+        run: bb test:npm
+
+  test-wasm-windows:
+    name: WASM Tests (Windows)
+    needs: [build-wasm-browser]
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Babashka
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download WASM browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-browser
+          path: .
+
+      - name: Build JS bundle
+        run: bb cherry
+
+      - name: Cache test/js node_modules
+        uses: actions/cache@v4
+        with:
+          path: test/js/node_modules
+          key: test-js-nm-windows-${{ hashFiles('test/js/package-lock.json') }}
+          restore-keys: test-js-nm-windows-
+
+      - name: Install test dependencies
+        run: cd test/js && npm install
+
+      - name: Run Node.js tests
+        run: bb test:node
+
+      - name: Run npm tests
+        run: bb test:npm
+
+  # ===========================================================================
+  # PLAYWRIGHT TEST STAGE (4 parallel jobs, only need WASM browser artifact)
+  # ===========================================================================
+
+  test-playwright-macos:
+    name: Playwright (macOS)
+    needs: [build-wasm-browser]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Babashka
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download WASM browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-browser
+          path: .
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ms-playwright
+          key: playwright-macos-${{ hashFiles('test/browser/package-lock.json') }}
+
+      - name: Cache test/browser node_modules
+        uses: actions/cache@v4
+        with:
+          path: test/browser/node_modules
+          key: test-browser-nm-macos-${{ hashFiles('test/browser/package-lock.json') }}
+          restore-keys: test-browser-nm-macos-
+
+      - name: Install Playwright deps
+        run: cd test/browser && npm install
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: cd test/browser && npx playwright install --with-deps
+
+      - name: Build JS bundle
+        run: bb cherry
+
+      - name: Run Playwright tests
+        run: bb test:playwright
+
+  test-playwright-linux-amd64:
+    name: Playwright (Linux amd64)
+    needs: [build-wasm-browser]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Babashka
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download WASM browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-browser
+          path: .
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-linux-amd64-${{ hashFiles('test/browser/package-lock.json') }}
+
+      - name: Cache test/browser node_modules
+        uses: actions/cache@v4
+        with:
+          path: test/browser/node_modules
+          key: test-browser-nm-linux-amd64-${{ hashFiles('test/browser/package-lock.json') }}
+          restore-keys: test-browser-nm-linux-amd64-
+
+      - name: Install Playwright deps
+        run: cd test/browser && npm install
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: cd test/browser && npx playwright install --with-deps
+
+      - name: Build JS bundle
+        run: bb cherry
+
+      - name: Run Playwright tests
+        run: bb test:playwright
+
+  test-playwright-linux-aarch64:
+    name: Playwright (Linux aarch64)
+    needs: [build-wasm-browser]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Babashka
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download WASM browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-browser
+          path: .
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-linux-aarch64-${{ hashFiles('test/browser/package-lock.json') }}
+
+      - name: Cache test/browser node_modules
+        uses: actions/cache@v4
+        with:
+          path: test/browser/node_modules
+          key: test-browser-nm-linux-aarch64-${{ hashFiles('test/browser/package-lock.json') }}
+          restore-keys: test-browser-nm-linux-aarch64-
+
+      - name: Install Playwright deps
+        run: cd test/browser && npm install
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: cd test/browser && npx playwright install --with-deps
+
+      - name: Build JS bundle
+        run: bb cherry
+
+      - name: Run Playwright tests
+        run: bb test:playwright
+
+  test-playwright-windows:
+    name: Playwright (Windows)
+    needs: [build-wasm-browser]
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Babashka
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          bb: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download WASM browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-browser
+          path: .
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/ms-playwright
+          key: playwright-windows-${{ hashFiles('test/browser/package-lock.json') }}
+
+      - name: Cache test/browser node_modules
+        uses: actions/cache@v4
+        with:
+          path: test/browser/node_modules
+          key: test-browser-nm-windows-${{ hashFiles('test/browser/package-lock.json') }}
+          restore-keys: test-browser-nm-windows-
+
+      - name: Install Playwright deps
+        run: cd test/browser && npm install
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: cd test/browser && npx playwright install --with-deps
+
+      - name: Build JS bundle
+        run: bb cherry
+
+      - name: Run Playwright tests
+        run: bb test:playwright
+
+  # ===========================================================================
+  # FINAL STAGE
+  # ===========================================================================
+
+  ci-pass:
+    name: CI Pass
+    if: always()
+    needs:
+      - test-java-macos
+      - test-java-linux-amd64
+      - test-java-linux-aarch64
+      - test-java-windows
+      - test-wasm-macos
+      - test-wasm-linux-amd64
+      - test-wasm-linux-aarch64
+      - test-wasm-windows
+      - test-playwright-macos
+      - test-playwright-linux-amd64
+      - test-playwright-linux-aarch64
+      - test-playwright-windows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        run: |
+          results=(
+            "${{ needs.test-java-macos.result }}"
+            "${{ needs.test-java-linux-amd64.result }}"
+            "${{ needs.test-java-linux-aarch64.result }}"
+            "${{ needs.test-java-windows.result }}"
+            "${{ needs.test-wasm-macos.result }}"
+            "${{ needs.test-wasm-linux-amd64.result }}"
+            "${{ needs.test-wasm-linux-aarch64.result }}"
+            "${{ needs.test-wasm-windows.result }}"
+            "${{ needs.test-playwright-macos.result }}"
+            "${{ needs.test-playwright-linux-amd64.result }}"
+            "${{ needs.test-playwright-linux-aarch64.result }}"
+            "${{ needs.test-playwright-windows.result }}"
+          )
+          names=(
+            "test-java-macos" "test-java-linux-amd64" "test-java-linux-aarch64" "test-java-windows"
+            "test-wasm-macos" "test-wasm-linux-amd64" "test-wasm-linux-aarch64" "test-wasm-windows"
+            "test-playwright-macos" "test-playwright-linux-amd64" "test-playwright-linux-aarch64" "test-playwright-windows"
+          )
+          failed=false
+          for i in "${!results[@]}"; do
+            echo "  ${names[$i]}: ${results[$i]}"
+            if [ "${results[$i]}" != "success" ]; then
+              failed=true
+            fi
+          done
+          if [ "$failed" = "true" ]; then
+            echo "One or more required jobs failed."
+            exit 1
+          fi
+          echo "All required jobs passed."

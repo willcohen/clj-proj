@@ -28,8 +28,8 @@
         pkgs = nixpkgs.legacyPackages.${actualSystem};
         
         # For Linux builds in containers, use explicit musl cross-compilation without forcing all static
-        buildPkgs = if pkgs.stdenv.isLinux 
-          then pkgs.pkgsCross.musl64
+        buildPkgs = if pkgs.stdenv.isLinux
+          then pkgs.pkgsMusl
           else pkgs;
 
         # Define common inputs - separate build tools from dev tools

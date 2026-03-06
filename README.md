@@ -2,6 +2,7 @@
 
 **[Live Demo](https://willcohen.github.io/clj-proj/)**
 
+[![CI](https://github.com/willcohen/clj-proj/actions/workflows/ci.yml/badge.svg)](https://github.com/willcohen/clj-proj/actions/workflows/ci.yml)
 [![NPM Version](https://img.shields.io/npm/v/proj-wasm)](https://www.npmjs.com/package/proj-wasm)
 [![Clojars Version](https://img.shields.io/clojars/v/net.willcohen%2Fproj)](https://clojars.org/net.willcohen/proj)
 
@@ -873,6 +874,9 @@ Run `bb tasks` for complete list. Key commands:
 - `bb clojars-deploy` - Deploy JAR to Clojars
 - `bb npm-publish` - Publish npm package
 - `bb version-bump <version>` - Bump version across all files
+
+**CI:**
+- `bb download-ci-artifacts` - Download all build artifacts (source archives, native libs, WASM) from the most recent CI run (requires `gh` CLI)
 
 **Utilities:**
 - `bb clean --help` - Show clean options

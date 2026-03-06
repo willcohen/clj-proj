@@ -1,6 +1,7 @@
 # Exclude build artifacts from container context
 # Prevents stale native .o files from contaminating cross-compilation
-/target
+/target/*
+!/target/*.tar.gz
 /dist
 /vendor
 /.clj-kondo/.cache
