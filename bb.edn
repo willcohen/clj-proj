@@ -1701,7 +1701,7 @@ public class JavaJarTest {
    :depends [cherry]
    :task (do
            (println "Publishing to npm...")
-           (tasks/shell {:dir "src/cljc/net/willcohen/proj"} "npm" "publish")
+           (tasks/shell {:dir "src/cljc/net/willcohen/proj"} "npm" "publish" "--tag" "alpha")
            (println "Published to npm"))}
 
   test:all

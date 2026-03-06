@@ -411,10 +411,18 @@ async function initWithWorkers(options = {}) {
       worker.on('error', (err) => console.error(`Worker ${i} error:`, err));
     } else {
       // Browser: use Web Workers
-      worker = new Worker(
-        new URL('./proj-worker.mjs', import.meta.url),
-        { type: 'module' }
-      );
+      const workerUrl = new URL('./proj-worker.mjs', import.meta.url);
+      let effectiveUrl = workerUrl;
+      // Cross-origin workers aren't allowed, so create a same-origin blob
+      // that re-exports the cross-origin module (preserving relative imports)
+      if (workerUrl.origin !== location.origin) {
+        const blob = new Blob(
+          [`import '${workerUrl.href}';`],
+          { type: 'application/javascript' }
+        );
+        effectiveUrl = URL.createObjectURL(blob);
+      }
+      worker = new Worker(effectiveUrl, { type: 'module' });
       worker.addEventListener('message', (e) => handleWorkerMessage(e.data));
       worker.addEventListener('error', (err) => console.error(`Worker ${i} error:`, err));
     }
