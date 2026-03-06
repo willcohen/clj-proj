@@ -996,6 +996,7 @@ Copyright information can be found in source files.
 This project (in particular the implemented web interface) uses code from [wasm-proj](https://github.com/jjimenezshaw/wasm-proj), which is
 distributed under the following terms:
 
+```
 MIT License
 
 Copyright (c) 2025 Javier Jimenez Shaw
@@ -1017,6 +1018,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
 
 --
  
