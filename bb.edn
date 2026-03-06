@@ -433,7 +433,7 @@
                     (println "1. Testing FFI mode from JAR...")
                     (let [result (clojure.java.shell/sh
                                   clj-cmd "-J--enable-native-access=ALL-UNNAMED"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha5.jar"}}})
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha6.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -459,7 +459,7 @@
                     (let [result (clojure.java.shell/sh
                                   clj-cmd "-J--enable-native-access=ALL-UNNAMED"
                                   "-J-Dpolyglot.engine.WarnInterpreterOnly=false"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha5.jar"}}})
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha6.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -484,7 +484,7 @@
                     (println "3. Testing coordinate transformation from JAR...")
                     (let [result (clojure.java.shell/sh
                                   clj-cmd "-J--enable-native-access=ALL-UNNAMED"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha5.jar"}}})
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha6.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -515,7 +515,7 @@
                     (println)
                     (println "4. Testing Java API from JAR...")
                     (let [test-dir "target/java-jar-test"
-                          jar-path "target/proj-0.1.0-alpha5.jar"
+                          jar-path "target/proj-0.1.0-alpha6.jar"
                           clj-cp (-> (tasks/shell {:out :string} clj-cmd "-Spath") :out str/trim)]
                       (fs/create-dirs test-dir)
                       (spit (str test-dir "/JavaJarTest.java")
@@ -1686,7 +1686,7 @@ public class JavaJarTest {
            (println "Building JAR file...")
            (tasks/shell clj-cmd "-T:build" "jar")
            (babashka.fs/copy "target/classes/META-INF/maven/net.willcohen/proj/pom.xml" "pom.xml" {:replace-existing true})
-           (println "JAR built: target/proj-0.1.0-alpha5.jar"))}
+           (println "JAR built: target/proj-0.1.0-alpha6.jar"))}
 
   clojars-deploy
   {:doc "Deploy JAR to Clojars"
@@ -1754,7 +1754,7 @@ public class JavaJarTest {
                 :task (do
                         (println "\nJAR contents:")
                         (println "=============")
-                        (tasks/shell "jar" "tf" "target/proj-0.1.0-alpha5.jar")
+                        (tasks/shell "jar" "tf" "target/proj-0.1.0-alpha6.jar")
                         (println))}
 
   npm-contents {:doc "List all files that would be in npm package"

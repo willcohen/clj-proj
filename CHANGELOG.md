@@ -4,6 +4,11 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.0-alpha6] - 2026-03-05
+
+### Fixed
+- Browser: cross-origin CDN worker loading via blob URL workaround (workers must be same-origin; now creates a same-origin shim that imports the cross-origin worker script)
+
 ## [0.1.0-alpha5] - 2026-03-05
 
 ### Added
