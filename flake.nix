@@ -59,10 +59,10 @@
           emscripten
           graalvmPackages.graalvm-ce
           maven
-          podman
           nodejs
+          podman
+          python3
           ripgrep
-          tcl
         ];
 
         commonHook = ''

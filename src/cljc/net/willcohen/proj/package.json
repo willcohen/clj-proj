@@ -1,6 +1,7 @@
 {
   "name": "proj-wasm",
-  "version": "0.1.0-alpha4",
+  "version": "0.1.0-alpha5",
+  "type": "module",
   "description": "This project provides a native (or transpiled) version of PROJ for the JS ecosystem.",
   "homepage": "https://github.com/willcohen/clj-proj",
   "main": "dist/proj.mjs",
@@ -20,8 +21,9 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "cherry-cljs": "0.5.33",
-    "resource-tracker": "0.0.1-alpha1"
+    "cherry-cljs": "0.5.34",
+    "resource-tracker": "0.0.1-alpha1",
+    "xhr2": "0.2.1"
   },
   "devDependencies": {
     "esbuild": "^0.19.0"

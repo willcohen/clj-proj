@@ -13,8 +13,8 @@
 ;; -- Constants --
 
 (def ^{:tag 'long} PROJ_VERSION_MAJOR 9)
-(def ^{:tag 'long} PROJ_VERSION_MINOR 6)
-(def ^{:tag 'long} PROJ_VERSION_PATCH 2)
+(def ^{:tag 'long} PROJ_VERSION_MINOR 8)
+(def ^{:tag 'long} PROJ_VERSION_PATCH 0)
 
 ;; PJ_CATEGORY
 (def ^{:tag 'long} PJ_CATEGORY_ELLIPSOID 0)
@@ -185,6 +185,18 @@
                                                ['db-path :string]
                                                ['aux-db-paths :pointer] ; const char *const *auxDbPaths
                                                ['options :pointer]]} ; const char *const *options
+   :proj_context_set_enable_network {:rettype :int32
+                                     :argtypes [['context :pointer]
+                                                ['enabled :int32]]}
+   :proj_context_is_network_enabled {:rettype :int32
+                                     :argtypes [['context :pointer]]}
+   :proj_context_set_network_callbacks {:rettype :int32
+                                        :argtypes [['context :pointer]
+                                                   ['open_cbk :pointer]
+                                                   ['close_cbk :pointer]
+                                                   ['get_header_cbk :pointer]
+                                                   ['read_range_cbk :pointer]
+                                                   ['user_data :pointer]]}
    :proj_context_errno {:rettype :int32
                         :argtypes [['context :pointer]]}
    :proj_context_errno_string {:rettype :string
@@ -238,6 +250,10 @@
    :proj_log_level {:rettype :int32 ; PJ_LOG_LEVEL
                     :argtypes [['context :pointer]
                                ['level :int32]]} ; PJ_LOG_LEVEL
+   :proj_log_func {:rettype :void
+                   :argtypes [['context :pointer]
+                              ['app_data :pointer]
+                              ['logf :pointer]]} ; PJ_LOG_FUNC callback
    :proj_clone {:rettype :pointer ; PJ *
                 :argtypes [['context :pointer]
                            ['p :pointer]] ; const PJ *p

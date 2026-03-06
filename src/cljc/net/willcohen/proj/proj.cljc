@@ -2,6 +2,8 @@
    (ns net.willcohen.proj.proj
      "The primary clj API for the JVM wrapper of PROJ."
      (:require [net.willcohen.proj.impl.native :as native]
+               [net.willcohen.proj.impl.logging :as proj-logging]
+               [net.willcohen.proj.impl.network :as proj-network]
                [tech.v3.resource :as resource]
                [tech.v3.datatype :as dt]
                [tech.v3.datatype.ffi :as dt-ffi]
@@ -38,15 +40,6 @@
 (def p #?(:clj nil
           :cljs wasm/p))
 
-;; TODO: Make as many of the helpers private as possible.
-;; TODO: Begin adding docstrings to all functions to help clarify how ns works.
-
-;; TODO: Do we still use these?
-#?(:cljs
-   (defn proj-emscripten-helper
-     [f return-type arg-types args]
-     ((.-ccall @p) f return-type arg-types args 0)))
-
 (defn valid-ccall-type?
   [t]
   (if (not (nil? (#{:number :array :string} t)))
@@ -64,36 +57,25 @@
      ((.-UTF8ToString @p) (get-value ptr "*"))))
 
 #?(:cljs
-   (defn malloc
-     [b]
-     ((.-_malloc @p) b)))
-
-#?(:cljs
-   (defn heapf64
-     [o n]
-     (.subarray (.-HEAPF64 @p) o (+ o n))))
-
-#?(:cljs
    (defn alloc-coord-array
-     [num-coords]
-     ;; Each coordinate has 4 doubles (x, y, z, t), each double is 8 bytes
-     (let [floats-needed (* 4 num-coords)
-           bytes-needed (* 8 floats-needed)
-           alloc (malloc bytes-needed)
-           array (heapf64 (/ alloc 8) floats-needed)]
-       #js {:malloc alloc :array array})))
+     "Allocate a coordinate array as a JS-side Float64Array.
+      Data is transferred to the correct worker on demand by proj_trans_array."
+     [num-coords _worker-idx]
+     (let [floats-needed (* num-coords 4)]
+       #js {:buffer (js/Float64Array. floats-needed)
+            :numCoords num-coords
+            :floatsNeeded floats-needed
+            :type "coord-array"})))
 
 #?(:cljs
    (defn set-coord-array
+     "Set coordinate values in a JS-side coord array's Float64Array buffer."
      [coord-array allocated]
-     (let [;; Handle nested arrays - could be CLJS vectors, JS arrays, or mixed
-           flattened (cond
-                       ;; If it's already a flat JS array
+     (let [flattened (cond
                        (and (array? coord-array)
                             (every? number? coord-array))
                        coord-array
 
-                       ;; If it's a JS array of JS arrays
                        (and (array? coord-array)
                             (array? (aget coord-array 0)))
                        (let [result #js []]
@@ -103,54 +85,31 @@
                                (.push result (aget inner j)))))
                          result)
 
-                       ;; If it's a Clojure structure
                        :else
-                       (into-array (flatten coord-array)))
-           ;; Handle both Clojure maps and JS objects
-           array (cond
-                   ;; JS object
-                   (and (object? allocated) (.-array allocated))
-                   (.-array allocated)
-                   ;; Clojure map with get method
-                   (and allocated (.-get allocated))
-                   (.get allocated "array")
-                   ;; Regular Clojure map
-                   :else
-                   (:array allocated))]
-       (if array
-         (do
-           (.set array flattened 0)
-           allocated)
-         (throw (js/Error. "No :array key in allocated structure"))))))
+                       (into-array (flatten coord-array)))]
+       (.set (.-buffer allocated) (clj->js flattened) 0)
+       allocated)))
 
 #?(:cljs
    (defn get-coord-array
-     "Read coordinates from a coord array"
+     "Read coordinates from a JS-side coord array's Float64Array buffer."
      [allocated idx]
-     (let [;; Handle both Clojure maps and JS objects
-           array (cond
-                   ;; JS object
-                   (and (object? allocated) (.-array allocated))
-                   (.-array allocated)
-                   ;; Clojure map with get method
-                   (and allocated (.-get allocated))
-                   (.get allocated "array")
-                   ;; Regular Clojure map
-                   :else
-                   (:array allocated))
+     (let [buf (.-buffer allocated)
            offset (* idx 4)]
-       (when array
-         [(aget array offset)
-          (aget array (+ offset 1))
-          (aget array (+ offset 2))
-          (aget array (+ offset 3))]))))
+       #js [(aget buf offset)
+            (aget buf (+ offset 1))
+            (aget buf (+ offset 2))
+            (aget buf (+ offset 3))])))
 
 (defn init!
   "Initialize PROJ. In ClojureScript, returns a Promise that must be awaited.
-   In Clojure, initializes synchronously and returns nil."
+   In Clojure, initializes synchronously and returns nil.
+   opts is an optional map; in ClojureScript supports :workers (number or \"auto\")."
   ([]
    (init! nil))
   ([log-level]
+   (init! log-level {}))
+  ([log-level opts]
    #?(:clj
       (let [ffi-succeeded? (atom false)]
         (try
@@ -189,11 +148,11 @@
                         :else :unknown)]
           (when log-level (js/console.log (str "Detected runtime: " runtime)))
           ;; Initialize the PROJ WASM module - returns a promise
-          (let [init-promise (wasm/init-proj)]
+          (let [init-promise (wasm/init-proj opts)]
             ;; Chain a handler to set implementation when init completes
             (.then init-promise
                    (fn [proj-module]
-                     ; p is now wasm/p, already set by wasm/init-proj 
+                     ; p is now wasm/p, already set by wasm/init-proj
                      (reset! implementation runtime)
                      (when log-level
                        (js/console.log (str "PROJ initialized with " runtime " implementation")))
@@ -201,21 +160,36 @@
             ;; Return the promise so callers can await it
             init-promise))))))
 
-;; Convenience alias without the bang for JavaScript
-(def init init!)
+#?(:cljs
+   (defn shutdown!
+     "Shutdown all workers and clean up resources. Returns a Promise.
+      Call this to allow Node.js process to exit cleanly."
+     []
+     (wasm/shutdown!)))
 
- ;; TODO: move generate-docstring back!! example in proj_macros.
- ;; Maybe dispatch can use it? Mainly we need it for clj-kondo,
-;; so if that one has to have dependencies in macros.clj, I'm
-;; reluctantly open to it.
+#?(:cljs
+   (defn get-worker-mode
+     "Returns the current worker mode: 'pthreads' or 'single-threaded'.
+      'pthreads' means SharedArrayBuffer is available (COOP/COEP headers enabled)
+      and the pthreads WASM build can use internal threading.
+      'single-threaded' means SharedArrayBuffer is unavailable."
+     []
+     (wasm/get-mode)))
 
-(defn set-coords!
+#?(:cljs
+   (defn get-worker-count
+     "Returns the number of workers in the pool."
+     []
+     (wasm/get-worker-count)))
+
+(defn ^:async set-coords!
   "Sets the value of the entire coordinate array.
   If the provided coordinates are shaped the same as the coord-array,
   (in other words, any number of collections of up to four doubles)
   they will be set directly.
   Otherwise, this will attempt to first reshape the provided coordinates into
-  such a tensor."
+  such a tensor.
+  In ClojureScript, returns a Promise."
   [ca coords]
   #?(:clj
      (case @implementation
@@ -224,11 +198,22 @@
                   :else
                   (dt-t/mset! ca (dt-t/reshape coords (dt/shape ca))))
        :graal (wasm/set-coord-array coords ca))
-     :cljs (set-coord-array coords ca)))
+     :cljs (js-await (set-coord-array coords ca))))
+
+(defn get-coords
+  "Read coordinates from a coord-array at the given index.
+   Returns [x y z t] for FFI tensors or GraalVM/WASM arrays."
+  [ca idx]
+  #?(:clj
+     (case @implementation
+       :ffi [(dt-t/mget ca idx 0) (dt-t/mget ca idx 1)
+             (dt-t/mget ca idx 2) (dt-t/mget ca idx 3)]
+       :graal (wasm/get-coord-array ca idx))
+     :cljs
+     (get-coord-array ca idx)))
 
  ;; to-emscripten-type moved to proj_macros.cljc 
 
-;;TODO: Should this just be integrated into the dispatch?
 (defn cs
   "The primary mechanism for attempting to ensure atomicity with contexts.
    In ClojureScript, skips counter updates to avoid SharedArrayBuffer mutations."
@@ -318,7 +303,6 @@
          (to-array []))
        (throw (js/Error. (str "Unsupported implementation: " @implementation))))))
 
-;; TODO: How much of this do we really need?
 (declare proj-context-errno proj-string-list-destroy
          proj-destroy proj-list-destroy
          proj-celestial-body-list-destroy
@@ -329,10 +313,11 @@
          proj-operation-factory-context-destroy
          proj-context-destroy
          proj-errno proj-errno-string
-         context-create context-set-database-path
-         proj-context-create proj-context-set-database-path)
+         proj-log-func proj-log-level
+         context-create context-set-database-path context-set-enable-network
+         proj-context-create proj-context-set-database-path
+         proj-context-set-enable-network)
 
-;; TODO: Do we need this?
 (def ^:private pj-return-types-set
   #{:pj :pj-list :pj-celestial-body-info-list :pj-crs-list-parameters
     :pj-crs-info-list :pj-unit-info-list :pj-insert-session
@@ -390,39 +375,54 @@
 
  ;; Macro invocation moved to end of file to avoid forward references
 
-;; TODO: I want this integrated into the dispatch itself.
-(defn context-create
-  "Creates a new PROJ context. For ClojureScript, returns a plain immutable object 
-   (no counters) to avoid SharedArrayBuffer mutations. For JVM, returns an atom."
-  ([]
-   (context-create nil))
-  ([_log-level-ignored]
-   (context-create _log-level-ignored #?(:clj :auto :cljs "auto")))
-  ([_log-level-ignored _resource-type-ignored]
-   #?(:clj
-      ;; JVM: Keep existing atom-based implementation with counters
-      (let [tracked-native-ctx (proj-context-create {})
-            a (atom {:ptr tracked-native-ctx :op (long 0) :result nil})]
-        (context-set-database-path a)
-        a)
-      :cljs
-      ;; ClojureScript: Plain immutable object - no mutations, no atomic issues!
-      (do
-        (ensure-initialized!)
-        (let [native-ctx (dispatch-proj-fn :proj_context_create
-                                           (get pdefs/fndefs :proj_context_create)
-                                           {})
-              ctx-obj #js {:ptr native-ctx
-                           :type "proj-context"}]
-          ;; Set database path for ClojureScript contexts
-          (context-set-database-path ctx-obj)
-          ;; Set VFS name if the module has a helper for it
-          (when (and @p (.-setContextVFS @p))
-            (try
-              (.setContextVFS @p native-ctx)
-              (catch js/Error e
-                (js/console.error "Failed to set VFS on context:" e))))
-          ctx-obj)))))
+(defn ^:async context-create
+  "Creates a new PROJ context with grid network fetching configured per platform.
+
+   Network setup flow:
+   - FFI: logging callback set via JNA (logging.clj), then JNA network callbacks
+     registered via proj_context_set_network_callbacks (network.clj). HTTP handled
+     by Java HttpClient via JNA callbacks.
+   - GraalVM: network callbacks registered via C stubs (network.clj + proj_network_stubs.c)
+     before network is enabled. Callbacks must be registered first so PROJ can use them.
+   - CLJS: the worker's context_create handler does everything (set db path, enable
+     network, set log callback). CLJS side just stores the routing info.
+
+   For ClojureScript, returns a plain immutable object (no counters) to avoid
+   SharedArrayBuffer mutations. For JVM, returns an atom.
+
+   Options:
+   - :network - enables network access for grid downloads (default: true)
+   - :worker - explicit worker index for CLJS (default: round-robin)"
+  [& args]
+  (let [opts (if (seq args) (first args) {})
+        opts (if (map? opts) opts {})
+        enable-network? (get opts :network true)]
+    #?(:clj
+       ;; JVM: Keep existing atom-based implementation with counters
+       (let [tracked-native-ctx (proj-context-create {})
+             a (atom {:ptr tracked-native-ctx :op (long 0) :result nil})]
+         (context-set-database-path a)
+         (when (ffi?)
+           (proj-logging/setup-logging! (:ptr @a)))
+         ;; Callbacks must be registered before enabling network so PROJ can use them
+         (when (and enable-network? (graal?))
+           (proj-network/setup-network-callbacks! (wasm/address-as-int (:ptr @a))))
+         (when (and enable-network? (ffi?))
+           (proj-network/setup-native-network-callbacks! (:ptr @a)))
+         (when enable-network?
+           (context-set-enable-network a true))
+         a)
+       :cljs
+       ;; ClojureScript: Use worker pool - worker handles context setup
+       ;; Worker's context_create command sets db path and enables network
+       (do
+         (ensure-initialized!)
+         (let [ctx-result (js-await (wasm/create-context-on-worker opts))
+               ctx-obj #js {:ptr (get ctx-result :ptr)
+                            :ctx-id (get ctx-result :ctx-id)
+                            :worker_idx (get ctx-result :worker-idx)
+                            :type "proj-context"}]
+           ctx-obj)))))
 
  ;; Helper functions for cross-platform context access
 (defn context-ptr
@@ -483,6 +483,15 @@
                                          :aux-db-paths aux-db-paths
                                          :options options})))))
 
+(defn context-set-enable-network
+  "Enable or disable network access for grid downloads on a PROJ context.
+   enabled should be truthy (1 or true) to enable, falsy (0 or false/nil) to disable."
+  [context enabled]
+  #?(:clj
+     (proj-context-set-enable-network {:context context :enabled (if enabled 1 0)})
+     :cljs
+     (proj-context-set-enable-network {:context (context-ptr context) :enabled (if enabled 1 0)})))
+
 (defn coord-tensor
   [ca dims]
   #?(:clj
@@ -501,17 +510,17 @@
                :ffi (coord-array n dims :native-heap :auto)
                :graal (wasm/alloc-coord-array n dims)
                (throw (ex-info "Unknown implementation" {:impl @implementation}))))
-      :cljs (do
-              (when (nil? @implementation)
-                (init!))
-              (case @implementation
-                :node (alloc-coord-array n)
-                :browser (alloc-coord-array n)))))
-  #?(:clj
-     ([n dims container-type resource-type]
-      (-> (dt-struct/new-array-of-structs :proj-coord n {:container-type container-type
-                                                         :resource-type resource-type})
-          (coord-tensor dims)))))
+      :cljs (coord-array n dims {})))
+  #?@(:clj
+      [([n dims container-type resource-type]
+        (-> (dt-struct/new-array-of-structs :proj-coord n {:container-type container-type
+                                                           :resource-type resource-type})
+            (coord-tensor dims)))]
+      :cljs
+      [([n _dims _opts]
+        (when (nil? @implementation)
+          (init!))
+        (alloc-coord-array n 0))]))
 
 (defn coord->coord-array
   [coord]
@@ -638,7 +647,6 @@
        (js/console.warn "PROJ may not be initialized - ensure proj/init! was called"))))
 
 ;; TODO: This fn is too long, need to extract it into helpers.
-;; Consider integrating cs into this functionality.
 (defn extract-args
   "Extract arguments from opts map based on function definition, applying defaults.
    Supports both underscore and hyphenated parameter names for better usability.
@@ -673,19 +681,28 @@
                                      #?(:clj (clojure.string/replace (name arg-name) #"_" "-")
                                         :cljs (-> (name arg-name)
                                                   (.replace (js/RegExp. "_" "g") "-"))))
+                  ;; ctx and context are aliases for the context parameter
+                  is-context-arg (contains? #{'ctx 'context} arg-name)
+                  context-alias (case arg-name ctx "context" context "ctx" nil)
                   ;; In CLJS, opts might be a JS object - use aget for JS objects
                   provided-val #?(:clj (or (get opts arg-kw-underscore)
-                                           (get opts arg-kw-hyphenated))
+                                           (get opts arg-kw-hyphenated)
+                                           (when context-alias
+                                             (get opts (keyword context-alias))))
                                   :cljs (if (object? opts)
                                           (or (aget opts (name arg-name))
                                               (aget opts (-> (name arg-name)
-                                                             (.replace (js/RegExp. "_" "g") "-"))))
+                                                             (.replace (js/RegExp. "_" "g") "-")))
+                                              (when context-alias
+                                                (aget opts context-alias)))
                                           (or (get opts arg-kw-underscore)
-                                              (get opts arg-kw-hyphenated))))]
+                                              (get opts arg-kw-hyphenated)
+                                              (when context-alias
+                                                (get opts (keyword context-alias))))))]
               ;; Special handling for context arguments
               (cond
                 ;; If context is provided as an atom, extract the pointer for FFI
-                (and (= arg-name 'context)
+                (and is-context-arg
                      (some? provided-val)
                      (is-context? provided-val))
                 #?(:clj (if (graal?)
@@ -694,14 +711,16 @@
                    :cljs provided-val)
 
                 ;; If context is required but not provided, create a temporary one
-                (and (= arg-name 'context)
+                ;; In CLJS, pass 0 (NULL) to let PROJ use default context
+                ;; (async context creation causes Promise serialization issues)
+                (and is-context-arg
                      (nil? provided-val)
                      (not has-default?))
-                (let [temp-ctx (context-create {})]
-                  #?(:clj (if (graal?)
+                #?(:clj (let [temp-ctx (context-create {})]
+                          (if (graal?)
                             temp-ctx
-                            (context-ptr temp-ctx))
-                     :cljs temp-ctx))
+                            (context-ptr temp-ctx)))
+                   :cljs 0)  ; NULL - PROJ will use default context
 
                 ;; Use default value when not provided but default exists
                 (and (nil? provided-val) has-default?)
@@ -716,6 +735,13 @@
                   (if default-val 1 0)
                   ;; Otherwise use the default as-is
                   :else default-val)
+
+                ;; Handle JS-side coord arrays (CLJS) — pass through for worker data transfer
+                (and (= arg-type :pointer)
+                     #?(:cljs (and (object? provided-val)
+                                   (= (.-type provided-val) "coord-array"))
+                        :clj false))
+                provided-val
 
                 ;; Handle coord-array maps for pointer arguments (GraalVM/WASM)
                 ;; coord-array returns {:malloc ptr :array heapf64} but we need just the pointer
@@ -755,7 +781,14 @@
   [result fn-def]
   (let [proj-returns (:proj-returns fn-def)]
     (case proj-returns
-      :string-list (string-array-pointer->strs result nil)
+      ;; For CLJS, string-list is already processed in worker, just return result
+      ;; For CLJ, convert the pointer to strings
+      :string-list #?(:cljs result
+                      :clj (string-array-pointer->strs result nil))
+      ;; Worker already parsed struct array and destroyed C list
+      ;; CLJ: raw pointer, use get-crs-info-list-from-database wrapper instead
+      :pj-crs-info-list #?(:cljs result
+                           :clj result)
       ;; Track all PROJ pointer types
       #?(:cljs
          (if-let [destroy-fn-name (proj-type->destroy-fn proj-returns)]
@@ -763,7 +796,7 @@
              (.track resource result
                      #js {:disposefn (fn []
                                        (when @p
-                                         (proj-emscripten-helper destroy-fn-name :void [:pointer] [result])))
+                                         (wasm/proj-emscripten-helper destroy-fn-name :void [:pointer] [result])))
                           :tracktype "auto"})
              result)
            ;; No tracking needed for this type
@@ -771,7 +804,9 @@
          :clj
          (if-let [destroy-fn-name (proj-type->destroy-fn proj-returns)]
            (when result
-             ;; Use tech.v3.resource for automatic cleanup
+             ;; Memory leak debugging (FFI): (resource/set-gc-reporting! true) to log cleanup,
+             ;; (resource/resource-info) to inspect tracked objects, (resource/print-stack-traces!)
+             ;; to see allocation sites.
              (resource/track
               result
               {:dispose-fn (fn []
@@ -801,13 +836,20 @@
           (dispatch-to-platform-with-args fn-key fn-def full-args)))
       remaining-args))
 
+(defn- resolve-context-val
+  "Look up the context arg from opts, checking both :ctx and :context."
+  [opts first-arg-name]
+  (or (get opts first-arg-name)
+      (when (#{:ctx :context} first-arg-name)
+        (get opts (if (= first-arg-name :ctx) :context :ctx)))))
+
 (defn should-use-context-dispatch?
   "Determine if a function should use context dispatch via cs"
   [fn-key fn-def opts]
   (let [is-context-fn (is-c-context-fn? fn-key fn-def)
         first-arg-name (when (seq (:argtypes fn-def))
                          (keyword (first (first (:argtypes fn-def)))))
-        first-arg-val (get opts first-arg-name)]
+        first-arg-val (resolve-context-val opts first-arg-name)]
     (and is-context-fn
          (is-context? first-arg-val))))
 
@@ -816,14 +858,16 @@
   [opts fn-def]
   (let [first-arg-name (when (seq (:argtypes fn-def))
                          (keyword (first (first (:argtypes fn-def)))))]
-    (get opts first-arg-name)))
+    (resolve-context-val opts first-arg-name)))
 
 (defn get-remaining-args
   "Extract args for context functions (skipping the first context arg)"
   [opts fn-def]
   (let [first-arg-name (when (seq (:argtypes fn-def))
                          (keyword (first (first (:argtypes fn-def)))))]
-    (extract-args fn-def (dissoc opts first-arg-name) :skip-first? true)))
+    (extract-args fn-def (dissoc (dissoc opts first-arg-name)
+                                 (if (= first-arg-name :ctx) :context :ctx))
+                  :skip-first? true)))
 
 (defn dispatch-proj-fn
   "Central dispatcher for all PROJ functions"
@@ -881,21 +925,156 @@
   ;; Call wasm/def-wasm-fn-runtime directly
      (wasm/def-wasm-fn-runtime fn-key fn-def args)))
 
-;; TODO: Do we need these? Why can't we just refer to them as needed? Are they just vestigial?
+;; These functions are vestigial - string operations should go through worker commands
 #?(:cljs
    (defn allocate-string-on-heap [s]
-     (if (aget js/wasm "allocate-string-on-heap")
-       ((aget js/wasm "allocate-string-on-heap") s)
-       ;; Fallback implementation using malloc
-       (let [bytes (.encode (js/TextEncoder.) s)
-             ptr (malloc (+ (.-length bytes) 1))]
-         (.set (js/Uint8Array. (.-buffer (aget @p "HEAPU8")) ptr (+ (.-length bytes) 1)) bytes)
-         ptr))))
+     (throw (js/Error. "allocate-string-on-heap not supported in worker mode - use worker commands"))))
 
 #?(:cljs
    (defn free-on-heap [ptr]
-     (if (aget js/wasm "free-on-heap")
-       ((aget js/wasm "free-on-heap") ptr)
-       ;; Direct call to _free
-       (when (and @p ptr)
-         ((aget @p "_free") ptr)))))
+     (throw (js/Error. "free-on-heap not supported in worker mode - use worker commands"))))
+
+;; camelCase JS aliases for manually-defined functions
+;; (fndefs functions get camelCase aliases via define-all-proj-public-fns macro)
+#?(:cljs (def init init!))
+#?(:cljs (def shutdown shutdown!))
+#?(:cljs (def setCoords set-coords!))
+#?(:cljs (def getCoords get-coords))
+#?(:cljs (def getWorkerMode get-worker-mode))
+#?(:cljs (def getWorkerCount get-worker-count))
+#?(:cljs (def contextCreate context-create))
+#?(:cljs (def contextPtr context-ptr))
+#?(:cljs (def contextDatabasePath context-database-path))
+#?(:cljs (def contextSetDatabasePath context-set-database-path))
+#?(:cljs (def contextSetEnableNetwork context-set-enable-network))
+#?(:cljs (def isContext is-context?))
+#?(:cljs (def coordArray coord-array))
+#?(:cljs (def coordTensor coord-tensor))
+#?(:cljs (def coordToCoordArray coord->coord-array))
+#?(:cljs (def allocCoordArray alloc-coord-array))
+#?(:cljs (def setCoordArray set-coord-array))
+#?(:cljs (def getCoordArray get-coord-array))
+
+#?(:cljs
+   (defn ^:async get-crs-info-list-from-database
+     "Returns the full CRS catalog from PROJ's database as a vector of maps.
+      Each map has keys: :auth-name :code :name :type :deprecated :bbox-valid
+      :west-lon-degree :south-lat-degree :east-lon-degree :north-lat-degree
+      :area-name :projection-method-name :celestial-body-name
+      Options:
+        :context   - PROJ context (required)
+        :auth-name - authority name filter, e.g. \"EPSG\" (all authorities if omitted)"
+     ([opts]
+      (ensure-initialized!)
+      (let [ctx (if (object? opts) (aget opts "context") (:context opts))
+            auth-name (if (object? opts)
+                        (or (aget opts "auth_name") (aget opts "auth-name"))
+                        (or (:auth-name opts) (:auth_name opts)))
+            ctx-ptr (context-ptr ctx)
+            worker-idx (if (and (object? ctx) (some? (.-worker-idx ctx)))
+                         (.-worker-idx ctx)
+                         0)
+            raw (js-await (wasm/worker-call worker-idx
+                                            {:cmd "crs_info_list"
+                                             :context ctx-ptr
+                                             :authName auth-name}))]
+        raw)))
+   :clj
+   (defn get-crs-info-list-from-database
+     "Returns the full CRS catalog from PROJ's database as a vector of maps.
+      Each map has keys: :auth-name :code :name :type :deprecated :bbox-valid
+      :west-lon-degree :south-lat-degree :east-lon-degree :north-lat-degree
+      :area-name :projection-method-name :celestial-body-name
+      Options:
+        :context   - PROJ context (required)
+        :auth-name - authority name filter, e.g. \"EPSG\" (all authorities if omitted)"
+     ([opts]
+      (ensure-initialized!)
+      (let [ctx (:context opts)
+            auth-name (or (:auth-name opts) (:auth_name opts) "")
+            ctx-ptr (context-ptr ctx)]
+        (case @implementation
+          :ffi
+          (let [params-ptr (call-ffi-fn :proj_get_crs_list_parameters_create [])
+                count-ptr (com.sun.jna.Memory. 4)
+                _ (.setInt count-ptr 0 0)
+                result-ptr (call-ffi-fn :proj_get_crs_info_list_from_database
+                                        [ctx-ptr auth-name params-ptr count-ptr])
+                count (.getInt count-ptr 0)]
+            (call-ffi-fn :proj_get_crs_list_parameters_destroy [params-ptr])
+            (if (and result-ptr (pos? count))
+              (let [jna-ptr (-> result-ptr dt-ptr/ptr-value com.sun.jna.Pointer.)
+                    entries (mapv
+                             (fn [i]
+                               (let [struct-ptr (.getPointer jna-ptr (* i 8))
+                                     read-str (fn [offset]
+                                                (let [p (.getPointer struct-ptr offset)]
+                                                  (when p (.getString p 0 "UTF-8"))))]
+                                 {:auth-name (read-str 0)
+                                  :code (read-str 8)
+                                  :name (read-str 16)
+                                  :type (.getInt struct-ptr 24)
+                                  :deprecated (not= 0 (.getInt struct-ptr 28))
+                                  :bbox-valid (not= 0 (.getInt struct-ptr 32))
+                                  :west-lon-degree (.getDouble struct-ptr 40)
+                                  :south-lat-degree (.getDouble struct-ptr 48)
+                                  :east-lon-degree (.getDouble struct-ptr 56)
+                                  :north-lat-degree (.getDouble struct-ptr 64)
+                                  :area-name (read-str 72)
+                                  :projection-method-name (read-str 80)
+                                  :celestial-body-name (read-str 88)}))
+                             (range count))]
+                (call-ffi-fn :proj_crs_info_list_destroy [result-ptr])
+                entries)
+              []))
+          :graal
+          (let [malloc-fn (.getMember @wasm/p "_malloc")
+                free-fn (.getMember @wasm/p "_free")
+                get-value-fn (.getMember @wasm/p "getValue")
+                utf8-to-string-fn (.getMember @wasm/p "UTF8ToString")
+                ccall-fn (.getMember @wasm/p "ccall")
+                count-ptr (.asInt (.execute malloc-fn (object-array [4])))
+                ctx-int (wasm/address-as-int ctx-ptr)
+                list-ptr (.asInt
+                          (.execute ccall-fn
+                                    (into-array Object
+                                                ["proj_get_crs_info_list_from_database"
+                                                 "number"
+                                                 (org.graalvm.polyglot.proxy.ProxyArray/fromArray
+                                                  (object-array ["number" "string" "number" "number"]))
+                                                 (org.graalvm.polyglot.proxy.ProxyArray/fromArray
+                                                  (object-array [ctx-int (or auth-name "") 0 count-ptr]))])))
+                count (.asInt (.execute get-value-fn (object-array [count-ptr "i32"])))]
+            (.execute free-fn (object-array [count-ptr]))
+            (if (and (not= list-ptr 0) (pos? count))
+              (let [read-str (fn [addr]
+                               (if (zero? addr) nil
+                                   (.asString (.execute utf8-to-string-fn (object-array [addr])))))
+                    gv (fn [ptr type] (.asInt (.execute get-value-fn (object-array [ptr type]))))
+                    gv-double (fn [ptr type] (.asDouble (.execute get-value-fn (object-array [ptr type]))))
+                    entries (mapv
+                             (fn [i]
+                               (let [s (gv (+ list-ptr (* i 4)) "*")]
+                                 {:auth-name (read-str (gv s "*"))
+                                  :code (read-str (gv (+ s 4) "*"))
+                                  :name (read-str (gv (+ s 8) "*"))
+                                  :type (gv (+ s 12) "i32")
+                                  :deprecated (not= 0 (gv (+ s 16) "i32"))
+                                  :bbox-valid (not= 0 (gv (+ s 20) "i32"))
+                                  :west-lon-degree (gv-double (+ s 24) "double")
+                                  :south-lat-degree (gv-double (+ s 32) "double")
+                                  :east-lon-degree (gv-double (+ s 40) "double")
+                                  :north-lat-degree (gv-double (+ s 48) "double")
+                                  :area-name (read-str (gv (+ s 56) "*"))
+                                  :projection-method-name (read-str (gv (+ s 60) "*"))
+                                  :celestial-body-name (read-str (gv (+ s 64) "*"))}))
+                             (range count))]
+                (.execute ccall-fn
+                          (into-array Object
+                                      ["proj_crs_info_list_destroy" "void"
+                                       (org.graalvm.polyglot.proxy.ProxyArray/fromArray (object-array ["number"]))
+                                       (org.graalvm.polyglot.proxy.ProxyArray/fromArray (object-array [list-ptr]))]))
+                entries)
+              [])))))))
+
+#?(:cljs (def getCrsInfoListFromDatabase get-crs-info-list-from-database))

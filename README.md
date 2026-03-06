@@ -32,6 +32,16 @@ functionality continues to be developed.
 
 clj-proj provides PROJ functionality through a multi-implementation architecture that automatically selects the best available backend at runtime:
 
+### API Scope
+
+This library currently focuses on PROJ's [C API for ISO 19111
+functionality](https://proj.org/en/stable/development/reference/functions.html#c-api-for-iso-19111-functionality).
+PROJ's C API is split into several sections, and objects from the ISO 19111
+section generally do not mix with functions from other sections (and vice versa).
+ISO 19111 `CoordinateOperation` objects that can be exported as valid PROJ
+pipelines are the exception — these work with transformation functions like
+`proj_trans_array()`.
+
 ### Implementation Strategy
 
 The library provides a unified API (`net.willcohen.proj.proj`) that automatically selects the best available backend at runtime:
@@ -46,22 +56,21 @@ During initialization, the library detects the environment and available backend
 ;; The implementation atom tracks which backend is active
 (def implementation (atom nil))
 
-;; Initialization automatically selects the best backend
+;; JVM: tries native FFI first, falls back to GraalVM WASM
+;; CLJS: initializes worker pool, returns a Promise
 (defn init! []
-  #?(:clj 
-     ;; JVM: Try native FFI first, fall back to GraalVM WASM
+  #?(:clj
      (if @force-graal
-       (do (wasm/load-wasm) (reset! implementation :graal))
-       (try 
+       (do (wasm/init-proj) (reset! implementation :graal))
+       (try
          (native/init-proj)
          (reset! implementation :ffi)
-         (catch Exception e
-           (wasm/load-wasm)
+         (catch Throwable e
+           (wasm/init-proj)
            (reset! implementation :graal))))
      :cljs
-     ;; JavaScript: Detect Node.js or browser environment
-     (do (wasm/init)
-         (reset! implementation (if (node?) :node :browser)))))
+     (-> (wasm/init-proj opts)
+         (.then (fn [_] (reset! implementation runtime))))))
 ```
 
 ### Runtime Dispatch System
@@ -146,7 +155,7 @@ The library provides efficient handling of both single and batch coordinate tran
 Coordinate arrays are implemented differently per platform:
 - **FFI**: Uses `dtype-next` tensors for zero-copy native memory access
 - **GraalVM**: Allocates memory in the WASM heap
-- **ClojureScript**: Direct typed array manipulation
+- **ClojureScript**: Worker-allocated arrays via message passing
 
 ### Advanced Features
 
@@ -194,6 +203,49 @@ The library provides a developer-friendly API with several conveniences:
   - Native errors are wrapped in Clojure exceptions
   - Helpful error messages across all backends
 
+## Grid Fetching
+
+PROJ transformations can require grid shift files -- TIFF-format datum corrections hosted at `cdn.proj.org`. Without these grids, transformations like NAD27->NAD83 degrade to "ballpark" accuracy. clj-proj fetches grids automatically when network access is enabled.
+
+### Per-Platform Behavior
+
+- **JVM + Native FFI**: Java's HttpClient handles HTTP range requests via JNA callbacks. No configuration needed.
+- **JVM + GraalVM WASM**: Java's HttpClient fetches grids via a C stub bridge (`proj_network_stubs.c` + `network.clj`). No configuration needed.
+- **Browser**: PROJ runs in Web Workers where Emscripten's synchronous FETCH (via `Atomics.wait`) is allowed. Works without special headers; pthreads mode requires Cross-Origin Isolation (see below).
+- **Node.js**: PROJ runs in `worker_threads` with an XMLHttpRequest polyfill that delegates sync requests to a fetch-worker via SharedArrayBuffer + Atomics. No configuration needed.
+
+### Enabling/Disabling Network
+
+```clojure
+;; Network enabled by default
+(def ctx (proj/context-create))
+
+;; Explicitly disable network
+(def ctx-offline (proj/context-create {:network false}))
+```
+
+```javascript
+// JavaScript - network enabled by default
+const ctx = await proj.context_create();
+
+// Disable network
+const ctxOffline = await proj.context_create({network: false});
+```
+
+### Browser: Cross-Origin Isolation
+
+The library supports two worker modes in browsers:
+
+- **Single-threaded mode** (fallback): Each worker gets its own Emscripten module and WASM memory, using the single-threaded WASM build. No special headers needed.
+- **Pthreads mode**: Each worker still gets its own Emscripten module, but uses the pthreads WASM build which enables internal threading via SharedArrayBuffer. Requires Cross-Origin Isolation headers:
+  - `Cross-Origin-Opener-Policy: same-origin`
+  - `Cross-Origin-Embedder-Policy: require-corp`
+
+The `coi-serviceworker.js` included in the demo page enables pthreads mode on static hosting (e.g. GitHub Pages) but is not required.
+
+### Known Limitations
+- GraalVM network callbacks add initialization overhead
+
 ## Platform-Specific Details
 
 ### JVM (Java / Clojure)
@@ -208,15 +260,15 @@ Currently supported platforms (native):
 - Linux x64 and arm64
 - Windows x64
 
-Not yet implemented:
-- macOS/darwin Intel (x86_64) - Not built/tested
+Not yet built:
+- macOS/darwin Intel (x86_64)
 - Windows ARM64 - Cross-compiler not available in nixpkgs
 
-### JDK 11+ with native library
+### JDK 21+ with native library
 
 On platforms with a native precompiled PROJ available, this library utilizes
-JNA. This is the preferred option. Once Panama stabilizes, this library may use
-that instead when present.
+JNA via dtype-next. This is the preferred option. If dtype-next adopts
+Panama FFM, this library may follow.
 
 #### How Native FFI Works
 
@@ -310,12 +362,15 @@ and should enable JVMCI to improve performance.
 #### How GraalVM Implementation Works
 
 When native libraries aren't available, the GraalVM implementation:
-1. Creates a polyglot context with JavaScript and WebAssembly support
-2. Loads the emscripten-compiled PROJ module with embedded resources
-3. Manages type conversion between JVM and JavaScript using ProxyArray
-4. Handles C++ exceptions from WASM code gracefully
+1. Creates a GraalVM polyglot context with JavaScript and WebAssembly support
+2. Loads the emscripten-compiled PROJ module, then writes proj.db and proj.ini to Emscripten's virtual filesystem
+3. Manages type conversion between JVM and JavaScript using ProxyArray, ProxyExecutable, and ProxyObject
+4. Bridges PROJ's network callbacks through C stubs (`proj_network_stubs.c`) that dispatch to Java-side ProxyExecutable callbacks (`network.clj`) via `globalThis`, enabling grid fetching through Java's HttpClient
+5. Handles C++ exceptions from WASM code gracefully
 
-The main challenge is initialization performance - loading the WASM binary (3.6MB) and PROJ database (9.4MB) takes several seconds.
+> **Note:** GraalVM may print "WARNING: The polyglot context is using an implementation that does not support runtime compilation" during initialization. This is expected behavior indicating interpreted (non-JIT) WASM execution and does not affect correctness.
+
+The main challenge is initialization performance -- loading the WASM binary (3.6MB) and PROJ database (9.4MB) takes several seconds.
 
 #### Usage
 
@@ -348,18 +403,18 @@ Note: GraalVM initialization takes 5-7 seconds as it loads the WASM module. You 
 
 ### JavaScript / ClojureScript
 
-The JavaScript implementation uses emscripten-compiled PROJ with several key characteristics:
+The JavaScript implementation uses emscripten-compiled PROJ running in workers:
 
-- **Direct WASM execution**: Runs compiled PROJ directly in JavaScript environments
-- **Embedded resources**: PROJ database and configuration files built into the WASM module
+- **Worker-based WASM execution**: PROJ runs in Web Workers (browser) or `worker_threads` (Node.js), keeping the main thread responsive and allowing synchronous network operations for grid fetching
 - **Cherry-cljs compilation**: ClojureScript code compiles to clean ES6 modules
+- **Async API**: All operations return Promises since they dispatch to workers
 
 #### Environment-Specific Behavior
 
 The library automatically detects and adapts to different JavaScript environments:
 
-- **Node.js**: Direct WASM module loading
-- **Browser**: WASM loading with proper CORS headers required
+- **Node.js**: PROJ runs in `worker_threads` with an XMLHttpRequest polyfill for grid fetching
+- **Browser**: PROJ runs in Web Workers with Emscripten's built-in FETCH support
 - **Environment detection**: Automatic at initialization
 
 #### Usage
@@ -371,27 +426,36 @@ import * as proj from "proj-wasm";
 // Initialize PROJ (required before any operations in JavaScript)
 await proj.init();  // Convenience alias for init! (also available as init_BANG_)
 
-// Create a context and transformation
-const context = proj.context_create();
-const transformer = proj.proj_create_crs_to_crs({
+// Create a context and transformation (all operations are async)
+const context = await proj.context_create();
+const transformer = await proj.proj_create_crs_to_crs({
   source_crs: "EPSG:4326",
   target_crs: "EPSG:2249",
   context: context
 });
 
 // Transform coordinates (EPSG:4326 uses lat/lon order)
-const coords = proj.coord_array(1);
-proj.set_coords_BANG_(coords, [[42.3603222, -71.0579667]]); // Boston City Hall (lat, lon)
-proj.proj_trans_array({ P: transformer, coord: coords, n: 1 });
+const coords = await proj.coordArray(1);
+await proj.setCoords(coords, [[42.3603222, -71.0579667, 0, 0]]); // Boston City Hall (lat, lon)
+await proj.projTransArray({
+  p: transformer,
+  direction: proj.PJ_FWD,
+  n: 1,
+  coord: coords
+});
 
-// Get the transformed coordinates
-console.log("Transformed:", coords);
+// Read transformed coordinates
+const transformed = await proj.getCoords(coords, 0);
+console.log("Transformed:", transformed[0], transformed[1]);
+
+// Shutdown workers when done (allows Node.js process to exit cleanly)
+await proj.shutdown();
 
 // Resources are automatically cleaned up - no manual cleanup needed!
 // The resource-tracker library handles cleanup when objects go out of scope
 ```
 
-For browsers, the same code works but ensure CORS headers are properly configured for WASM file loading.
+For browsers, the same API works. See the [Grid Fetching](#grid-fetching) section for Cross-Origin Isolation requirements when using pthreads mode.
 
 ```bash
 $ node index.mjs
@@ -516,10 +580,10 @@ docker run --rm -v $(pwd):/workspace clj-proj:dev bb cherry
 
 ### Build Process Overview
 
-1. **Native builds** compile PROJ + dependencies (SQLite, LibTIFF) for the host platform
+1. **Native builds** compile PROJ + dependencies (SQLite, LibTIFF, zlib) for the host platform
    - **Output**: `resources/{platform}/` (e.g., `resources/darwin-aarch64/`)
-   - **Linux**: Fully static linking
-   - **Windows**: Static linking (still has runtime dependency issues, being fixed)
+   - **Linux**: Static linking
+   - **Windows**: Static linking
 
 2. **WASM builds** use emscripten to compile PROJ into WebAssembly
    - **Output**: `resources/wasm/` and `src/cljc/net/willcohen/proj/`
@@ -583,24 +647,33 @@ The test framework runs identical tests against all implementations, ensuring co
 ```
 clj-proj/
 ├── src/
+│   ├── c/
+│   │   └── proj_network_stubs.c        # GraalVM WASM network callback stubs
 │   ├── clj/net/willcohen/proj/impl/    # JVM-specific implementations
-│   │   ├── native.clj                  # JNA/FFI implementation
-│   │   ├── graal.clj                   # GraalVM WASM implementation
+│   │   ├── native.clj                  # JNA/FFI bindings
+│   │   ├── logging.clj                 # PROJ log callback
+│   │   ├── network.clj                 # GraalVM WASM grid fetching
 │   │   └── struct.clj                  # Native struct definitions
-│   └── cljc/net/willcohen/proj/        # Cross-platform core
-│       ├── proj.cljc                   # Main public API
-│       ├── wasm.cljc                   # WASM loader/interface
-│       ├── spec.cljc                   # clojure.spec definitions
-│       ├── fndefs.cljc                 # PROJ function definitions
-│       ├── macros.clj                  # JVM macro definitions
-│       ├── macros.cljs                 # ClojureScript macros
-│       └── *.mjs                       # Generated JavaScript modules
+│   ├── cljc/net/willcohen/proj/        # Cross-platform core
+│   │   ├── proj.cljc                   # Public API + dispatch
+│   │   ├── wasm.cljc                   # WASM interface (GraalVM + CLJS workers)
+│   │   ├── spec.cljc                   # clojure.spec definitions
+│   │   ├── fndefs.cljc                 # PROJ function definitions
+│   │   ├── macros.clj                  # JVM macros
+│   │   ├── macros.cljs                 # ClojureScript macros
+│   │   ├── proj-loader.mjs             # Main-thread WASM orchestrator
+│   │   ├── proj-worker.mjs             # Worker for browser/Node.js
+│   │   ├── fetch-worker.mjs            # Node.js sync HTTP bridge worker
+│   │   ├── *.mjs                       # Cherry-generated JS modules
+│   │   └── dist/                       # esbuild bundle output (npm package)
+│   └── java/net/willcohen/proj/
+│       └── PROJ.java                   # Java API wrapper
 ├── resources/
 │   ├── {platform}/                     # Native libraries per platform
-│   ├── wasm/                           # WASM build artifacts
-│   │   ├── proj-emscripten.js         # WASM JavaScript glue
-│   │   ├── proj-emscripten.wasm       # WASM binary
-│   │   └── proj-loader.js             # WASM loader
+│   ├── wasm/                           # WASM artifacts (single-threaded, GraalVM)
+│   │   ├── proj-emscripten.js          # WASM JS glue
+│   │   ├── proj-emscripten.wasm        # WASM binary
+│   │   └── proj-loader.mjs             # proj-loader.mjs for classpath
 │   ├── proj.db                         # PROJ database
 │   └── proj.ini                        # PROJ configuration
 ├── deps.edn                            # Clojure dependencies
@@ -611,13 +684,107 @@ clj-proj/
 
 ### Key Implementation Files
 
+**Core API & Dispatch:**
 - `src/cljc/net/willcohen/proj/proj.cljc` - Main public API and dispatch logic
 - `src/cljc/net/willcohen/proj/fndefs.cljc` - PROJ function definitions and constants
 - `src/cljc/net/willcohen/proj/macros.clj[s]` - Code generation macros for multi-platform support
-- `src/cljc/net/willcohen/proj/wasm.cljc` - WebAssembly loader and interface
+- `src/cljc/net/willcohen/proj/wasm.cljc` - GraalVM context management (CLJ) and worker pool (CLJS)
+
+**JVM Implementations:**
 - `src/clj/net/willcohen/proj/impl/native.clj` - JNA/FFI implementation for native libraries
-- `src/clj/net/willcohen/proj/impl/graal.clj` - GraalVM WebAssembly implementation
 - `src/clj/net/willcohen/proj/impl/struct.clj` - Native struct definitions for FFI
+- `src/clj/net/willcohen/proj/impl/logging.clj` - JNA callback for PROJ log routing
+- `src/clj/net/willcohen/proj/impl/network.clj` - GraalVM WASM grid fetching callbacks
+- `src/c/proj_network_stubs.c` - C stubs bridging PROJ's network API to GraalVM Java callbacks
+
+**JavaScript Workers:**
+- `src/cljc/net/willcohen/proj/proj-loader.mjs` - Main-thread orchestrator (init, worker pool)
+- `src/cljc/net/willcohen/proj/proj-worker.mjs` - PROJ worker (browser Web Workers / Node.js worker_threads)
+- `src/cljc/net/willcohen/proj/fetch-worker.mjs` - Node.js sync HTTP bridge via SharedArrayBuffer + Atomics
+
+**Java API:**
+- `src/java/net/willcohen/proj/PROJ.java` - Java wrapper class
+
+### Call Flow
+
+`proj.cljc` is the public API for all platforms. On the JVM, `init!` tries
+native FFI first and falls back to GraalVM WASM. On ClojureScript, it
+initializes the worker pool. After init, all calls dispatch through the
+active backend.
+
+```
+JVM — Native FFI (preferred):
+
+  proj.cljc         Public API. Blocking calls. Dispatches based on
+    │                @implementation (:ffi or :graal).
+    ▼
+  native.clj        JNA/FFI via dtype-next. Extracts platform-specific
+    │                shared libraries from resources/{platform}/ to a temp
+    │                dir, loads them via JNA. Direct C calls, no WASM.
+    │
+    ├─ logging.clj   JNA callback bridging PROJ's log output to
+    │                 clojure.tools.logging.
+    │
+    └─ struct.clj    Native struct definitions (PJ_COORD, etc.) for
+                     zero-copy memory access via dtype-next tensors.
+                     Grid fetching handled by JNA callbacks to Java HttpClient.
+```
+
+```
+JVM — GraalVM WASM (fallback, or forced via force-graal!):
+
+  proj.cljc         Same public API, same dispatch.
+    │
+    ▼
+  wasm.cljc         Creates a GraalVM polyglot context with JS + WASM support.
+    │                Loads proj-emscripten.wasm, proj.db, and proj.ini from
+    │                the classpath (resources/wasm/).
+    ▼
+  proj-loader.mjs   initialize() runs the Emscripten module directly in
+    │                the polyglot context. No workers, no postMessage --
+    │                JVM ↔ JS interop is via ProxyArray/ProxyObject.
+    │
+    ├─ network.clj   Grid fetching callbacks. C stubs (proj_network_stubs.c)
+    │                 in the WASM binary call into Java via globalThis, where
+    │                 network.clj handles HTTP with Java's HttpClient.
+    │
+    └─ logging.clj   Same log routing as FFI, adapted for GraalVM callbacks.
+```
+
+```
+Browser / Node.js (ClojureScript):
+
+  proj.cljc         Public API. All operations return Promises.
+    │
+    ▼
+  wasm.cljc         Worker pool management. Routes each call to the
+    │                worker that owns the relevant PJ context.
+    ▼
+  proj-loader.mjs   Main thread. Spawns workers, loads resources (proj.db,
+    │                proj.ini, WASM binary), and manages a promise-per-call
+    │                protocol: each outgoing postMessage gets a unique ID,
+    │                and the response resolves the matching Promise.
+    ▼
+  proj-worker.mjs   Runs in a Web Worker (browser) or worker_thread (Node.js).
+    │                All PROJ ccall/malloc/free operations happen here.
+    │                Loads the Emscripten module and writes proj.db/proj.ini
+    │                to Emscripten's virtual filesystem.
+    ▼
+  fetch-worker.mjs  Node.js only. A second worker_thread that bridges
+                     Emscripten's synchronous XMLHttpRequest (used for grid
+                     fetching) to Node.js async http/https via SharedArrayBuffer
+                     + Atomics.wait/notify. Browsers don't need this because
+                     Web Workers can use Emscripten's built-in FETCH support.
+```
+
+### WASM Build Variants
+
+The `bb build --wasm` task produces two WASM builds from the same PROJ source:
+
+- **Pthreads build** (for ClojureScript browser/Node.js) -- output goes to `src/cljc/net/willcohen/proj/` alongside the source, where the cherry/esbuild pipeline bundles it into `dist/`.
+- **Single-threaded build** (for GraalVM) -- output goes to `resources/wasm/` on the classpath. GraalVM's polyglot engine doesn't support pthreads, so it needs this variant.
+
+Both builds produce files named `proj-emscripten.js` and `proj-emscripten.wasm`; they live in different directories.
 
 ### Performance Considerations
 
@@ -763,7 +930,7 @@ This workflow enables tight integration testing between PROJ C library developme
 ## License
 
 ```
-Copyright (c) 2024, 2025 Will Cohen
+Copyright (c) 2024, 2025, 2026 Will Cohen
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in
@@ -881,6 +1048,35 @@ freely, subject to the following restrictions:
 2. Altered source versions must be plainly marked as such, and must not be
    misrepresented as being the original software.
 3. This notice may not be removed or altered from any source distribution.
+```
+
+--
+
+The browser demo uses [coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker)
+for SharedArrayBuffer support on static hosting, which is distributed under the MIT license:
+
+```
+MIT License
+
+Copyright (c) 2021 Guido Zuidhof
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 --

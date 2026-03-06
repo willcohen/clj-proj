@@ -1,6 +1,7 @@
 package net.willcohen.proj;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Test for the Java PROJ API.
@@ -41,6 +42,7 @@ public class PROJTest {
             testGetCodes();
             testTransformation();
             testTransformationFromPj();
+            testGetCrsInfoList();
 
             System.out.println("\n=== Test Results ===");
             System.out.println("Passed: " + testsPassed);
@@ -199,11 +201,26 @@ public class PROJTest {
                      " (" + PROJ.errorCodeToString(result) + ")");
             }
 
-            // The transformed coordinates should be in MA State Plane feet
-            // Boston City Hall should be approximately:
-            // X: ~774,000 feet, Y: ~2,959,000 feet
-            // We can't easily read back the coords without more API, but at least
-            // the transformation didn't error
+            // Read back and verify transformed coordinates
+            double[] transformed = PROJ.getCoords(coords, 0);
+            if (transformed != null) {
+                double x = transformed[0];
+                double y = transformed[1];
+                // Boston City Hall in MA State Plane feet should be approximately:
+                // X: ~775,200 feet, Y: ~2,956,400 feet
+                if (x > 775000 && x < 776000) {
+                    pass("X coordinate correct: " + x);
+                } else {
+                    fail("X coordinate should be ~775,200, got " + x);
+                }
+                if (y > 2956000 && y < 2957000) {
+                    pass("Y coordinate correct: " + y);
+                } else {
+                    fail("Y coordinate should be ~2,956,400, got " + y);
+                }
+            } else {
+                fail("getCoords returned null");
+            }
 
         } catch (Exception e) {
             fail("Transformation test failed: " + e.getMessage());
@@ -255,6 +272,64 @@ public class PROJTest {
 
         } catch (Exception e) {
             fail("Transformation from PJ test failed: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static void testGetCrsInfoList() {
+        System.out.println("Test: PROJ.getCrsInfoListFromDatabase()");
+        try {
+            Object ctx = PROJ.contextCreate();
+
+            List<Map<String, Object>> entries = PROJ.getCrsInfoListFromDatabase(ctx, "EPSG");
+            if (entries == null || entries.isEmpty()) {
+                fail("No CRS info entries returned for EPSG");
+                return;
+            }
+            if (entries.size() > 1000) {
+                pass("Got " + entries.size() + " EPSG CRS info entries");
+            } else {
+                fail("Expected >1000 EPSG entries, got " + entries.size());
+            }
+
+            Map<String, Object> wgs84 = null;
+            for (Map<String, Object> entry : entries) {
+                if ("4326".equals(entry.get("code"))) {
+                    wgs84 = entry;
+                    break;
+                }
+            }
+            if (wgs84 != null) {
+                pass("Found EPSG:4326 (WGS 84)");
+                if ("EPSG".equals(wgs84.get("auth-name"))) {
+                    pass("auth-name is EPSG");
+                } else {
+                    fail("auth-name should be EPSG, got " + wgs84.get("auth-name"));
+                }
+                if ("WGS 84".equals(wgs84.get("name"))) {
+                    pass("name is WGS 84");
+                } else {
+                    fail("name should be WGS 84, got " + wgs84.get("name"));
+                }
+                if (Boolean.FALSE.equals(wgs84.get("deprecated"))) {
+                    pass("deprecated is false");
+                } else {
+                    fail("deprecated should be false, got " + wgs84.get("deprecated"));
+                }
+            } else {
+                fail("EPSG:4326 not found in CRS info list");
+            }
+
+            // Test without auth filter
+            List<Map<String, Object>> allEntries = PROJ.getCrsInfoListFromDatabase(ctx);
+            if (allEntries != null && allEntries.size() > entries.size()) {
+                pass("All-authority query returned more entries (" + allEntries.size() + ") than EPSG-only");
+            } else {
+                fail("All-authority query should return more entries than EPSG-only");
+            }
+
+        } catch (Exception e) {
+            fail("getCrsInfoListFromDatabase failed: " + e.getMessage());
             e.printStackTrace();
         }
     }

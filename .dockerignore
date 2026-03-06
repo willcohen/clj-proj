@@ -1,0 +1,13 @@
+# Exclude build artifacts from container context
+# Prevents stale native .o files from contaminating cross-compilation
+/target
+/dist
+/vendor
+/.clj-kondo/.cache
+/.cpcache
+/.shadow-cljs
+/.lsp/.cache
+/.direnv
+/.vscode
+/.git
+**/node_modules

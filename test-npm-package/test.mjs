@@ -9,11 +9,11 @@ async function test() {
     console.log('✓ PROJ initialized');
     
     // Create context
-    const ctx = proj.context_create();
+    const ctx = await proj.context_create();
     console.log('✓ Context created');
     
     // Create transformer
-    const transformer = proj.proj_create_crs_to_crs({
+    const transformer = await proj.proj_create_crs_to_crs({
       context: ctx,
       source_crs: "EPSG:4326",
       target_crs: "EPSG:3857"
@@ -21,22 +21,20 @@ async function test() {
     console.log('✓ Transformer created');
     
     // Transform coordinates
-    const coords = proj.coord_array(1);
+    const coords = await proj.coordArray(1);
     // Note: For EPSG:4326, coordinates should be in [lat, lon] order
-    proj.set_coords_BANG_(coords, [[42.3601, -71.0589, 0, 0]]); // Boston City Hall
-    
-    // Get the malloc pointer for transformation
-    const malloc = coords.malloc || coords.get('malloc');
-    
-    proj.proj_trans_array({
+    await proj.setCoords(coords, [[42.3601, -71.0589, 0, 0]]); // Boston City Hall
+
+    await proj.projTransArray({
       p: transformer,
       direction: 1, // PJ_FWD
       n: 1,
-      coord: malloc
+      coord: coords
     });
-    
-    const x = coords.array[0];
-    const y = coords.array[1];
+
+    const result = await proj.getCoordArray(coords, 0);
+    const x = result[0];
+    const y = result[1];
     console.log(`✓ Transformed Boston: [${x.toFixed(2)}, ${y.toFixed(2)}]`);
     
     // Validate transformation - expecting Web Mercator coordinates for Boston

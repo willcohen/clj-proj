@@ -4,6 +4,30 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.0-alpha5] - 2026-03-05
+
+### Added
+- camelCase JavaScript API aliases auto-generated for all PROJ functions (e.g., `projTransArray`, `projCreateCrsToCrs`), plus manual aliases for helper functions (`setCoords`, `coordArray`, `contextCreate`, etc.)
+- Network grid fetching (NADCON, NTv2, etc.) from cdn.proj.org across all platforms
+  - FFI: JNA callbacks delegate HTTP range requests to Java HttpClient
+  - GraalVM: Java HttpClient callbacks via compiled C stubs (`proj_network_stubs.c` with EM_JS)
+  - Node.js: synchronous fetch in worker threads via `Atomics.wait()`
+  - Browser: worker architecture with automatic pthreads/single-threaded mode detection
+- Worker pool architecture for JavaScript (`proj-worker.mjs`, `fetch-worker.mjs`) with context-to-worker affinity
+- PROJ logging callback for FFI via JNA (`logging.clj`)
+- GraalVM network callbacks (`network.clj`) with `ProxyExecutable` callbacks dispatched via C stubs
+- Playwright test server with configurable COOP/COEP for pthreads/single-threaded mode testing
+- Grid fetch comparison tests on all platforms (OFF vs ON, verifying ~14m NADCON shift for Boston)
+- `getWorkerMode()` / `getWorkerCount()` for inspecting the worker pool at runtime
+- Windows x64 tested and working
+
+### Changed
+- PROJ 9.8.0 (was 9.7.1), SQLite 3.51.2 (was 3.51.1), zlib 1.3.2 (was 1.3.1), GraalVM 25.0.2 (was 25.0.1)
+- Removed `graal.clj` -- GraalVM dispatch now uses shared `wasm.cljc` code path
+- `context-create` accepts `{:network false}` option across all platforms
+- BREAKING: Coordinate arrays are now JS-side Float64Arrays instead of allocated WASM memory; data is transferred to the correct worker on demand by `proj_trans_array` and allocated there. `coord:` now takes the coord array object directly instead of `coords.malloc`. Results are read via `getCoords(coords, idx)` instead of `coords.array[i]`.
+- Playwright tests: dual-server config (with/without COOP/COEP), CDN-style loading tests
+
 ## [0.1.0-alpha4] - 2025-12-05
 
 ### Fixed
@@ -121,7 +145,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - Initial proof-of-concept functionality, released to NPM and Clojars.
 
-[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha4...HEAD
+[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha5...HEAD
+[0.1.0-alpha5]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha4...0.1.0-alpha5
 [0.1.0-alpha4]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha3...0.1.0-alpha4
 [0.1.0-alpha3]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha2...0.1.0-alpha3
 [0.1.0-alpha2]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha1...0.1.0-alpha2

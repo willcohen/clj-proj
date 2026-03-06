@@ -18,6 +18,18 @@
                                                ['db-path :string]
                                                ['aux-db-paths :pointer] ; const char *const *auxDbPaths
                                                ['options :pointer]]} ; const char *const *options
+   :proj_context_set_enable_network {:rettype :int32
+                                     :argtypes [['context :pointer]
+                                                ['enabled :int32]]}
+   :proj_context_is_network_enabled {:rettype :int32
+                                     :argtypes [['context :pointer]]}
+   :proj_context_set_network_callbacks {:rettype :int32
+                                        :argtypes [['context :pointer]
+                                                   ['open_cbk :pointer]
+                                                   ['close_cbk :pointer]
+                                                   ['get_header_cbk :pointer]
+                                                   ['read_range_cbk :pointer]
+                                                   ['user_data :pointer]]}
    :proj_context_errno {:rettype :int32
                         :argtypes [['context :pointer]]}
    :proj_context_errno_string {:rettype :string
@@ -71,6 +83,10 @@
    :proj_log_level {:rettype :int32 ; PJ_LOG_LEVEL
                     :argtypes [['context :pointer]
                                ['level :int32]]} ; PJ_LOG_LEVEL
+   :proj_log_func {:rettype :void
+                   :argtypes [['context :pointer]
+                              ['app_data :pointer]
+                              ['logf :pointer]]} ; PJ_LOG_FUNC callback
    :proj_clone {:rettype :pointer ; PJ *
                 :argtypes [['context :pointer]
                            ['p :pointer]] ; const PJ *p
@@ -765,6 +781,10 @@
 (defn- c-name->clj-name [c-fn-keyword]
   (symbol (.replace (name c-fn-keyword) "_" "-")))
 
+(defn- underscore->camelCase [s]
+  (let [parts (.split s "_")]
+    (apply str (first parts) (map #(str (.toUpperCase (.substring % 0 1)) (.substring % 1)) (rest parts)))))
+
 ;; Simplified macro that generates minimal wrapper
 (defmacro define-proj-public-fn [fn-key]
   ;; Get fn-def from fndefs-raw at compile time
@@ -788,7 +808,12 @@
               ([] (~fn-name {}))
               ([opts#]
                ;; Embed fn-def at compile time - no runtime lookup needed
-               (~'dispatch-proj-fn ~fn-key '~fn-def opts#)))))))
+               (~'dispatch-proj-fn ~fn-key '~fn-def opts#)))))
+     ~@(for [[fn-key _] fndefs-raw
+             :let [clj-name (c-name->clj-name fn-key)
+                   camel-name (symbol (underscore->camelCase (name fn-key)))]
+             :when (not= clj-name camel-name)]
+         `(def ~camel-name ~clj-name))))
 
 ;; WASM-specific macros
 

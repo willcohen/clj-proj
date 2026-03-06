@@ -19,6 +19,21 @@ try {
   console.warn('Warning: Could not copy WASM file:', err.message);
 }
 
+// Copy worker files to dist
+try {
+  copyFileSync('proj-worker.mjs', 'dist/proj-worker.mjs');
+  copyFileSync('fetch-worker.mjs', 'dist/fetch-worker.mjs');
+} catch (err) {
+  console.warn('Warning: Could not copy worker files:', err.message);
+}
+
+// Copy Emscripten JS module to dist
+try {
+  copyFileSync('proj-emscripten.js', 'dist/proj-emscripten.js');
+} catch (err) {
+  console.warn('Warning: Could not copy Emscripten JS file:', err.message);
+}
+
 // Plugin to handle Cherry's import patterns
 const cherryImportPlugin = {
   name: 'cherry-imports',
@@ -61,7 +76,7 @@ const emscriptenNodePlugin = {
   name: 'emscripten-node',
   setup(build) {
     // Handle Node.js built-in modules that emscripten conditionally loads
-    build.onResolve({ filter: /^(module|fs|path|crypto|util)$/ }, args => {
+    build.onResolve({ filter: /^(module|fs|path|crypto|util|url|worker_threads)$/ }, args => {
       // Mark these as external - they'll be available in Node.js
       // and emscripten handles the case when they're not available
       return { path: args.path, external: true };
@@ -100,7 +115,7 @@ const buildConfig = {
 async function build() {
   try {
     console.log('Building proj-wasm bundle...');
-    
+
     // Create shims file for any missing globals
     const shimContent = `
 // Shims for esbuild to provide globals that macro-expanded code expects.
@@ -112,17 +127,28 @@ export const wasm = wasmModule;
 export const js = globalThis;
 `;
     writeFileSync('./esbuild-shims.mjs', shimContent);
-    
+
+    // Wrapper entry point that re-exports everything from proj.mjs plus all
+    // fndefs constants (PJ_FWD, PROJ_VERSION_*, etc.) which would otherwise
+    // be tree-shaken away since proj.cljc doesn't reference them directly.
+    const entryContent = `
+export * from './proj.mjs';
+export * from 'fndefs';
+`;
+    writeFileSync('./esbuild-entry.mjs', entryContent);
+
     const result = await esbuild.build({
       ...buildConfig,
+      entryPoints: ['./esbuild-entry.mjs'],
       inject: ['./esbuild-shims.mjs'],
     });
-    
-    // Clean up shims
+
+    // Clean up temp files
     try {
       unlinkSync('./esbuild-shims.mjs');
+      unlinkSync('./esbuild-entry.mjs');
     } catch (e) {
-      console.warn('Could not clean up shims:', e.message);
+      console.warn('Could not clean up temp files:', e.message);
     }
     
     // Show bundle analysis

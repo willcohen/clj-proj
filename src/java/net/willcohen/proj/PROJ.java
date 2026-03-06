@@ -7,6 +7,7 @@ import clojure.lang.IPersistentMap;
 import clojure.lang.PersistentHashMap;
 import clojure.lang.PersistentVector;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
@@ -59,6 +60,7 @@ public class PROJ {
     private static IFn setYcolFn;
     private static IFn setZcolFn;
     private static IFn setTcolFn;
+    private static IFn getCoordsFn;
     private static IFn errorCodeToStringFn;
 
     // Generated PROJ functions (most commonly used)
@@ -68,6 +70,7 @@ public class PROJ {
     private static IFn transArrayFn;
     private static IFn getAuthoritiesFromDatabaseFn;
     private static IFn getCodesFromDatabaseFn;
+    private static IFn getCrsInfoListFromDatabaseFn;
     private static IFn contextDestroyFn;
     private static IFn destroyFn;
 
@@ -337,6 +340,30 @@ public class PROJ {
         setTcolFn.invoke(coordArray, PersistentVector.create((Object[]) box(values)));
     }
 
+    /**
+     * Get coordinates from a coordinate array at the given index.
+     * Returns [x, y, z, t] for the coordinate at the specified index.
+     * @param coordArray the coordinate array
+     * @param index the index (0-based)
+     * @return array of [x, y, z, t] doubles
+     */
+    public static double[] getCoords(Object coordArray, int index) {
+        if (getCoordsFn == null) getCoordsFn = getVar("get-coords");
+        Object result = getCoordsFn.invoke(coordArray, index);
+        if (result instanceof clojure.lang.IPersistentVector) {
+            clojure.lang.IPersistentVector vec = (clojure.lang.IPersistentVector) result;
+            double[] coords = new double[4];
+            for (int i = 0; i < 4 && i < vec.count(); i++) {
+                Object val = vec.nth(i);
+                if (val instanceof Number) {
+                    coords[i] = ((Number) val).doubleValue();
+                }
+            }
+            return coords;
+        }
+        return null;
+    }
+
     // --- Error handling ---
 
     /**
@@ -527,6 +554,35 @@ public class PROJ {
         return (List<String>) result;
     }
 
+    /**
+     * Get the full CRS catalog from PROJ's database as a list of maps.
+     * Each map has keys: auth-name, code, name, type, deprecated, bbox-valid,
+     * west-lon-degree, south-lat-degree, east-lon-degree, north-lat-degree,
+     * area-name, projection-method-name, celestial-body-name.
+     * @param context the PROJ context
+     * @param authName authority name filter (e.g., "EPSG"), or null for all authorities
+     * @return list of CRS info maps with String keys
+     */
+    @SuppressWarnings("unchecked")
+    public static List<Map<String, Object>> getCrsInfoListFromDatabase(Object context, String authName) {
+        if (getCrsInfoListFromDatabaseFn == null) getCrsInfoListFromDatabaseFn = getVar("get-crs-info-list-from-database");
+        IPersistentMap opts = authName != null
+            ? map(kw("context"), context, kw("auth-name"), authName)
+            : map(kw("context"), context);
+        Object result = getCrsInfoListFromDatabaseFn.invoke(opts);
+        return convertCrsInfoList((List<Map<Keyword, Object>>) result);
+    }
+
+    /**
+     * Get the full CRS catalog from PROJ's database for all authorities.
+     * @param context the PROJ context
+     * @return list of CRS info maps with String keys
+     */
+    @SuppressWarnings("unchecked")
+    public static List<Map<String, Object>> getCrsInfoListFromDatabase(Object context) {
+        return getCrsInfoListFromDatabase(context, null);
+    }
+
     // --- Cleanup (usually not needed due to automatic resource tracking) ---
 
     /**
@@ -577,6 +633,19 @@ public class PROJ {
         Double[] result = new Double[arr.length];
         for (int i = 0; i < arr.length; i++) {
             result[i] = arr[i];
+        }
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> convertCrsInfoList(List<Map<Keyword, Object>> cljList) {
+        List<Map<String, Object>> result = new ArrayList<>(cljList.size());
+        for (Map<Keyword, Object> entry : cljList) {
+            Map<String, Object> javaMap = new HashMap<>();
+            for (Map.Entry<Keyword, Object> e : entry.entrySet()) {
+                javaMap.put(e.getKey().getName(), e.getValue());
+            }
+            result.add(javaMap);
         }
         return result;
     }

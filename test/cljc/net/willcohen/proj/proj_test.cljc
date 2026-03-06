@@ -2,6 +2,7 @@
   #?(:clj (:require [clojure.test :refer :all]
                     [net.willcohen.proj.proj :as proj] ; Public API for PROJ
                     [net.willcohen.proj.wasm :as wasm] ; For debug logging
+                    [net.willcohen.proj.impl.logging :as proj-logging]
                     [clojure.tools.logging :as log]
                     [tech.v3.resource :as resource])
      :cljs (:require [cljs.test :refer-macros [deftest is testing]]
@@ -96,12 +97,33 @@
           (is (every? string? epsg-codes) "All elements should be strings")
           (is (some #{"4326"} epsg-codes) "Should contain a well-known code like '4326'"))))))
 
+(deftest get-crs-info-list-from-database-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "get-crs-info-list-from-database returns CRS entries for EPSG"
+        (let [entries (proj/get-crs-info-list-from-database {:context ctx :auth-name "EPSG"})]
+          (is (coll? entries) "Result should be a collection")
+          (is (> (count entries) 1000) "EPSG should have >1000 CRS entries")
+          (let [wgs84 (first (filter #(= "4326" (:code %)) entries))]
+            (is (some? wgs84) "Should contain EPSG:4326")
+            (is (= "EPSG" (:auth-name wgs84)))
+            (is (= "WGS 84" (:name wgs84)))
+            (is (= false (:deprecated wgs84)))
+            (is (= true (:bbox-valid wgs84)))
+            (is (number? (:west-lon-degree wgs84)))
+            (is (string? (:area-name wgs84))))))
+      (testing "get-crs-info-list-from-database with no auth-name returns entries from multiple authorities"
+        (let [entries (proj/get-crs-info-list-from-database {:context ctx})
+              auths (into #{} (map :auth-name entries))]
+          (is (> (count auths) 1) "Should have entries from multiple authorities")
+          (is (contains? auths "EPSG") "Should include EPSG"))))))
+
 (deftest initialization-test
   (with-each-implementation
     (testing "Library initialization and implementation setting"
       ;; Force initialization if needed
       (when (nil? @proj/implementation)
-        (proj/init))
+        (proj/init!))
       ;; Now check implementation
       (is (not (nil? @proj/implementation))
           "Implementation should not be nil after initialization")
@@ -130,6 +152,58 @@
           (proj/set-coords! arr test-coords)
           ;; Just verify set-coords! didn't throw
           (is true "set-coords! completed without error"))))))
+
+#?(:clj
+   (deftest coord-array-roundtrip-test
+     (with-each-implementation
+       (testing "set-coords!/get-coords roundtrip verification"
+         (let [arr (proj/coord-array 1)]
+           (is (not (nil? arr)) "Coordinate array should not be nil")
+           ;; Set coordinates with all 4 dimensions
+           (proj/set-coords! arr [[42.3603222 -71.0579667 100.0 0.0]])
+           ;; Read back and verify
+           (let [[x y z t] (proj/get-coords arr 0)]
+             (is (< (Math/abs (- x 42.3603222)) 0.0001)
+                 (str "X should be 42.3603222, got " x))
+             (is (< (Math/abs (- y -71.0579667)) 0.0001)
+                 (str "Y should be -71.0579667, got " y))
+             (is (< (Math/abs (- z 100.0)) 0.0001)
+                 (str "Z should be 100.0, got " z))
+             (is (< (Math/abs (- t 0.0)) 0.0001)
+                 (str "T should be 0.0, got " t))))))))
+
+#?(:clj
+   (deftest transformation-modifies-coords-test
+     (with-each-implementation
+       (with-test-context [ctx]
+         (testing "proj-trans-array should modify coordinates in place"
+           (let [tx (proj/proj-create-crs-to-crs
+                     {:context ctx
+                      :source_crs "EPSG:4326"
+                      :target_crs "EPSG:2249"})
+                 coords (proj/coord-array 1)]
+             (is (some? tx) "Transformer should be created")
+             ;; Set input coordinates
+             (proj/set-coords! coords [[42.3603222 -71.0579667 0 0]])
+             ;; Verify input was set correctly
+             (let [[x-before y-before _ _] (proj/get-coords coords 0)]
+               (is (< (Math/abs (- x-before 42.3603222)) 0.0001)
+                   (str "Before transform: X should be 42.3603222, got " x-before))
+               ;; Transform
+               (let [result (proj/proj-trans-array {:p tx :direction 1 :n 1 :coord coords})]
+                 (is (or (nil? result) (= 0 result))
+                     (str "Transform should succeed, got " result))
+                 ;; Read after transformation
+                 (let [[x-after y-after _ _] (proj/get-coords coords 0)]
+                   (is (not= x-before x-after)
+                       (str "X should have changed! Before: " x-before ", After: " x-after))
+                   (is (not= y-before y-after)
+                       (str "Y should have changed! Before: " y-before ", After: " y-after))
+                   ;; Expected MA State Plane values
+                   (is (< 775000 x-after 776000)
+                       (str "X should be ~775,200 feet, got " x-after))
+                   (is (< 2956000 y-after 2957000)
+                       (str "Y should be ~2,956,400 feet, got " y-after)))))))))))
 
 (deftest authority-list-extended-test
   (with-each-implementation
@@ -400,13 +474,11 @@
                   (is (or (nil? result) (= 0 result)) "Transform should succeed")
                   ;; Verify coordinates transformed to reasonable MA State Plane values
                   #?(:clj
-                     (when-not (map? coord-array) ; FFI mode
-                       (let [x (get-in coord-array [0 0])
-                             y (get-in coord-array [0 1])]
-                         (is (< 775000 x 776000)
-                             "X coordinate should be around 775,200 feet")
-                         (is (< 2956000 y 2957000)
-                             "Y coordinate should be around 2,956,400 feet")))
+                     (let [[x y _ _] (proj/get-coords coord-array 0)]
+                       (is (< 775000 x 776000)
+                           (str "X coordinate should be around 775,200 feet, got " x))
+                       (is (< 2956000 y 2957000)
+                           (str "Y coordinate should be around 2,956,400 feet, got " y)))
                      :cljs
                      (is true "Coordinate access differs in CLJS")))))))))))
 
@@ -432,3 +504,35 @@
                             :options ["ALLOW_BALLPARK=NO"]})]
             (is (some? transform)
                 "Should create transformation from database CRS objects with options")))))))
+
+#?(:clj
+   (deftest network-grid-fetch-comparison-test
+     (with-each-implementation
+       (testing "NAD27 to NAD83 State Plane - grid fetch should change result"
+         (let [ctx-off (proj/context-create {:network false})
+               ctx-on (proj/context-create)]
+           (proj/proj-context-set-enable-network {:context ctx-off :enabled 0})
+           (let [transformer-off (proj/proj-create-crs-to-crs
+                                  {:context ctx-off
+                                   :source_crs "EPSG:4267"
+                                   :target_crs "EPSG:26986"})
+                 transformer-on (proj/proj-create-crs-to-crs
+                                 {:context ctx-on
+                                  :source_crs "EPSG:4267"
+                                  :target_crs "EPSG:26986"})
+                 coord-off (proj/coord-array 1)
+                 coord-on (proj/coord-array 1)]
+             (is (some? transformer-off) "Transformer (off) should be created")
+             (is (some? transformer-on) "Transformer (on) should be created")
+             (when (and transformer-off transformer-on)
+               (proj/set-coords! coord-off [[42.3603222 -71.0579667 0 0]])
+               (proj/set-coords! coord-on [[42.3603222 -71.0579667 0 0]])
+               (proj/proj-trans-array {:p transformer-off :direction 1 :n 1 :coord coord-off})
+               (proj/proj-trans-array {:p transformer-on :direction 1 :n 1 :coord coord-on})
+               (let [[x-off y-off _ _] (proj/get-coords coord-off 0)
+                     [x-on y-on _ _] (proj/get-coords coord-on 0)
+                     diff-x (Math/abs (- x-on x-off))
+                     diff-y (Math/abs (- y-on y-off))]
+                 (is (or (> diff-x 0.01) (> diff-y 0.01))
+                     (str "Grid fetch should change the transformation result. "
+                          "off=" [x-off y-off] " on=" [x-on y-on]))))))))))

@@ -10,6 +10,14 @@
              [clojure.edn :as edn]
              [clojure.java.shell :as shell])
 
+  :init (do (def proj-source {:type :tag :ref "9.8.0"})
+            (def sqlite-version-url "3510200")
+            (def sqlite-year "2026")
+            (def zlib-version "1.3.2")
+            (def libtiff-version "4.7.1")
+            (def path-sep (System/getProperty "path.separator"))
+            (def clj-cmd (if (str/includes? (System/getProperty "os.name") "Windows") "clojure" "clj")))
+
   download-grids
   {:doc "Downloads PROJ grid files from the CDN (WIP - work in progress)"
    :task
@@ -23,7 +31,6 @@
            clj-resources-grids-dir (fs/path "resources" "grids")
            js-src-grids-dir (fs/path "src" "js" "proj-emscripten" "src" "grids")]
 
-       ;; Ensure target directories exist
        (println "Ensuring grid directories exist...")
        (fs/create-dirs download-dir)
        (fs/create-dirs clj-resources-grids-dir)
@@ -98,7 +105,6 @@
        (println "  bb proj:clone --update       Pull latest from current branch")
        (System/exit 0))
 
-     ;; Ensure vendor directory exists
      (fs/create-dirs vendor-dir)
 
      (if update?
@@ -114,7 +120,6 @@
            (println "Run without --update to clone fresh, or check the path.")
            (System/exit 1)))
 
-       ;; Fresh clone
        (do
          (when (fs/exists? proj-dir)
            (println (str "Removing existing PROJ directory at " proj-dir "..."))
@@ -162,8 +167,9 @@
            cross? (or all? (:cross opts) (:cross-platform opts))
            resources? (or all? (:resources opts))
            target-only? (:target opts)
-           proj-version "9.7.1"
-           proj-dir (str "PROJ-" proj-version)
+           proj-dir (case (:type proj-source)
+                      :tag (str "PROJ-" (:ref proj-source))
+                      :sha "PROJ-git")
 
            delete-if-exists (fn [path]
                               (when (fs/exists? path)
@@ -172,8 +178,10 @@
 
            clean-target (fn [target-suffix]
                           (delete-if-exists (fs/path "target" (str "sqlite-install-" target-suffix)))
+                          (delete-if-exists (fs/path "target" (str "zlib-install-" target-suffix)))
                           (delete-if-exists (fs/path "target" (str "libtiff-install-" target-suffix)))
                           (delete-if-exists (fs/path "target" proj-dir (str "proj-build-" target-suffix)))
+                          (delete-if-exists (fs/path "target" "PROJ-local" (str "proj-build-" target-suffix)))
                           (delete-if-exists (fs/path "resources" target-suffix)))]
 
        (when native?
@@ -193,7 +201,10 @@
 
        (when wasm?
          (println "\nCleaning WASM artifacts...")
-         (clean-target "wasm"))
+         (clean-target "wasm")
+         (clean-target "wasm-st")
+         (doseq [f ["proj-emscripten.js" "proj-emscripten.wasm"]]
+           (delete-if-exists (fs/path "src/cljc/net/willcohen/proj" f))))
 
        (when cross?
          (println "\nCleaning cross-compiled artifacts...")
@@ -235,32 +246,28 @@
            (println "Starting nREPL on port 7888")
            (tasks/shell "clj" "-Sdeps" deps-str "-J-XX:+UnlockExperimentalVMOptions" "-J-XX:+EnableJVMCI" "-J--enable-native-access=ALL-UNNAMED" "-J-Djdk.attach.allowAttachSelf" "-M" "-m" "nrepl.cmdline" "--port" "7888"))}
 
-  ;; Task to compile Java test sources
   compile-java-tests {:doc "Compile Java test sources"
                       :task (do
                               (println "Compiling Java sources and tests...")
                               (fs/create-dirs "target/test-classes")
-                              ;; Compile main Java source first
                               (tasks/shell "javac" "--release" "21"
-                                           "-cp" (str "src/clj:src/cljc:resources:"
-                                                      (str/join ":" (map str (fs/glob "." "**/*.jar")))
-                                                      ":"
-                                                      (-> (tasks/shell {:out :string} "clj" "-Spath")
+                                           "-cp" (str "src/clj" path-sep "src/cljc" path-sep "resources" path-sep
+                                                      (str/join path-sep (map str (fs/glob "." "**/*.jar")))
+                                                      path-sep
+                                                      (-> (tasks/shell {:out :string} clj-cmd "-Spath")
                                                           :out
                                                           str/trim))
                                            "-d" "target/test-classes"
                                            "src/java/net/willcohen/proj/PROJ.java")
-                              ;; Compile test Java source
                               (tasks/shell "javac" "--release" "21"
-                                           "-cp" (str "target/test-classes:"
-                                                      (-> (tasks/shell {:out :string} "clj" "-Spath")
+                                           "-cp" (str "target/test-classes" path-sep
+                                                      (-> (tasks/shell {:out :string} clj-cmd "-Spath")
                                                           :out
                                                           str/trim))
                                            "-d" "target/test-classes"
                                            "test/java/net/willcohen/proj/PROJTest.java")
                               (println "Java compilation complete."))}
 
-  ;; Task to run Java API tests with FFI backend
   test:java-ffi {:doc "Run Java API tests with FFI backend"
                  :depends [compile-java-tests]
                  :task (do
@@ -270,59 +277,65 @@
                                       "-XX:+EnableJVMCI"
                                       "--enable-native-access=ALL-UNNAMED"
                                       "-Dpolyglot.engine.WarnInterpreterOnly=false"
-                                      "-cp" (str "target/test-classes:src/clj:src/cljc:resources:"
-                                                 (-> (tasks/shell {:out :string} "clj" "-Spath")
+                                      "-cp" (str "target/test-classes" path-sep "src/clj" path-sep "src/cljc" path-sep "resources" path-sep
+                                                 (-> (tasks/shell {:out :string} clj-cmd "-Spath")
                                                      :out
                                                      str/trim))
                                       "net.willcohen.proj.PROJTest"))}
 
-  ;; Task to run Java API tests with GraalVM backend
   test:java-graal {:doc "Run Java API tests with GraalVM backend"
                    :depends [compile-java-tests]
                    :task (do
                            (println "Running Java API tests (GraalVM)...")
                            (tasks/shell "java"
                                         "-Dpolyglot.engine.WarnInterpreterOnly=false"
-                                        "-cp" (str "target/test-classes:src/clj:src/cljc:resources:"
-                                                   (-> (tasks/shell {:out :string} "clj" "-Spath")
+                                        "-cp" (str "target/test-classes" path-sep "src/clj" path-sep "src/cljc" path-sep "resources" path-sep
+                                                   (-> (tasks/shell {:out :string} clj-cmd "-Spath")
                                                        :out
                                                        str/trim))
                                         "net.willcohen.proj.PROJTest"
                                         "--graal"))}
 
-  ;; Task to run Clojure FFI tests on JVM (without Java tests)
   test:clj-ffi {:doc "Run Clojure tests for FFI implementation (no Java tests)."
                 :task (do
                         (println "Running Clojure FFI tests...")
-                        ;; Pass the desired implementation as a system property
-                        (let [result (clojure.java.shell/sh "clj" "-J-Dnet.willcohen.proj.proj-test.implementation=ffi" "-J-XX:+UnlockExperimentalVMOptions" "-J-XX:+EnableJVMCI" "-J-Dpolyglot.engine.WarnInterpreterOnly=false" "-M:test")]
+                        (let [result (clojure.java.shell/sh clj-cmd "-J-Dnet.willcohen.proj.proj-test.implementation=ffi" "-J-XX:+UnlockExperimentalVMOptions" "-J-XX:+EnableJVMCI" "-J-Dpolyglot.engine.WarnInterpreterOnly=false" "-M:test")]
                           (print (:out result))
                           (print (:err result))
                           (when (not= 0 (:exit result))
                             (throw (ex-info "Clojure FFI tests failed" {:exit (:exit result)})))))}
 
-  ;; Task to run FFI tests on JVM (both Clojure and Java)
   test:ffi {:doc "Run Clojure and Java tests for FFI implementation."
             :depends [test:clj-ffi test:java-ffi]
             :task (println "All FFI tests complete.")}
 
-  ;; Task to run GraalVM tests on JVM
-  test:graal {:doc "Run Clojure and Java tests for GraalVM implementation."
-              :depends [test:java-graal]
-              :task (do
-                      (println "Running Clojure GraalVM tests...")
-                      ;; Pass the desired implementation as a system property
-                      (let [result (clojure.java.shell/sh "clj" "-J-Dnet.willcohen.proj.proj-test.implementation=graal" "-J-Dpolyglot.engine.WarnInterpreterOnly=false" "-M:test")]
-                        (print (:out result))
-                        (print (:err result))))}
+  test:clojure-graal {:doc "Run Clojure tests for GraalVM implementation."
+                      :task (do
+                              (println "Running Clojure GraalVM tests...")
+                              (let [result (clojure.java.shell/sh clj-cmd "-J-Dnet.willcohen.proj.proj-test.implementation=graal" "-J-Dpolyglot.engine.WarnInterpreterOnly=false" "-M:test")]
+                                (print (:out result))
+                                (print (:err result))
+                                (when (not= 0 (:exit result))
+                                  (throw (ex-info "Clojure GraalVM tests failed" {:exit (:exit result)})))))}
 
-  ;; Task to run ClojureScript tests on Node.js  
+  test:graal {:doc "Run Clojure and Java tests for GraalVM implementation."
+              :task (let [java-result (do (println "\n=== Running Java GraalVM tests ===\n")
+                                          (try (run 'test:java-graal) :passed
+                                               (catch Exception e :failed)))
+                          clj-result (do (println "\n=== Running Clojure GraalVM tests ===\n")
+                                         (try (run 'test:clojure-graal) :passed
+                                              (catch Exception e :failed)))]
+                      (println "\n=== GraalVM Test Summary ===")
+                      (println "Java tests:" (name java-result))
+                      (println "Clojure tests:" (name clj-result))
+                      (when (or (= java-result :failed) (= clj-result :failed))
+                        (throw (ex-info "GraalVM tests failed" {:java java-result :clojure clj-result}))))}
+
   test:node {:doc "Run Node.js test suite for proj-wasm using Node.js test runner"
              :task (do
                      (println "Running Node.js test suite...")
                      (tasks/shell "node" "--test" "test/js/proj.test.mjs"))}
 
-  ;; Task to test the built npm package
   test:npm {:doc "Test the built npm package"
             :depends [cherry]
             :task (do
@@ -330,14 +343,12 @@
                     (tasks/shell {:dir "test-npm-package"} "npm" "install")
                     (tasks/shell {:dir "test-npm-package"} "npm" "test"))}
 
-  ;; Task to run browser integration tests with Playwright
   test:playwright {:doc "Run browser integration tests with Playwright."
                    :task (do
                            (println "Copying PROJ resources to test/browser...")
                            (fs/copy (fs/path "resources" "proj.db") (fs/path "test/browser" "proj.db") {:replace-existing true})
                            (fs/copy (fs/path "resources" "proj.ini") (fs/path "test/browser" "proj.ini") {:replace-existing true})
                            (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj-emscripten.wasm") (fs/path "test/browser" "proj-emscripten.wasm") {:replace-existing true})
-                           ;; Set up cdn-style test directory (module in subdirectory, simulates CDN loading)
                            (println "Setting up cdn-style test directory...")
                            (fs/create-dirs "test/browser/cdn-style/dist")
                            (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj.mjs") (fs/path "test/browser/cdn-style/dist" "proj.mjs") {:replace-existing true})
@@ -345,6 +356,8 @@
                            (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj-emscripten.wasm") (fs/path "test/browser/cdn-style/dist" "proj-emscripten.wasm") {:replace-existing true})
                            (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj.db") (fs/path "test/browser/cdn-style/dist" "proj.db") {:replace-existing true})
                            (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj.ini") (fs/path "test/browser/cdn-style/dist" "proj.ini") {:replace-existing true})
+                           (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj-worker.mjs") (fs/path "test/browser/cdn-style/dist" "proj-worker.mjs") {:replace-existing true})
+                           (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj-emscripten.js") (fs/path "test/browser/cdn-style/dist" "proj-emscripten.js") {:replace-existing true})
                            (println "Installing Playwright dependencies...")
                            (tasks/shell {:dir "test/browser"} "npm" "install")
                            (println "Installing Playwright browsers...")
@@ -352,7 +365,6 @@
                            (println "Running Playwright tests...")
                            (tasks/shell {:dir "test/browser"} "npm" "test"))}
 
-  ;; Task to run JVM tests on Linux via Docker/Podman
   test:linux {:doc "Run FFI and GraalVM tests on Linux platforms via Docker/Podman.
                    Optional: Use --platform linux/amd64 or --platform linux/aarch64 to test specific platforms."
               :task (do
@@ -369,19 +381,17 @@
                                   platforms (if platform-arg
                                               [platform-arg]
                                               ["linux/amd64" "linux/aarch64"])
-                                  docker-image "clojure:temurin-21-tools-deps-jammy"
+                                  docker-image "clojure:tools-deps-trixie"
                                   host-uid (str/trim (:out (tasks/shell {:out :string} "id -u")))
                                   host-gid (str/trim (:out (tasks/shell {:out :string} "id -g")))]
                               (doseq [platform platforms]
                                 (let [arch (last (str/split platform (re-pattern "/")))
                                       platform-key (str/replace platform "/" "-")]
                                   (println (str "\n==> Testing on " platform))
-                                  ;; Check if native libraries exist for this platform
                                   (let [native-lib-path (str "resources/" platform-key "/libproj.so")]
                                     (when-not (fs/exists? native-lib-path)
                                       (println (str "Warning: Native library not found at " native-lib-path))))
                                   (try
-                                    ;; Run the test suite inside the container
                                     ;; TODO: NEED TO INSTALL BABASHKA IN TMP TO NOT CLUTTER MY PROJECT DIR!!!
                                     (tasks/shell {:extra-env {"HOST_UID" host-uid
                                                               "HOST_GID" host-gid}}
@@ -393,34 +403,37 @@
                                                  (str "set -ex; "
                                                       "echo 'Testing clj-proj on " platform " with bundled libraries...'; "
                                                       "echo 'Installing babashka...'; "
-                                                      "apt-get update && apt-get install -y curl; "
+                                                      "apt-get update && apt-get install -y curl nodejs npm; "
                                                       "curl -sLO https://raw.githubusercontent.com/babashka/babashka/master/install; "
                                                       "chmod +x install && ./install; "
                                                       "export PATH=$PATH:/usr/local/bin; "
                                                       "bb --version; "
+                                                      "node --version; "
                                                       "echo 'Available bundled libraries:'; "
                                                       "ls -la resources/" platform-key "/ || echo 'No platform-specific libraries found'; "
                                                       "echo 'Running Clojure tests via babashka...'; "
                                                       "bb test:ffi; "
-                                                      "bb test:graal"))
+                                                      "bb test:graal; "
+                                                      "echo 'Running Node.js tests...'; "
+                                                      "bb test:node; "
+                                                      "echo 'Running npm package tests...'; "
+                                                      "bb test:npm"))
                                     (println (str "✓ Tests passed on " platform))
                                     (catch Exception e
                                       (println (str "✗ Tests failed on " platform ": " (.getMessage e)))
                                       (throw e))))))
                             (println "\n✓ All Linux platform tests completed successfully!")))))}
 
-  ;; Task to test the JAR as a downstream dependency
   test:jar {:doc "Test the JAR file as a downstream dependency"
             :depends [jar]
             :task (do
                     (println "Testing JAR as downstream dependency...")
                     (println)
 
-                    ;; Test FFI mode
                     (println "1. Testing FFI mode from JAR...")
                     (let [result (clojure.java.shell/sh
-                                  "clj" "-J--enable-native-access=ALL-UNNAMED"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha4.jar"}}})
+                                  clj-cmd "-J--enable-native-access=ALL-UNNAMED"
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha5.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -441,13 +454,12 @@
                         (print (:err result))
                         (System/exit 1)))
 
-                    ;; Test GraalVM mode
                     (println)
                     (println "2. Testing GraalVM/WASM mode from JAR...")
                     (let [result (clojure.java.shell/sh
-                                  "clj" "-J--enable-native-access=ALL-UNNAMED"
+                                  clj-cmd "-J--enable-native-access=ALL-UNNAMED"
                                   "-J-Dpolyglot.engine.WarnInterpreterOnly=false"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha4.jar"}}})
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha5.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -468,12 +480,11 @@
                         (print (:err result))
                         (System/exit 1)))
 
-                    ;; Test coordinate transformation
                     (println)
                     (println "3. Testing coordinate transformation from JAR...")
                     (let [result (clojure.java.shell/sh
-                                  "clj" "-J--enable-native-access=ALL-UNNAMED"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha4.jar"}}})
+                                  clj-cmd "-J--enable-native-access=ALL-UNNAMED"
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha5.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -501,13 +512,11 @@
                         (print (:err result))
                         (System/exit 1)))
 
-                    ;; Test Java API
                     (println)
                     (println "4. Testing Java API from JAR...")
                     (let [test-dir "target/java-jar-test"
-                          jar-path "target/proj-0.1.0-alpha4.jar"
-                          clj-cp (-> (tasks/shell {:out :string} "clj" "-Spath") :out str/trim)]
-                      ;; Create test directory and Java test file
+                          jar-path "target/proj-0.1.0-alpha5.jar"
+                          clj-cp (-> (tasks/shell {:out :string} clj-cmd "-Spath") :out str/trim)]
                       (fs/create-dirs test-dir)
                       (spit (str test-dir "/JavaJarTest.java")
                             "import net.willcohen.proj.PROJ;
@@ -529,10 +538,9 @@ public class JavaJarTest {
     }
 }
 ")
-                      ;; Compile and run
                       (let [compile-result (clojure.java.shell/sh
                                             "javac" "--release" "21"
-                                            "-cp" (str jar-path ":" clj-cp)
+                                            "-cp" (str jar-path path-sep clj-cp)
                                             "-d" test-dir
                                             (str test-dir "/JavaJarTest.java"))]
                         (when (not= 0 (:exit compile-result))
@@ -546,7 +554,7 @@ public class JavaJarTest {
                                         "-XX:+EnableJVMCI"
                                         "--enable-native-access=ALL-UNNAMED"
                                         "-Dpolyglot.engine.WarnInterpreterOnly=false"
-                                        "-cp" (str test-dir ":" jar-path ":" clj-cp)
+                                        "-cp" (str test-dir path-sep jar-path path-sep clj-cp)
                                         "JavaJarTest")]
                         (print (:out run-result))
                         (when (not= 0 (:exit run-result))
@@ -557,7 +565,7 @@ public class JavaJarTest {
                     (println)
                     (println "All JAR tests passed! ✓"))}
 
-  build ; New build task using babashka.cli
+  build
   {:doc "Builds native, wasm, or cross-compiled artifacts. See `bb build --help`."
    :spec {:native {:alias :n, :desc "Build native artifacts for the host platform."}
           :wasm {:alias :w, :desc "Build WASM artifacts."}
@@ -565,7 +573,7 @@ public class JavaJarTest {
           :cross-platform {:desc "Build for a specific cross-platform target (e.g., linux/amd64)."
                            :coerce :string}
           :debug {:desc "Enable debug mode for builds."}
-          :local-proj {:desc "Use vendor/PROJ instead of released PROJ version."}
+          :local-proj {:desc "Use local PROJ (default: vendor/PROJ, or specify path)."}
           :target {:desc "Internal use: specify the target platform for compilation (e.g., windows-amd64)."
                    :coerce :string}
           :help {:alias :h :desc "Show this help message."}}
@@ -578,26 +586,26 @@ public class JavaJarTest {
              (println "      --cross                  Build cross-compiled artifacts for default platforms")
              (println "      --cross-platform <plat>  Build for a specific cross-platform target (e.g., linux/amd64)")
              (println "      --debug                  Enable debug mode for builds")
-             (println "      --local-proj             Use vendor/PROJ instead of released PROJ version")
+             (println "      --local-proj [path]      Use local PROJ (default: vendor/PROJ)")
              (println "      --target <platform>      Internal use: specify the target platform")
              (println "  -h, --help                   Show this help message")
              (System/exit 0))
 
-           ;; Helper functions for local PROJ support
-           (let [get-proj-source (fn [opts proj-version target-dir]
+           (let [get-proj-source (fn [opts proj-source target-dir]
                                    (if (:local-proj opts)
-                                     (let [local-proj (fs/path "vendor" "PROJ")
+                                     (let [local-proj-opt (:local-proj opts)
+                                           local-proj (if (or (= local-proj-opt true) (= local-proj-opt "true"))
+                                                        (fs/path "vendor" "PROJ")
+                                                        (fs/expand-home (str local-proj-opt)))
                                            target-proj-dir "PROJ-local"]
                                        (if (fs/exists? local-proj)
                                          (do
                                            (println (str "Using local PROJ from " local-proj))
-                                           ;; Copy local PROJ to target for building
                                            (let [target-proj-path (fs/path target-dir target-proj-dir)]
                                              (when (fs/exists? target-proj-path)
                                                (println (str "Removing existing " target-proj-path))
                                                (fs/delete-tree target-proj-path))
-                                             (println (str "Copying local PROJ to " target-proj-path " for building..."))
-                                             ;; Use rsync if available, otherwise fall back to recursive copy
+                                             (println (str "Copying local PROJ to " target-proj-path "..."))
                                              (if (fs/which "rsync")
                                                (tasks/shell "rsync" "-av" "--exclude=.git"
                                                             (str local-proj "/") (str target-proj-path "/"))
@@ -605,36 +613,45 @@ public class JavaJarTest {
                                              target-proj-dir))
                                          (throw (ex-info "Local PROJ not found. Run 'bb proj:clone' first."
                                                          {:local-proj-path (str local-proj)}))))
-                                     ;; Use released version - return the directory name (download happens later)
-                                     (str "PROJ-" proj-version)))
+                                     (let [{:keys [type ref]} proj-source]
+                                       (case type
+                                         :tag (str "PROJ-" ref)
+                                         :sha (let [git-dir (fs/path target-dir "PROJ-git")]
+                                                (if (fs/exists? git-dir)
+                                                  (do
+                                                    (println (str "Checking out PROJ SHA " ref "..."))
+                                                    (tasks/shell {:dir (str git-dir)} "git" "fetch" "origin")
+                                                    (tasks/shell {:dir (str git-dir)} "git" "checkout" ref))
+                                                  (do
+                                                    (println (str "Cloning PROJ repository..."))
+                                                    (fs/create-dirs target-dir)
+                                                    (tasks/shell {:dir target-dir}
+                                                                 "git" "clone"
+                                                                 "https://github.com/OSGeo/PROJ.git"
+                                                                 "PROJ-git")
+                                                    (println (str "Checking out SHA " ref "..."))
+                                                    (tasks/shell {:dir (str git-dir)} "git" "checkout" ref)))
+                                                "PROJ-git")))))
 
                  detect-proj-version (fn [proj-source-path]
                                        (if (fs/exists? (fs/path proj-source-path "CMakeLists.txt"))
-                                        ;; Try to parse version from CMakeLists.txt
                                          (try
                                            (let [cmake-content (slurp (fs/path proj-source-path "CMakeLists.txt"))
                                                  version-match (re-find (re-pattern "set\\s*\\(\\s*PROJ_VERSION\\s+\"([^\"]+)\"") cmake-content)]
                                              (if version-match
                                                (second version-match)
-                                               "local-dev"))
+                                               "dev"))
                                            (catch Exception _
-                                             "local-dev"))
-                                         "local-dev"))
+                                             "dev"))
+                                         "dev"))
 
                  prepare-local-proj (fn [proj-source-path]
-                                     ;; Check if autogen.sh or similar is needed for local builds
                                       (when (and (fs/exists? (fs/path proj-source-path "autogen.sh"))
                                                  (not (fs/exists? (fs/path proj-source-path "configure"))))
                                         (println "Running autogen.sh to prepare local PROJ build...")
                                         (tasks/shell {:dir (str proj-source-path)} "./autogen.sh")))]
 
-             (let [;; --- Phase 1: Options and Configuration ---
-                   {native? :native, wasm? :wasm, debug? :debug, target-str :target} opts
-                   proj-version "9.7.1"
-                   sqlite-version-url "3510100"
-                   sqlite-year "2025"
-                   zlib-version "1.3.1"
-                   libtiff-version "4.7.1"
+             (let [{native? :native, wasm? :wasm, debug? :debug, target-str :target} opts
                    target-dir "target"
                    zlib-archive (str "zlib-" zlib-version ".tar.gz")
                    zlib-dir (str "zlib-" zlib-version)
@@ -642,12 +659,11 @@ public class JavaJarTest {
                    sqlite-dir (str "sqlite-autoconf-" sqlite-version-url)
                    libtiff-archive (str "libtiff-v" libtiff-version ".tar.gz")
                    libtiff-dir (str "libtiff-v" libtiff-version)
-                   proj-archive (str proj-version ".tar.gz")
+                   proj-archive (when (= (:type proj-source) :tag)
+                                  (str (:ref proj-source) ".tar.gz"))
 
-                   ;; Use helper function to get PROJ source directory
-                   proj-dir (get-proj-source opts proj-version target-dir)
+                   proj-dir (get-proj-source opts proj-source target-dir)
 
-                   ;; --- Host Platform Detection ---
                    host-os (let [os-name (System/getProperty "os.name")]
                              (cond
                                (re-find (re-pattern "(?i)mac|darwin") os-name) :darwin
@@ -659,7 +675,6 @@ public class JavaJarTest {
                                  (re-find (re-pattern "(?i)amd64|x86_64") os-arch) :amd64
                                  :else :unknown))
 
-                   ;; --- Helper Functions ---
                    download-file (fn [url dest]
                                    (if-not (fs/exists? dest)
                                      (do
@@ -678,53 +693,47 @@ public class JavaJarTest {
                                                (str/ends-with? archive-file ".tgz"))
                                            (tasks/shell {:dir base-dir} "tar" "xzf" archive-file)
 
+                                           (or (str/ends-with? archive-file ".tar.bz2")
+                                               (str/ends-with? archive-file ".tbz2"))
+                                           (tasks/shell {:dir base-dir} "tar" "xjf" archive-file)
+
                                            :else
                                            (throw (ex-info "Unknown archive format" {:file archive-file}))))
                                        (println "Directory" (str "'" extracted-dir "'") "already exists. Skipping extraction.")))
 
-                   ;; --- Build Helper Functions ---
-
-                   ;; Calculate safe parallel jobs based on available memory
                    get-safe-parallel-jobs (fn []
                                             (let [available-memory-gb (try
-                                                                        (if (fs/exists? "/proc/meminfo")
+                                                                        (cond
+                                                                          (fs/exists? "/proc/meminfo")
                                                                           (let [memory-info (slurp "/proc/meminfo")
-                                                                                _ (when debug? (println "DEBUG: meminfo content:" (take 5 (str/split-lines memory-info))))
                                                                                 mem-available-kb (try
                                                                                                    (if-let [match (re-find (re-pattern "MemAvailable:\\s+(\\d+)") memory-info)]
-                                                                                                     (do
-                                                                                                       (when debug? (println "DEBUG: Found MemAvailable:" (second match)))
-                                                                                                       (Long/parseLong (str/trim (second match))))
-                                                                                                     ;; Fallback to MemFree if MemAvailable not found
+                                                                                                     (Long/parseLong (str/trim (second match)))
                                                                                                      (if-let [match (re-find (re-pattern "MemFree:\\s+(\\d+)") memory-info)]
-                                                                                                       (do
-                                                                                                         (when debug? (println "DEBUG: Using MemFree fallback:" (second match)))
-                                                                                                         (Long/parseLong (str/trim (second match))))
-                                                                                                       (do
-                                                                                                         (when debug? (println "DEBUG: No memory info found, using default"))
-                                                                                                         4194304)))
-                                                                                                   (catch Exception e
-                                                                                                     (when debug? (println "DEBUG: Error parsing memory value:" (.getMessage e)))
-                                                                                                     4194304))] ; Default to 4GB if can't read
+                                                                                                       (Long/parseLong (str/trim (second match)))
+                                                                                                       4194304))
+                                                                                                   (catch Exception e 4194304))]
                                                                             (/ mem-available-kb 1048576.0))
-                                                                          (do
-                                                                            (when debug? (println "DEBUG: /proc/meminfo not found, using default 4GB"))
-                                                                            4.0)) ; Default to 4GB on non-Linux
-                                                                        (catch Exception e
-                                                                          (when debug? (println "DEBUG: Exception reading memory info:" (.getMessage e)))
-                                                                          4.0)) ; Default to 4GB on error
+
+                                                                          (= :darwin host-os)
+                                                                          (let [mem-bytes (-> (tasks/shell {:out :string} "sysctl" "-n" "hw.memsize")
+                                                                                              :out str/trim Long/parseLong)]
+                                                                            (/ mem-bytes 1073741824.0))
+
+                                                                          :else 8.0)
+                                                                        (catch Exception e 8.0))
                                                   ;; Use 1 job per 3GB of available memory, max of availableProcessors
                                                   safe-jobs (min (.. Runtime getRuntime availableProcessors)
                                                                  (max 1 (int (/ available-memory-gb 3))))]
                                               (when debug? (println (format "DEBUG: Available memory: %.1fGB, using %d parallel jobs" available-memory-gb safe-jobs)))
                                               safe-jobs))
 
-                   build-sqlite (fn [{:keys [type install-dir cc host-flag is-linux? is-windows? debug?]}]
+                   build-sqlite (fn [{:keys [type install-dir cc host-flag is-linux? is-windows? pthreads? debug?]}]
                                   (let [lib-path (fs/path install-dir "lib" "libsqlite3.a")]
                                     (when debug? (println "DEBUG: Checking for existing" (name type) "SQLite library at:" (str lib-path)))
                                     (when-not (fs/exists? lib-path)
-                                      (println "Building SQLite for" (name type) "...")
-                                      (let [build-dir (fs/path target-dir sqlite-dir (str "sqlite-build-" (name type)))
+                                      (println "Building SQLite for" (name type) (if pthreads? "(pthreads)" "(single-threaded)") "...")
+                                      (let [build-dir (fs/path target-dir sqlite-dir (str "sqlite-build-" (name type) (when (and (= type :wasm) (not pthreads?)) "-st")))
                                             ;; Detect if we're in a container build environment
                                             in-container? (and (= type :native) is-linux? (System/getenv "NIX_BUILD_TOP"))
                                             ;; For container builds, explicitly set host to current architecture to avoid configure test programs
@@ -738,20 +747,23 @@ public class JavaJarTest {
                                                                     (str "--host=" arch "-pc-linux-musl")))
                                             configure-args (cond-> ["../configure" (str "--prefix=" install-dir)]
                                                              host-flag (conj host-flag)
-                                                             container-host-flag (conj container-host-flag)
+                                                             (and container-host-flag (not host-flag)) (conj container-host-flag)
                                                              (= type :wasm) (conj "--disable-shared" "--disable-editline" "--disable-readline")
                                                              ;; Always build static on Linux to use musl
                                                              (and (= type :native) is-linux?) (conj "--disable-shared" "--enable-static")
                                                              ;; Windows builds also need static library
                                                              is-windows? (conj "--disable-shared" "--enable-static"))
-
+                                            ;; WASM CFLAGS: include -pthread only if pthreads? is true
+                                            wasm-cflags (str (when pthreads? "-pthread -DSQLITE_THREADSAFE=1 ")
+                                                             (when-not pthreads? "-DSQLITE_THREADSAFE=0 ")
+                                                             "-s ERROR_ON_UNDEFINED_SYMBOLS=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DISABLE_LFS -DSQLITE_LONGDOUBLE_TYPE=double -DSQLITE_ENABLE_JSON1 -DSQLITE_ENABLE_NORMALIZE")
                                             env (cond-> {"CC" cc}
                                                   ;; Add -fPIC for static libraries that will be linked into shared libraries
                                                   (and (= type :native) is-linux?) (assoc "CFLAGS" "-fPIC")
                                                   ;; Windows-specific flags - inherited from environment
                                                   is-windows? (assoc "CFLAGS" (or (System/getenv "CFLAGS") "-static-libgcc -static-libstdc++")
                                                                      "LDFLAGS" (or (System/getenv "LDFLAGS") "-static-libgcc -static-libstdc++"))
-                                                  (= type :wasm) (assoc "CFLAGS" "-s ERROR_ON_UNDEFINED_SYMBOLS=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DISABLE_LFS -DSQLITE_LONGDOUBLE_TYPE=double -DSQLITE_ENABLE_JSON1 -DSQLITE_ENABLE_NORMALIZE"))
+                                                  (= type :wasm) (assoc "CFLAGS" wasm-cflags))
                                             configure-cmd (if (= type :wasm) "emconfigure" (first configure-args))
                                             configure-args' (if (= type :wasm) configure-args (rest configure-args))
                                             make-base-cmd (if (= type :wasm) ["emmake" "make"] ["make"])]
@@ -762,7 +774,44 @@ public class JavaJarTest {
                                         (apply tasks/shell {:dir build-dir} (concat make-base-cmd ["-j" (str (get-safe-parallel-jobs))]))
                                         (apply tasks/shell {:dir build-dir} (concat make-base-cmd ["install"]))))))
 
-                   build-libtiff (fn [{:keys [type install-dir cc cxx host-flag is-darwin? is-linux? is-windows? debug?]}]
+                   build-zlib (fn [{:keys [type install-dir cc pthreads? debug?]}]
+                                (let [lib-path (fs/path install-dir "lib" "libz.a")]
+                                  (when debug? (println "DEBUG: Checking for existing" (name type) "zlib library at:" (str lib-path)))
+                                  (when-not (fs/exists? lib-path)
+                                    (println "Building zlib for" (name type) (if pthreads? "(pthreads)" "(single-threaded)") "...")
+                                    (let [src-dir (fs/path target-dir zlib-dir)
+                                          configure-args ["./configure" (str "--prefix=" install-dir) "--static"]
+                                          env (cond-> {"CC" cc}
+                                                (= type :wasm) (assoc "AR" "emar" "RANLIB" "emranlib")
+                                                (and (= type :wasm) pthreads?) (assoc "CFLAGS" "-pthread"))
+                                          configure-cmd (if (= type :wasm) "emconfigure" (first configure-args))
+                                          configure-args' (if (= type :wasm) configure-args (rest configure-args))
+                                          make-base-cmd (if (= type :wasm) ["emmake" "make"] ["make"])]
+                                      (fs/delete-tree install-dir)
+                                      (when (fs/exists? (fs/path src-dir "Makefile"))
+                                        (try
+                                          (apply tasks/shell {:dir src-dir} (concat make-base-cmd ["distclean"]))
+                                          (catch Exception _ nil)))
+                                      (apply tasks/shell {:dir src-dir :extra-env env} configure-cmd configure-args')
+                                      ;; For WASM on macOS: zlib's configure ignores AR and uses libtool
+                                      ;; Patch Makefile to use emar instead
+                                      (when (= type :wasm)
+                                        (let [makefile-path (str (fs/path src-dir "Makefile"))
+                                              makefile-content (slurp makefile-path)
+                                              patched-content (-> makefile-content
+                                                                  ;; (?m) enables multiline mode for ^ matching
+                                                                  (str/replace (re-pattern "(?m)^AR=.*$") "AR=emar")
+                                                                  (str/replace (re-pattern "(?m)^ARFLAGS=.*$") "ARFLAGS=rcs")
+                                                                  (str/replace (re-pattern "(?m)^RANLIB=.*$") "RANLIB=emranlib")
+                                                                  ;; Also replace any libtool usage with emar
+                                                                  (str/replace "/usr/bin/libtool -o" "emar rcs")
+                                                                  (str/replace "libtool -o" "emar rcs"))]
+                                          (spit makefile-path patched-content)
+                                          (println "Patched zlib Makefile to use emar for WASM")))
+                                      (apply tasks/shell {:dir src-dir :extra-env env} (concat make-base-cmd ["-j" (str (get-safe-parallel-jobs))]))
+                                      (apply tasks/shell {:dir src-dir :extra-env env} (concat make-base-cmd ["install"]))))))
+
+                   build-libtiff (fn [{:keys [type install-dir zlib-install-dir cc cxx host-flag is-darwin? is-linux? is-windows? pthreads? debug?]}]
                                    (let [lib-path (fs/path install-dir "lib" (cond (= type :wasm) "libtiff.a"
                                                                                    is-darwin? "libtiff.dylib"
                                                                                    is-linux? "libtiff.a" ; Always static on Linux
@@ -770,11 +819,10 @@ public class JavaJarTest {
                                                                                    :else "libtiff.a"))]
                                      (when debug? (println "DEBUG: Checking for existing" (name type) "LibTIFF library at:" (str lib-path)))
                                      (when-not (fs/exists? lib-path)
-                                       (println "Building LibTIFF for" (name type) "...")
+                                       (println "Building LibTIFF for" (name type) (if pthreads? "(pthreads)" "(single-threaded)") "...")
                                        (let [src-dir (fs/path target-dir libtiff-dir)
                                              ;; Detect if we're in a container build environment
                                              in-container? (and (= type :native) is-linux? (System/getenv "NIX_BUILD_TOP"))
-                                             ;; For container builds, explicitly set host to current architecture to avoid configure test programs
                                              container-host-flag (when in-container?
                                                                    (let [arch (case (System/getProperty "os.arch")
                                                                                 "amd64" "x86_64"
@@ -785,20 +833,21 @@ public class JavaJarTest {
                                                                      (str "--host=" arch "-pc-linux-musl")))
                                              configure-args (cond-> ["./configure" (str "--prefix=" install-dir)]
                                                               host-flag (conj host-flag)
-                                                              container-host-flag (conj container-host-flag)
-                                                              ;; Always static on Linux
+                                                              (and container-host-flag (not host-flag)) (conj container-host-flag)
                                                               (and (= type :native) is-linux?) (conj "--disable-shared" "--enable-static")
                                                               (and (= type :native) is-darwin?) (conj "--enable-shared" "--disable-static")
-                                                              ;; Static on Windows too
                                                               is-windows? (conj "--disable-shared" "--enable-static")
-                                                              ;; Disable C++ support in containers to avoid musl/glibc conflicts
                                                               in-container? (conj "--disable-cxx")
                                                               (and (not= type :wasm) (not= type :native)) (conj "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs")
-                                                              (= type :wasm) (conj "--disable-zlib" "--without-zstd" "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs" "--disable-ccitt"))
+                                                              (and (= type :native) zlib-install-dir) (conj (str "--with-zlib-include-dir=" (fs/path zlib-install-dir "include"))
+                                                                                                            (str "--with-zlib-lib-dir=" (fs/path zlib-install-dir "lib")))
+                                                              (= type :wasm) (conj (str "--with-zlib-include-dir=" (fs/path zlib-install-dir "include"))
+                                                                                   (str "--with-zlib-lib-dir=" (fs/path zlib-install-dir "lib"))
+                                                                                   "--without-zstd" "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs" "--disable-ccitt"))
                                              env (cond-> {"CC" cc "CXX" cxx}
-                                                     ;; Add -fPIC for static libraries that will be linked into shared libraries
                                                    (and (= type :native) is-linux?) (assoc "CFLAGS" "-fPIC" "CXXFLAGS" "-fPIC")
-                                                   (= type :wasm) (assoc "CPPFLAGS" "-DHAVE_FCNTL_H=1"))
+                                                   (= type :wasm) (assoc "CPPFLAGS" "-DHAVE_FCNTL_H=1")
+                                                   (and (= type :wasm) pthreads?) (assoc "CFLAGS" "-pthread" "CXXFLAGS" "-pthread"))
                                              configure-cmd (if (= type :wasm) "emconfigure" (first configure-args))
                                              configure-args' (if (= type :wasm) configure-args (rest configure-args))
                                              make-base-cmd (if (= type :wasm) ["emmake" "make"] ["make"])]
@@ -820,20 +869,15 @@ public class JavaJarTest {
                                                 (tasks/shell {:dir src-dir} "sed" "-i.bak" "s|https://git.savannah.gnu.org/cgit/config.git/plain/|https://raw.githubusercontent.com/cgitmirror/config/refs/heads/master/|g" "autogen.sh")
                                                 (tasks/shell {:dir src-dir :extra-env env} "./autogen.sh")))
                                          (apply tasks/shell {:dir src-dir :extra-env env} configure-cmd configure-args')
-                                         ;; For WASM, patch the Makefile to skip mkg3states
                                          (when (= type :wasm)
                                            (println "Patching libtiff Makefile to skip mkg3states for WASM...")
-                                           ;; Remove mkg3states from noinst_PROGRAMS in libtiff/Makefile
                                            (let [makefile-path (str (fs/path src-dir "libtiff" "Makefile"))
                                                  makefile-content (slurp makefile-path)
                                                  patched-content (-> makefile-content
-                                                                     ;; Remove mkg3states from build targets
                                                                      (str/replace (re-pattern "noinst_PROGRAMS = mkg3states") "noinst_PROGRAMS =")
-                                                                     ;; Remove mkg3states dependencies
                                                                      (str/replace (re-pattern "mkg3states:") "# mkg3states:")
                                                                      (str/replace (re-pattern "mkg3states\\.o") "# mkg3states.o"))]
                                              (spit makefile-path patched-content))
-                                           ;; Create dummy tif_fax3sm.c if needed
                                            (let [fax3sm-path (fs/path src-dir "libtiff" "tif_fax3sm.c")]
                                              (when-not (fs/exists? fax3sm-path)
                                                (println "Creating dummy tif_fax3sm.c...")
@@ -841,28 +885,38 @@ public class JavaJarTest {
                                          (apply tasks/shell {:dir src-dir} (concat make-base-cmd ["-j" (str (get-safe-parallel-jobs))]))
                                          (apply tasks/shell {:dir src-dir} (concat make-base-cmd ["install"]))))))
 
-                   build-proj (fn [{:keys [type library-dir cc cxx host-flag is-darwin? is-linux? is-windows? sqlite-install-dir libtiff-install-dir debug? target-str]}]
-                                (let [final-proj-lib (fs/path "resources" (if (= type :wasm) "wasm" library-dir)
-                                                              (cond (= type :wasm) "proj-emscripten.js"
+                   build-proj (fn [{:keys [type library-dir cc cxx host-flag is-darwin? is-linux? is-windows? sqlite-install-dir zlib-install-dir libtiff-install-dir pthreads? debug? target-str]}]
+                                (let [;; For WASM, use different output names based on pthreads? flag
+                                      wasm-suffix (if (and (= type :wasm) (not pthreads?)) "-st" "")
+                                      final-proj-lib (fs/path "resources" (if (= type :wasm) "wasm" library-dir)
+                                                              (cond (= type :wasm) (str "proj-emscripten" wasm-suffix ".js")
                                                                     is-windows? "proj.dll"
                                                                     is-darwin? "libproj.dylib"
                                                                     is-linux? "libproj.so"
                                                                     :else "libproj.a"))
-                                      build-dir (fs/path target-dir proj-dir (str "proj-build-" (if (= type :native) library-dir (name type))))]
+                                      build-dir (fs/path target-dir proj-dir (str "proj-build-" (if (= type :native) library-dir (name type)) wasm-suffix))]
                                   (when debug? (println "DEBUG: Checking for existing" (name type) "PROJ library at:" (str final-proj-lib)))
                                   (when-not (fs/exists? final-proj-lib)
                                     (println "Building PROJ for" (name type) "...")
                                     (fs/delete-tree build-dir)
                                     (fs/create-dirs build-dir)
-                                    ;; Patch CMakeLists.txt to skip scripts directory for cross-compilation
                                     (when (and (not is-darwin?) (System/getenv "NIX_BUILD_TOP"))
                                       (let [cmake-file (fs/path target-dir proj-dir "CMakeLists.txt")
                                             content (slurp (str cmake-file))
-                                            ;; Comment out the add_subdirectory(scripts) line
                                             patched (str/replace content
                                                                  "add_subdirectory(scripts)"
                                                                  "# add_subdirectory(scripts) - Skipped for cross-compilation")]
                                         (spit (str cmake-file) patched)))
+                                    ;; DO_TRACE_FETCH can be enabled if specifically debugging emscripten fetch
+                                    #_(when (= type :wasm)
+                                        (let [network-file (fs/path target-dir proj-dir "src" "networkfilemanager.cpp")]
+                                          (when (fs/exists? network-file)
+                                            (println "Enabling DO_TRACE_FETCH in networkfilemanager.cpp for WASM debugging...")
+                                            (let [content (slurp (str network-file))
+                                                  patched (str/replace content
+                                                                       "#define DO_TRACE_FETCH 0"
+                                                                       "#define DO_TRACE_FETCH 1")]
+                                              (spit (str network-file) patched)))))
                                     (let [cmake-base-cmd (if (= type :wasm) ["emcmake" "cmake"] ["cmake"])
                                           cmake-build-cmd (if (= type :wasm)
                                                             (concat ["emmake" "make"] ["-j" (str (get-safe-parallel-jobs))] (when debug? ["VERBOSE=1"]))
@@ -870,78 +924,74 @@ public class JavaJarTest {
                                           is-nix-build? (and (not is-darwin?) (System/getenv "NIX_BUILD_TOP"))
                                           is-cross-build? (and target-str (not= type :wasm))
                                           base-cxx-flags "-ftemplate-depth=256"
-                                          cmake-args (cond-> ["-DBUILD_APPS=OFF" "-DBUILD_PROJSYNC=OFF" "-DBUILD_CCT=OFF" "-DBUILD_GEOD=OFF" "-DBUILD_GIE=OFF" "-DBUILD_PROJINFO=OFF" "-DENABLE_CURL=OFF" "-DBUILD_TESTING=OFF"
+                                          cmake-args (cond-> ["-DBUILD_APPS=OFF" "-DBUILD_PROJSYNC=OFF" "-DBUILD_CCT=OFF" "-DBUILD_GEOD=OFF" "-DBUILD_GIE=OFF" "-DBUILD_PROJINFO=OFF" "-DBUILD_TESTING=OFF"
                                                               "-DCMAKE_BUILD_TYPE=Release"
                                                               "-DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=ON"
                                                               "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
-                                                              ;; Set install prefix to build directory
                                                               (str "-DCMAKE_INSTALL_PREFIX=" build-dir)
-                                                              ;; Limit compiler memory usage in constrained environments
                                                               (str "-DCMAKE_CXX_FLAGS=" base-cxx-flags)
-                                                              ;; Disable library existence checks in Nix to prevent hangs
-                                                              ;;"-DCMAKE_DISABLE_FIND_PACKAGE_Threads=ON"
                                                               (str "-DSQLite3_INCLUDE_DIR=" (fs/path sqlite-install-dir "include"))
                                                               (str "-DSQLite3_LIBRARY=" (fs/path sqlite-install-dir "lib" "libsqlite3.a"))
                                                               (str "-DTIFF_INCLUDE_DIR=" (fs/path libtiff-install-dir "include"))
                                                               (str "-DTIFF_LIBRARY=" (fs/path libtiff-install-dir "lib" (cond (= type :wasm) "libtiff.a"
                                                                                                                               is-darwin? "libtiff.dylib"
-                                                                                                                              is-linux? "libtiff.a" ; Always static on Linux
-                                                                                                                              :else "libtiff.a")))]
+                                                                                                                              :else "libtiff.a")))
+                                                              (str "-DZLIB_INCLUDE_DIR=" (fs/path zlib-install-dir "include"))
+                                                              (str "-DZLIB_LIBRARY=" (fs/path zlib-install-dir "lib" "libz.a"))]
 
                                                        is-darwin? (conj "-DCMAKE_INSTALL_RPATH=@loader_path")
                                                        is-windows? (conj "-DCMAKE_SYSTEM_NAME=Windows"
                                                                          "-DCMAKE_C_FLAGS=-static-libgcc -static-libstdc++ -static"
                                                                          "-DCMAKE_CXX_FLAGS=-static-libgcc -static-libstdc++ -static"
-                                                                         "-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++ -static -Wl,--enable-auto-import"
-                                                                         "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++ -static"
+                                                                         "-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++ -static -Wl,--enable-auto-import -lws2_32 -lcrypt32 -lbcrypt"
+                                                                         "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++ -static -lws2_32 -lcrypt32 -lbcrypt"
                                                                          "-DBUILD_SHARED_LIBS=ON"
                                                                          "-DCMAKE_DL_LIBS="
                                                                          "-DHAVE_DLADDR=0"
                                                                          "-DCMAKE_CROSSCOMPILING=ON"
-                                                                         ;; Force static runtime linking
-                                                                         "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded")
+                                                                         "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
+                                                                         "-DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON"
+                                                                         (str "-DCMAKE_CXX_STANDARD_LIBRARIES="
+                                                                              (fs/path zlib-install-dir "lib" "libz.a")
+                                                                              " -lws2_32 -lcrypt32 -lbcrypt"))
 
-                                                       ;; Add compiler detection skip for Nix builds to prevent hanging
-                                                       ;; Add compiler detection skip for Nix builds to prevent hanging
                                                        (and (or is-nix-build? is-cross-build?) (not is-windows?)) (conj "-DCMAKE_SYSTEM_NAME=Linux"
                                                                                                                         "-DCMAKE_CROSSCOMPILING=ON"
                                                                                                                         "-DCMAKE_C_COMPILER_WORKS=TRUE"
                                                                                                                         "-DCMAKE_CXX_COMPILER_WORKS=TRUE"
                                                                                                                         "-DCMAKE_C_ABI_COMPILED=TRUE"
                                                                                                                         "-DCMAKE_CXX_ABI_COMPILED=TRUE"
-                                                                                                                        ;; Skip compiler feature detection
                                                                                                                         "-DCMAKE_C_COMPILE_FEATURES=c_std_99"
                                                                                                                         "-DCMAKE_CXX_COMPILE_FEATURES=cxx_std_17"
-                                                                                                                        ;; Skip library checks that cause hangs
                                                                                                                         "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY"
-                                                                                                                        ;; Explicitly disable dl library check
                                                                                                                         "-DCMAKE_DISABLE_FIND_PACKAGE_Dlfcn=ON"
-                                                                                                                        ;; Force dladdr to not be found
                                                                                                                         "-DHAVE_DLADDR=0"
-                                                                                                                        ;; Force these to be found to skip checks
                                                                                                                         "-DHAVE_LOCALECONV=1"
                                                                                                                         "-DHAVE_STRERROR=1"
-                                                                                                                        ;; Disable thread support entirely
                                                                                                                         "-DCMAKE_DISABLE_FIND_PACKAGE_Threads=ON"
-                                                                                                                        ;; Set more cache variables to skip checks
                                                                                                                         "-DCMAKE_HAVE_LIBC_PTHREAD=NO"
                                                                                                                         "-DCMAKE_USE_PTHREADS_INIT=NO"
                                                                                                                         "-DCMAKE_USE_WIN32_THREADS_INIT=NO"
-                                                                                                                        ;; Skip all feature tests
                                                                                                                         "-DCMAKE_C_STANDARD_COMPUTED_DEFAULT=99"
                                                                                                                         "-DCMAKE_CXX_STANDARD_COMPUTED_DEFAULT=17"
-                                                                                                                        ;; Set target system info
-                                                                                                                        "-DCMAKE_SYSTEM_PROCESSOR=x86_64"
-                                                                                                                        ;; Set install directories explicitly
+                                                                                                                        (str "-DCMAKE_SYSTEM_PROCESSOR="
+                                                                                                                             (if target-str
+                                                                                                                               (case (second (str/split target-str (re-pattern "-")))
+                                                                                                                                 "amd64" "x86_64"
+                                                                                                                                 "aarch64" "aarch64"
+                                                                                                                                 "arm64" "aarch64"
+                                                                                                                                 "x86_64")
+                                                                                                                               (case (System/getProperty "os.arch")
+                                                                                                                                 "amd64" "x86_64"
+                                                                                                                                 "x86_64" "x86_64"
+                                                                                                                                 "aarch64" "aarch64"
+                                                                                                                                 "arm64" "aarch64"
+                                                                                                                                 "x86_64")))
                                                                                                                         "-DCMAKE_INSTALL_LIBDIR=lib"
-                                                                                                                        ;; Skip all try_compile tests by setting cache entries
                                                                                                                         "-DCMAKE_CROSSCOMPILING_EMULATOR=/bin/false"
-                                                                                                                        ;; Skip nlohmann/json detection that causes hanging
                                                                                                                         "-DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=ON"
                                                                                                                         "-DUSE_EXTERNAL_NLOHMANN_JSON=OFF"
-                                                                                                                        ;; Force JSON library to internal version
                                                                                                                         "-DNLOHMANN_JSON_FOUND=FALSE"
-                                                                                                                        ;; Skip pkg-config entirely
                                                                                                                         "-DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON")
                                                        (and target-str is-windows? (not= type :wasm)) (conj "-DCMAKE_CROSSCOMPILING=ON"
                                                                                                             "-DCMAKE_C_COMPILER_WORKS=TRUE"
@@ -949,12 +999,24 @@ public class JavaJarTest {
                                                                                                             "-DCMAKE_C_ABI_COMPILED=TRUE"
                                                                                                             "-DCMAKE_CXX_ABI_COMPILED=TRUE"
                                                                                                             "-DCMAKE_SIZEOF_VOID_P=8")
+                                                       (= type :native) (conj "-DENABLE_CURL=OFF"
+                                                                              "-DENABLE_NETWORK=ON")
                                                        (and (= type :native) is-darwin?) (conj "-DBUILD_SHARED_LIBS=ON")
                                                        (and (= type :native) is-linux?) (conj "-DBUILD_SHARED_LIBS=ON"
                                                                                               "-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++ -Wl,-Bstatic -lc -lm -lpthread -ldl -Wl,-Bdynamic -Wl,--no-as-needed"
                                                                                               "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-Wl,-Bstatic -lc -lm -lpthread -ldl -Wl,-Bdynamic"
-                                                                                              "-DCMAKE_FIND_LIBRARY_SUFFIXES=.a")
-                                                       (= type :wasm) (conj "-DBUILD_SHARED_LIBS=OFF" "-DCMAKE_POLICY_DEFAULT_CMP0135=NEW" "-DEMBED_RESOURCE_FILES=OFF")
+                                                                                              "-DCMAKE_FIND_LIBRARY_SUFFIXES=.a"
+                                                                                              "-DCMAKE_SKIP_RPATH=ON")
+                                                       (and (= type :native) is-linux?) (conj (str "-DCMAKE_CXX_STANDARD_LIBRARIES="
+                                                                                                   (fs/path zlib-install-dir "lib" "libz.a")))
+                                                       (= type :wasm) (conj "-DBUILD_SHARED_LIBS=OFF"
+                                                                            "-DCMAKE_POLICY_DEFAULT_CMP0135=NEW"
+                                                                            "-DEMBED_RESOURCE_FILES=OFF"
+                                                                            "-DENABLE_CURL=OFF")
+                                                       (and (= type :wasm) pthreads?) (conj "-DENABLE_EMSCRIPTEN_FETCH=ON"
+                                                                                            "-DCMAKE_C_FLAGS=-pthread"
+                                                                                            "-DCMAKE_CXX_FLAGS=-pthread")
+                                                       (and (= type :wasm) (not pthreads?)) (conj "-DENABLE_EMSCRIPTEN_FETCH=OFF")
                                                        true (conj ".."))]
                                       ;; For cross-compilation, use -C to load an initial cache file
                                       (when is-nix-build?
@@ -983,7 +1045,6 @@ public class JavaJarTest {
                                                      "set(CMAKE_C_COMPILE_FEATURES c_std_99 CACHE STRING \"\")\n"
                                                      "set(CMAKE_CXX_COMPILE_FEATURES cxx_std_17 CACHE STRING \"\")\n"
                                                      "set(CMAKE_CROSSCOMPILING_EMULATOR /bin/false CACHE STRING \"\")\n"
-                                                     ;; Skip all library detection to prevent hanging under QEMU
                                                      "set(HAVE_EXP 1 CACHE INTERNAL \"\")\n"
                                                      "set(HAVE_LOG 1 CACHE INTERNAL \"\")\n"
                                                      "set(HAVE_SQRT 1 CACHE INTERNAL \"\")\n"
@@ -998,7 +1059,6 @@ public class JavaJarTest {
                                                                (concat ["-C" "initial-cache.cmake"] cmake-args)
                                                                cmake-args)
                                             cmake-env (cond-> {"CXX" cxx "CC" cc "CMAKE_VERBOSE_MAKEFILE" "TRUE"}
-                                                        ;; For Linux musl builds, statically link C runtime into shared library
                                                         (and (= type :native) is-linux?) (assoc "LDFLAGS" "-static-libgcc -static-libstdc++ -Wl,-Bstatic -lc -Wl,-Bdynamic"))]
                                         (when debug?
                                           (println "DEBUG: CMake configure command:")
@@ -1009,7 +1069,6 @@ public class JavaJarTest {
                                         (try
                                           (apply tasks/shell {:dir build-dir :extra-env cmake-env} (concat cmake-base-cmd final-cmake-args))
                                           (catch Exception e
-                                            ;; Try to show CMake error log if it exists
                                             (let [error-log (fs/path build-dir "CMakeFiles" "CMakeError.log")
                                                   output-log (fs/path build-dir "CMakeFiles" "CMakeOutput.log")]
                                               (when (fs/exists? error-log)
@@ -1023,10 +1082,8 @@ public class JavaJarTest {
                                         (apply tasks/shell {:dir build-dir :extra-env cmake-env} cmake-build-cmd)))
                                     (cond
                                       (= type :wasm)
-                                      (let [;; Exported runtime methods from scripts/exported_runtime_methods.json
-                                            exported-runtime-methods "[\"FS\",\"ENV\",\"HEAPF64\",\"err\",\"ccall\",\"cwrap\",\"stackAlloc\",\"stackSave\",\"stackRestore\",\"getValue\",\"setValue\",\"stringToNewUTF8\",\"stringToUTF8\"]"
+                                      (let [exported-runtime-methods "[\"FS\",\"ENV\",\"HEAPF64\",\"HEAPU8\",\"err\",\"ccall\",\"cwrap\",\"stackAlloc\",\"stackSave\",\"stackRestore\",\"getValue\",\"setValue\",\"stringToNewUTF8\",\"stringToUTF8\",\"UTF8ToString\",\"addFunction\"]"
 
-                                            ;; Extract function names from fndefs
                                             fndefs-content (slurp "src/cljc/net/willcohen/proj/fndefs.cljc")
                                             fndefs-raw-match (re-find (re-pattern "\\(def fndefs-raw[\\s\\S]+?\\}\\)") fndefs-content)
                                             _ (when-not fndefs-raw-match
@@ -1036,13 +1093,11 @@ public class JavaJarTest {
                                                            (str/replace (re-pattern "\\)$") ""))
                                             fndefs-map (edn/read-string fndefs-str)
 
-                                            ;; Convert fndefs keys to C function names with underscore prefix
                                             proj-function-names (->> (keys fndefs-map)
                                                                      (map name)
                                                                      (map (fn [s] (str "_" (str/replace s "-" "_"))))
                                                                      sort)
 
-                                            ;; Additional Emscripten/runtime functions that need to be exported
                                             emscripten-functions ["UTF8ArrayToString"
                                                                   "UTF8ToString"
                                                                   "___get_exception_message"
@@ -1054,26 +1109,42 @@ public class JavaJarTest {
                                                                   "_emscripten_stack_set_limits"
                                                                   "_free"
                                                                   "lengthBytesUTF8"
-                                                                  "_malloc"]
+                                                                  "_malloc"
+                                                                  "_proj_setup_network_stubs"]
 
-                                            ;; Combine all functions and convert to JSON array string
                                             all-functions (concat emscripten-functions proj-function-names)
                                             exported-fns (str "[" (str/join "," (map (fn [f] (str "\"" f "\"")) all-functions)) "]")]
                                         (fs/copy (fs/path build-dir "data" "proj.db") (fs/path build-dir "proj.db"))
                                         (fs/copy (fs/path build-dir "data" "proj.ini") (fs/path build-dir "proj.ini"))
-                                        (tasks/shell {:dir build-dir}
-                                                     "emcc" "-o" "proj-emscripten.js" "-O2" "-fexceptions" "-fvisibility=default" "--target=wasm32-unknown-emscripten"
-                                                     "lib/libproj.a"
-                                                     (str (fs/path libtiff-install-dir "lib" "libtiff.a"))
-                                                     (str (fs/path sqlite-install-dir "lib" "libsqlite3.a"))
-                                                     (str "-s" "EXPORTED_FUNCTIONS=" exported-fns)
-                                                     (str "-s" "EXPORTED_RUNTIME_METHODS=" exported-runtime-methods)
-                                                     "-s" "ENVIRONMENT=web,webview,worker,node,shell"
-                                                     "-s" "ALLOW_MEMORY_GROWTH=1"
-                                                     "-s" "ASSERTIONS=1" ; Enable runtime assertions for debugging, but disable for better optimizations.
-                                                     "-s" "MODULARIZE=1"
-                                                     "-s" "EXPORT_ES6=1"
-                                                     "-s" "EXPORT_NAME=\"PROJModule\""))
+                                        (let [output-name (str "proj-emscripten" wasm-suffix ".js")
+                                              stub-file (str (fs/absolutize (fs/path "src" "c" "proj_network_stubs.c")))
+                                              proj-src-include (str (fs/absolutize (fs/path target-dir proj-dir "src")))
+                                              ;; --no-entry: library build, no main(). Rules out PROXY_TO_PTHREAD (requires main).
+                                              ;; No Asyncify: tests hung after fetch completed, adds ~10% binary size.
+                                              ;; Workers are more robust -- PROJ can block freely inside them.
+                                              emcc-cmd (vec (concat ["emcc" "-o" output-name "-O2" "-fexceptions" "-fvisibility=default" "--target=wasm32-unknown-emscripten" "--no-entry"]
+                                                                    (when pthreads? ["-pthread"])
+                                                                    [stub-file
+                                                                     "-I" proj-src-include
+                                                                     "lib/libproj.a"
+                                                                     (str (fs/path libtiff-install-dir "lib" "libtiff.a"))
+                                                                     (str (fs/path zlib-install-dir "lib" "libz.a"))
+                                                                     (str (fs/path sqlite-install-dir "lib" "libsqlite3.a"))
+                                                                     (str "-s" "EXPORTED_FUNCTIONS=" exported-fns)
+                                                                     (str "-s" "EXPORTED_RUNTIME_METHODS=" exported-runtime-methods)
+                                                                     "-s" (if pthreads? "ENVIRONMENT=web,worker,node" "ENVIRONMENT=web,node,shell")
+                                                                     "-s" "ALLOW_MEMORY_GROWTH=1"
+                                                                     "-s" "ALLOW_TABLE_GROWTH=1"
+                                                                     "-s" "ASSERTIONS=1"
+                                                                     "-s" "MODULARIZE=1"
+                                                                     "-s" "EXPORT_ES6=1"
+                                                                     "-s" "EXPORT_NAME=\"PROJModule\""]
+                                                                    (when pthreads? ["-s" "FETCH=1"
+                                                                                     "-s" "USE_PTHREADS=1"
+                                                                                     "-s" "SHARED_MEMORY=1"
+                                                                                     "-s" "PTHREAD_POOL_SIZE=0"])))]
+                                          (println "Building" (if pthreads? "pthreads" "single-threaded") "WASM:" output-name)
+                                          (apply tasks/shell {:dir build-dir} emcc-cmd)))
 
                                       (= type :native)
                                       (let [;; Function to find actual PROJ library file in build directory
@@ -1102,11 +1173,13 @@ public class JavaJarTest {
 
                                             ;; Detect actual built library file or fall back to expected name
                                             detected-lib (find-proj-lib build-dir is-windows? is-darwin? is-linux?)
+                                            ;; Fallback version from CMakeLists.txt or "dev" if detection fails
+                                            fallback-version (detect-proj-version (fs/path target-dir proj-dir))
                                             proj-lib-versioned (or detected-lib
                                                                     ;; Fallback to expected names if detection fails
                                                                    (cond
-                                                                     is-windows? (str "proj-" (first (str/split proj-version (re-pattern "\\."))) ".dll")
-                                                                     is-darwin? (str "libproj.25." proj-version ".dylib")
+                                                                     is-windows? (str "proj-" (first (str/split fallback-version (re-pattern "\\."))) ".dll")
+                                                                     is-darwin? (str "libproj.25." fallback-version ".dylib")
                                                                      is-linux? "libproj.a"
                                                                      :else "libproj.a"))
                                             _ (when debug?
@@ -1191,7 +1264,7 @@ public class JavaJarTest {
                                                     (if (zero? (:exit ldd-result))
                                                       (println "Fallback ldd output:" (:out ldd-result))
                                                       (println "Both readelf and ldd unavailable")))))))
-                                          (when (not is-linux?) ; Don't copy libtiff for Linux - it's statically linked into libproj.so
+                                          (when (not is-linux?)
                                             (fs/copy (fs/path libtiff-install-dir "lib" libtiff-libname) dest-dir {:replace-existing true}))
                                           (fs/copy (fs/path build-dir "data" "proj.db") (fs/path "resources") {:replace-existing true})
                                           (fs/copy (fs/path build-dir "data" "proj.ini") (fs/path "resources") {:replace-existing true})))))))]
@@ -1213,10 +1286,12 @@ public class JavaJarTest {
                (download-file (str "https://gitlab.com/libtiff/libtiff/-/archive/v" libtiff-version "/" libtiff-archive) (fs/path target-dir libtiff-archive))
                (extract-archive libtiff-archive libtiff-dir target-dir)
 
-               ;; Download and extract PROJ only if not using local version
-               (when-not (:local-proj opts)
-                 (download-file (str "https://github.com/OSGeo/PROJ/archive/refs/tags/" proj-archive) (fs/path target-dir proj-archive))
-                 (extract-archive proj-archive proj-dir target-dir))
+               ;; Download and extract PROJ only if using tag (not sha or local)
+               (when (and (not (:local-proj opts))
+                          (= (:type proj-source) :tag))
+                 (download-file (str "https://github.com/OSGeo/PROJ/archive/refs/tags/" proj-archive)
+                                (fs/path target-dir proj-archive))
+                 (extract-archive proj-archive (str "PROJ-" (:ref proj-source)) target-dir))
 
                ;; Prepare local PROJ if needed (runs autogen.sh if required)
                (when (:local-proj opts)
@@ -1249,10 +1324,13 @@ public class JavaJarTest {
                        host-flag (when host-triple (str "--host=" host-triple))
                        libtiff-libname (cond is-windows? "libtiff.dll" is-darwin? "libtiff.dylib" :else "libtiff.a")
                        proj-lib-unversioned (cond is-windows? "proj.dll" is-darwin? "libproj.dylib" :else "libproj.so")
-                       proj-lib-versioned (cond is-windows? (str "proj-" (first (str/split proj-version (re-pattern "\\."))) ".dll") ; e.g. proj-9.dll
-                                                is-darwin? (str "libproj.25." proj-version ".dylib")
+                       ;; Fallback version from CMakeLists.txt or "dev" if detection fails
+                       fallback-version (detect-proj-version (fs/path target-dir proj-dir))
+                       proj-lib-versioned (cond is-windows? (str "proj-" (first (str/split fallback-version (re-pattern "\\."))) ".dll") ; e.g. proj-9.dll
+                                                is-darwin? (str "libproj.25." fallback-version ".dylib")
                                                 :else "libproj.so.25")
                        sqlite-install-dir (fs/absolutize (fs/path "target" (str "sqlite-install-" library-dir)))
+                       zlib-install-dir (fs/absolutize (fs/path "target" (str "zlib-install-" library-dir)))
                        libtiff-install-dir (fs/absolutize (fs/path "target" (str "libtiff-install-" library-dir)))]
 
                    (println "--> Starting native build for" (if target-str (str target-str " (cross-compile)") library-dir))
@@ -1275,8 +1353,15 @@ public class JavaJarTest {
                                         :is-windows? is-windows?
                                         :debug? debug?})
 
+                         ;; Build zlib for native (bundled, not system)
+                         (build-zlib {:type :native
+                                      :install-dir zlib-install-dir
+                                      :cc cc
+                                      :debug? debug?})
+
                          (build-libtiff {:type :native
                                          :install-dir libtiff-install-dir
+                                         :zlib-install-dir zlib-install-dir
                                          :cc cc
                                          :cxx cxx
                                          :host-flag host-flag
@@ -1294,67 +1379,90 @@ public class JavaJarTest {
                                       :is-darwin? is-darwin?
                                       :is-windows? is-windows?
                                       :sqlite-install-dir sqlite-install-dir
+                                      :zlib-install-dir zlib-install-dir
                                       :libtiff-install-dir libtiff-install-dir
                                       :debug? debug?
                                       :target-str target-str}))))))
 
                ;; --- Phase 5: WASM Build ---
                (when wasm?
-                 (let [;; --- WASM Build Configuration ---
+                 (let [;; Pthreads build (for browser/Node.js)
                        sqlite-install-dir-wasm (fs/absolutize (fs/path target-dir "sqlite-install-wasm"))
-                       libtiff-install-dir-wasm (fs/absolutize (fs/path target-dir "libtiff-install-wasm"))]
+                       zlib-install-dir-wasm (fs/absolutize (fs/path target-dir "zlib-install-wasm"))
+                       libtiff-install-dir-wasm (fs/absolutize (fs/path target-dir "libtiff-install-wasm"))
+                       ;; Single-threaded build (for GraalVM)
+                       sqlite-install-dir-wasm-st (fs/absolutize (fs/path target-dir "sqlite-install-wasm-st"))
+                       zlib-install-dir-wasm-st (fs/absolutize (fs/path target-dir "zlib-install-wasm-st"))
+                       libtiff-install-dir-wasm-st (fs/absolutize (fs/path target-dir "libtiff-install-wasm-st"))
+                       dest-resources "resources"
+                       dest-resources-wasm (fs/path dest-resources "wasm")
+                       dest-js-src "src/cljc/net/willcohen/proj"
+                       proj-build-dir-wasm (fs/path target-dir proj-dir "proj-build-wasm")
+                       proj-build-dir-wasm-st (fs/path target-dir proj-dir "proj-build-wasm-st")]
 
                    (println "--> Starting WASM build...")
+                   (fs/create-dirs dest-resources-wasm)
+                   (fs/create-dirs dest-js-src)
 
-                   ;; Check if WASM PROJ needs to be built before building dependencies
-                   (let [final-wasm-lib (fs/path "resources" "wasm" "proj-emscripten.js")]
-                     (if (fs/exists? final-wasm-lib)
-                       (println "Skipping build - WASM library already exists at:" (str final-wasm-lib))
-                       (do
-                         ;; Only build dependencies if PROJ WASM needs to be built
-                         (build-sqlite {:type :wasm
-                                        :install-dir sqlite-install-dir-wasm
-                                        :cc "emcc"
-                                        :host-flag nil
-                                        :debug? debug?})
-
-                         (build-libtiff {:type :wasm
-                                         :install-dir libtiff-install-dir-wasm
-                                         :cc "emcc"
-                                         :cxx "em++"
-                                         :host-flag "--host=wasm32"
-                                         :is-darwin? (= host-os :darwin)
-                                         :is-linux? (= host-os :linux)
-                                         :debug? debug?})
-
-                         (build-proj {:type :wasm
-                                      :library-dir "wasm"
-                                      :cc "emcc"
-                                      :cxx "em++"
-                                      :is-darwin? (= host-os :darwin)
-                                      :is-windows? false
-                                      :sqlite-install-dir sqlite-install-dir-wasm
-                                      :libtiff-install-dir libtiff-install-dir-wasm
-                                      :debug? debug?}))))
-
-                   ;; --- Copy WASM Artifacts ---
-                   (let [proj-build-dir-wasm (fs/path target-dir proj-dir "proj-build-wasm")]
+                   ;; Build pthreads version for browser/Node.js
+                   (when-not (fs/exists? (fs/path dest-js-src "proj-emscripten.js"))
+                     (println "Building pthreads WASM dependencies...")
+                     (build-sqlite {:type :wasm :install-dir sqlite-install-dir-wasm :cc "emcc" :pthreads? true :debug? debug?})
+                     (build-zlib {:type :wasm :install-dir zlib-install-dir-wasm :cc "emcc" :pthreads? true :debug? debug?})
+                     (build-libtiff {:type :wasm :install-dir libtiff-install-dir-wasm :zlib-install-dir zlib-install-dir-wasm
+                                     :cc "emcc" :cxx "em++" :host-flag "--host=wasm32"
+                                     :is-darwin? (= host-os :darwin) :is-linux? (= host-os :linux) :pthreads? true :debug? debug?})
+                     (build-proj {:type :wasm :library-dir "wasm" :cc "emcc" :cxx "em++"
+                                  :is-darwin? (= host-os :darwin) :is-windows? false
+                                  :sqlite-install-dir sqlite-install-dir-wasm :zlib-install-dir zlib-install-dir-wasm
+                                  :libtiff-install-dir libtiff-install-dir-wasm :pthreads? true :debug? debug?})
                      (when (fs/exists? (fs/path proj-build-dir-wasm "proj-emscripten.js"))
-                       (println "Copying WASM build artifacts...")
-                       (let [dest-resources "resources"
-                             dest-resources-wasm (fs/path dest-resources "wasm")
-                             dest-js-src "src/cljc/net/willcohen/proj"]
-                         ;; Create destination directories
-                         (fs/create-dirs dest-resources-wasm)
-                         (fs/create-dirs dest-js-src)
+                       (println "Copying pthreads WASM to src/cljc...")
+                       (doseq [file ["proj-emscripten.js" "proj-emscripten.wasm"]]
+                         (fs/copy (fs/path proj-build-dir-wasm file) dest-js-src {:replace-existing true}))
+                       (fs/copy (fs/path proj-build-dir-wasm "proj.db") dest-resources {:replace-existing true})
+                       (fs/copy (fs/path proj-build-dir-wasm "proj.ini") dest-resources {:replace-existing true})))
 
-                         ;; Copy artifacts
-                         (fs/copy (fs/path proj-build-dir-wasm "proj.db") dest-resources {:replace-existing true})
-                         (fs/copy (fs/path proj-build-dir-wasm "proj.ini") dest-resources {:replace-existing true})
-                         (doseq [file ["proj-emscripten.js" "proj-emscripten.wasm"]]
-                           (fs/copy (fs/path proj-build-dir-wasm file) dest-resources-wasm {:replace-existing true})
-                           (fs/copy (fs/path proj-build-dir-wasm file) dest-js-src {:replace-existing true}))
-                         (fs/copy (fs/path dest-js-src "proj-loader.mjs") dest-resources-wasm {:replace-existing true}))))))
+                   ;; Build single-threaded version for GraalVM
+                   (when-not (fs/exists? (fs/path dest-resources-wasm "proj-emscripten.js"))
+                     (println "Building single-threaded WASM dependencies...")
+                     (build-sqlite {:type :wasm :install-dir sqlite-install-dir-wasm-st :cc "emcc" :pthreads? false :debug? debug?})
+                     (build-zlib {:type :wasm :install-dir zlib-install-dir-wasm-st :cc "emcc" :pthreads? false :debug? debug?})
+                     (build-libtiff {:type :wasm :install-dir libtiff-install-dir-wasm-st :zlib-install-dir zlib-install-dir-wasm-st
+                                     :cc "emcc" :cxx "em++" :host-flag "--host=wasm32"
+                                     :is-darwin? (= host-os :darwin) :is-linux? (= host-os :linux) :pthreads? false :debug? debug?})
+                     (build-proj {:type :wasm :library-dir "wasm" :cc "emcc" :cxx "em++"
+                                  :is-darwin? (= host-os :darwin) :is-windows? false
+                                  :sqlite-install-dir sqlite-install-dir-wasm-st :zlib-install-dir zlib-install-dir-wasm-st
+                                  :libtiff-install-dir libtiff-install-dir-wasm-st :pthreads? false :debug? debug?})
+                     (when (fs/exists? (fs/path proj-build-dir-wasm-st "proj-emscripten-st.js"))
+                       (println "Copying single-threaded WASM to resources/wasm...")
+                       (fs/copy (fs/path proj-build-dir-wasm-st "proj-emscripten-st.js")
+                                (fs/path dest-resources-wasm "proj-emscripten.js") {:replace-existing true})
+                       (fs/copy (fs/path proj-build-dir-wasm-st "proj-emscripten-st.wasm")
+                                (fs/path dest-resources-wasm "proj-emscripten.wasm") {:replace-existing true})))
+
+                   (when (fs/exists? (fs/path dest-js-src "proj-loader.mjs"))
+                     (fs/copy (fs/path dest-js-src "proj-loader.mjs") dest-resources-wasm {:replace-existing true}))
+
+                   (when-not (fs/exists? (fs/path dest-resources "proj.db"))
+                     (cond
+                       (fs/exists? (fs/path proj-build-dir-wasm "proj.db"))
+                       (do (println "Copying proj.db from pthreads build to resources/")
+                           (fs/copy (fs/path proj-build-dir-wasm "proj.db") dest-resources {:replace-existing true}))
+                       (fs/exists? (fs/path proj-build-dir-wasm-st "proj.db"))
+                       (do (println "Copying proj.db from single-threaded build to resources/")
+                           (fs/copy (fs/path proj-build-dir-wasm-st "proj.db") dest-resources {:replace-existing true}))
+                       :else (println "Warning: proj.db not found in any build directory")))
+                   (when-not (fs/exists? (fs/path dest-resources "proj.ini"))
+                     (cond
+                       (fs/exists? (fs/path proj-build-dir-wasm "proj.ini"))
+                       (do (println "Copying proj.ini from pthreads build to resources/")
+                           (fs/copy (fs/path proj-build-dir-wasm "proj.ini") dest-resources {:replace-existing true}))
+                       (fs/exists? (fs/path proj-build-dir-wasm-st "proj.ini"))
+                       (do (println "Copying proj.ini from single-threaded build to resources/")
+                           (fs/copy (fs/path proj-build-dir-wasm-st "proj.ini") dest-resources {:replace-existing true}))
+                       :else (println "Warning: proj.ini not found in any build directory")))))
 
                ;; --- Phase 6: Cross-platform Build (Container) ---
                (when (or (:cross opts) (:cross-platform opts))
@@ -1364,7 +1472,7 @@ public class JavaJarTest {
                      (do
                        (println "--> Using" (str container-cmd) "for cross-platform builds.")
                        (println "Using Containerfile for builds...")
-                       (let [default-platforms ["linux/amd64" "linux/aarch64"]
+                       (let [default-platforms ["linux/amd64" "linux/aarch64" "windows/amd64"]
                              target-platforms (if-let [p (:cross-platform opts)] [p] default-platforms)]
                          (doseq [platform target-platforms]
                            (let [platform-tag (str/replace platform "/" "-")
@@ -1412,7 +1520,7 @@ public class JavaJarTest {
                              (let [container-id (str/trim (:out (tasks/shell {:out :string}
                                                                              container-cmd "create"
                                                                              (str "clj-proj-build:" platform-tag))))
-                                   proj-dir-path (str "/build/target/PROJ-" proj-version)]
+                                   proj-dir-path (str "/build/target/" proj-dir)]
                                (try
                                  ;; Copy the built artifacts
                                  ;; First list what's in the platform directory
@@ -1468,7 +1576,6 @@ public class JavaJarTest {
                                        (println "Copying" (str lib-file) "to" (str (fs/path dest-dir target-name)))
                                        (fs/copy lib-file (fs/path dest-dir target-name)
                                                 {:replace-existing true})))
-                                   ;; Copy shared files if they exist
                                    (when (fs/exists? (fs/path output-dir "proj.db"))
                                      (fs/copy (fs/path output-dir "proj.db")
                                               (fs/path "resources" "proj.db")
@@ -1479,9 +1586,7 @@ public class JavaJarTest {
                                               {:replace-existing true})))
 
                                  (finally
-                                   ;; Clean up the container
                                    (tasks/shell container-cmd "rm" container-id)
-                                   ;; Clean up the temporary output directory
                                    (fs/delete-tree output-dir))))
 
                              (println "✓ Completed build for" platform))))))))
@@ -1491,16 +1596,13 @@ public class JavaJarTest {
    :task (do
            (println "Updating fndefs-raw in macros.cljs...")
            (let [fndefs-content (slurp "src/cljc/net/willcohen/proj/fndefs.cljc")
-                 ;; Extract all constant definitions
                  constants (->> (re-seq (re-pattern "\\(def\\s+(\\^\\{[^}]+\\}\\s+)?(PJ_[A-Z0-9_]+|PROJ_[A-Z0-9_]+)\\s+([0-9]+)") fndefs-content)
                                 (map (fn [[_ _ const-name value]]
                                        [(keyword const-name) (Integer/parseInt value)]))
                                 (into {}))
-                 ;; Extract the entire fndefs-raw definition
                  fndefs-raw-match (re-find (re-pattern "\\(def fndefs-raw[\\s\\S]+?\\}\\)") fndefs-content)
                  _ (when-not fndefs-raw-match
                      (throw (ex-info "Could not find fndefs-raw definition" {})))
-                 ;; Replace constant references with their values
                  fndefs-raw-resolved (reduce (fn [text [const-name const-value]]
                                                (str/replace text
                                                             (re-pattern (str "\\b" (name const-name) "\\b"))
@@ -1509,7 +1611,6 @@ public class JavaJarTest {
                                              constants)
                  macros-file "src/cljc/net/willcohen/proj/macros.cljs"
                  macros-content (slurp macros-file)
-                 ;; Replace the existing fndefs-raw definition
                  updated-content (str/replace macros-content
                                               (re-pattern "\\(def fndefs-raw[\\s\\S]+?\\}\\)")
                                               fndefs-raw-resolved)]
@@ -1521,30 +1622,24 @@ public class JavaJarTest {
           :task (do
                   (println "Compiling ClojureScript with cherry...")
                   (let [proj-dir "src/cljc/net/willcohen/proj"
-                        ;; Compile files in the correct order - dependencies first
-                        ;; wmacros.cljs is DEPRECATED - just use macros.cljs
                         files ["fndefs.cljc" "macros.cljs" "wasm.cljc" "proj.cljc"]]
 
-                    ;; Clean dist directory first
                     (println "Cleaning dist directory...")
                     (fs/delete-tree (fs/path proj-dir "dist"))
                     (fs/create-dirs (fs/path proj-dir "dist"))
 
-                    ;; Ensure npm dependencies are installed
                     (println "Installing npm dependencies...")
                     (tasks/shell {:dir proj-dir} "npm" "install")
 
                     (doseq [file files]
                       (println (str "Compiling " file "..."))
-                      (tasks/shell {:dir proj-dir :continue true} "npx" "cherry" "run" file))
+                      (tasks/shell {:dir proj-dir} "npx" "cherry" "compile" file))
 
                     (println "Cherry compilation complete.")
 
-                    ;; Let esbuild handle all the bundling and path resolution
                     (println "Running esbuild to bundle modules...")
                     (tasks/shell {:dir proj-dir} "npm" "run" "build")
 
-                    ;; Copy WASM resources to dist directory for Node.js
                     (println "Copying WASM resources to dist...")
                     (let [dist-dir (fs/path proj-dir "dist")]
                       (fs/copy (fs/path "resources" "proj.db") (fs/path dist-dir "proj.db") {:replace-existing true})
@@ -1552,9 +1647,26 @@ public class JavaJarTest {
 
                     (println "Bundle complete! Distribution in dist/")))}
 
-  ;; Task to serve the browser demo
   demo {:doc "Serve the browser demo at http://localhost:8080"
         :task (do
+                (let [coi-file (fs/path "docs" "coi-serviceworker.js")]
+                  (when-not (fs/exists? coi-file)
+                    (println "Downloading coi-serviceworker.js...")
+                    (spit (str coi-file)
+                          (slurp "https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/master/coi-serviceworker.js"))
+                    (println "Downloaded coi-serviceworker.js")))
+
+                (let [dist-dir (fs/path "src/cljc/net/willcohen/proj/dist")]
+                  (when-not (and (fs/exists? (fs/path dist-dir "proj.mjs"))
+                                 (fs/exists? (fs/path dist-dir "proj-worker.mjs")))
+                    (println "Warning: dist folder missing files. Run 'bb cherry' first.")))
+
+                (let [link-path (fs/path "docs" "dist")
+                      target-path (fs/path ".." "src" "cljc" "net" "willcohen" "proj" "dist")]
+                  (when-not (fs/exists? link-path)
+                    (println "Creating symlink docs/dist -> dist folder...")
+                    (fs/create-sym-link link-path target-path)))
+
                 (println "Starting demo server at http://localhost:8080")
                 (println "Navigate to: http://localhost:8080/docs/")
                 (println "Press Ctrl+C to stop")
@@ -1564,7 +1676,7 @@ public class JavaJarTest {
   {:doc "Generate/update pom.xml file"
    :task (do
            (println "Generating pom.xml...")
-           (tasks/shell "clj" "-T:build" "pom")
+           (tasks/shell clj-cmd "-T:build" "pom")
            (println "pom.xml updated"))}
 
   jar
@@ -1572,17 +1684,16 @@ public class JavaJarTest {
    :depends [pom]
    :task (do
            (println "Building JAR file...")
-           (tasks/shell "clj" "-T:build" "jar")
-           ;; Copy pom.xml to root for deploy
+           (tasks/shell clj-cmd "-T:build" "jar")
            (babashka.fs/copy "target/classes/META-INF/maven/net.willcohen/proj/pom.xml" "pom.xml" {:replace-existing true})
-           (println "JAR built: target/proj-0.1.0-alpha4.jar"))}
+           (println "JAR built: target/proj-0.1.0-alpha5.jar"))}
 
   clojars-deploy
   {:doc "Deploy JAR to Clojars"
    :depends [jar]
    :task (do
            (println "Deploying to Clojars...")
-           (tasks/shell "clj" "-X:deploy")
+           (tasks/shell clj-cmd "-X:deploy")
            (println "Deployed to Clojars"))}
 
   npm-publish
@@ -1596,6 +1707,26 @@ public class JavaJarTest {
   test:all
   {:doc "Run all test suites"
    :depends [test:ffi test:graal test:node test:playwright test:jar test:npm]}
+
+  test:bench-node
+  {:doc "Run Node.js multi-worker benchmark (not part of test:all)"
+   :task (do
+           (println "Running Node.js multi-worker benchmark...")
+           (tasks/shell "node" "--test" "test/js/benchmark.test.mjs"))}
+
+  test:bench-browser
+  {:doc "Run Playwright multi-worker benchmark in browser (not part of test:all)"
+   :task (do
+           (println "Running browser multi-worker benchmark...")
+           (println "Copying PROJ resources to test/browser...")
+           (fs/copy (fs/path "resources" "proj.db") (fs/path "test/browser" "proj.db") {:replace-existing true})
+           (fs/copy (fs/path "resources" "proj.ini") (fs/path "test/browser" "proj.ini") {:replace-existing true})
+           (fs/copy (fs/path "src/cljc/net/willcohen/proj/dist" "proj-emscripten.wasm") (fs/path "test/browser" "proj-emscripten.wasm") {:replace-existing true})
+           (tasks/shell {:dir "test/browser"} "npx" "playwright" "test" "tests/benchmark.spec.js"))}
+
+  test:bench
+  {:doc "Run all multi-worker benchmarks (Node.js + browser, not part of test:all)"
+   :depends [test:bench-node test:bench-browser]}
 
   build:all
   {:doc "Build all artifacts (native, wasm, and cross-platform)"
@@ -1623,7 +1754,7 @@ public class JavaJarTest {
                 :task (do
                         (println "\nJAR contents:")
                         (println "=============")
-                        (tasks/shell "jar" "tf" "target/proj-0.1.0-alpha4.jar")
+                        (tasks/shell "jar" "tf" "target/proj-0.1.0-alpha5.jar")
                         (println))}
 
   npm-contents {:doc "List all files that would be in npm package"
@@ -1647,25 +1778,21 @@ public class JavaJarTest {
                           (do
                             (println (str "Bumping version to " new-version "..."))
                             (println)
-                            ;; Update build.clj
                             (let [content (slurp "build.clj")
                                   old-version (second (re-find (re-pattern "def version \"([^\"]+)\"") content))
                                   updated (str/replace content (re-pattern (str "def version \"" old-version "\"")) (str "def version \"" new-version "\""))]
                               (spit "build.clj" updated)
                               (println (str "  build.clj: " old-version " -> " new-version)))
-                            ;; Update package.json
                             (let [content (slurp "src/cljc/net/willcohen/proj/package.json")
                                   old-version (second (re-find (re-pattern "\"version\": \"([^\"]+)\"") content))
                                   updated (str/replace content (re-pattern (str "\"version\": \"" old-version "\"")) (str "\"version\": \"" new-version "\""))]
                               (spit "src/cljc/net/willcohen/proj/package.json" updated)
                               (println (str "  package.json: " old-version " -> " new-version)))
-                            ;; Update bb.edn jar references
                             (let [content (slurp "bb.edn")
                                   old-version (second (re-find (re-pattern "proj-(\\d+\\.\\d+\\.\\d+-alpha\\d+)\\.jar") content))
                                   updated (str/replace content (re-pattern (str "proj-" old-version "\\.jar")) (str "proj-" new-version ".jar"))]
                               (spit "bb.edn" updated)
                               (println (str "  bb.edn: " old-version " -> " new-version)))
-                            ;; Update deps.edn deploy artifact path
                             (let [content (slurp "deps.edn")
                                   old-version (second (re-find (re-pattern "proj-(\\d+\\.\\d+\\.\\d+-alpha\\d+)\\.jar") content))
                                   updated (str/replace content (re-pattern (str "proj-" old-version "\\.jar")) (str "proj-" new-version ".jar"))]

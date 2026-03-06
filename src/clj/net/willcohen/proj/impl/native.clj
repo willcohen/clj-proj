@@ -183,7 +183,6 @@
                  pd (locate-proj-db tmpdir)
                  _ (locate-grids tmpdir)
                  os (get-os)
-                 ;; Only load separate libtiff for Darwin (macOS) - Linux has it statically linked
                  tf (when (= os :darwin) (locate-libtiff-file tmpdir))
                  p (.getCanonicalPath (.getParentFile pf))
                  t (when tf (.getCanonicalPath (.getParentFile tf)))
@@ -194,14 +193,14 @@
                                  (.replaceFirst "[.][^.]+$" "")
                                  (.replaceFirst "lib" "")))
                  s (dt-ffi/library-singleton #'fn-defs)]
-               ;; (when (dt-ffi/jdk-ffi?)
-               ;;   (System/setProperty "java.library.path" (.toString tmpdir)))
-             (when (dt-ffi/jna-ffi?) ;(not (dt-ffi/jdk-ffi?)))
+             (when (dt-ffi/jna-ffi?)
                (System/setProperty "jna.library.path" (.toString tmpdir)))
              {:file pf :db pd :libtiff-file tf :path p :libtiff-path t :singleton s :libname pl
               :libname-libtiff tl})
            (catch Exception _ proj))))
 
+;; If native libs fail to load, check: (clojure.java.io/resource "darwin-aarch64/libproj.dylib")
+;; to verify the platform-specific resource exists on the classpath.
 (defn init-proj
   []
   (init-ffi!)

@@ -1,12 +1,21 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>PROJ WASM Simple Demo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PROJ in the Browser</title>
+    <script>
+        window.coi = {
+            shouldRegister: () => localStorage.getItem('coi-disabled') !== 'true',
+            shouldDeregister: () => localStorage.getItem('coi-disabled') === 'true',
+            quiet: false
+        };
+    </script>
+    <script src="coi-serviceworker.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 800px;
+            max-width: 1100px;
             margin: 0 auto;
             padding: 20px;
         }
@@ -16,295 +25,1988 @@
             border: 1px solid #ddd;
             border-radius: 5px;
         }
+        .about-section {
+            background-color: #f0f8ff;
+        }
+        h1 { margin-top: 0; }
+        h2 { margin-top: 0; }
         button {
-            padding: 10px 20px;
-            margin: 5px;
+            padding: 8px 16px;
+            margin: 3px;
+            cursor: pointer;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            background: #f8f8f8;
+        }
+        button:hover { background: #e8e8e8; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        input, select {
+            padding: 6px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+        }
+        textarea {
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            resize: vertical;
+        }
+        .transform-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            overflow: visible;
+        }
+        @media (max-width: 700px) {
+            .transform-grid { grid-template-columns: 1fr; }
+        }
+        .transform-column label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+        .transform-column input[type="text"],
+        .transform-column input[type="number"] {
+            width: 100%;
+            box-sizing: border-box;
+            margin-bottom: 8px;
+        }
+        .transform-column textarea {
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .controls-row {
+            margin-top: 12px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px;
+        }
+        .controls-row label { font-size: 0.9em; }
+        .summary-row {
+            margin-top: 12px;
+        }
+        .summary-row textarea {
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .epoch-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+        .epoch-group input[type="number"] {
+            width: 100px;
+        }
+        .crs-output-panel {
+            margin-top: 12px;
+        }
+        .crs-output-panel textarea {
+            width: 100%;
+            box-sizing: border-box;
+            font-size: 12px;
+        }
+        .crs-output-panel .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 10px;
+            margin-bottom: 4px;
+        }
+        .crs-meta {
+            margin: 10px 0;
+            padding: 10px;
+            background: #f9f9f9;
+            border-radius: 3px;
+        }
+        .crs-meta strong { margin-right: 12px; }
+        #replOutput {
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            background: #f4f4f4;
+            padding: 15px;
+            border-radius: 3px;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 10px;
+        }
+        .repl-line { margin: 2px 0; }
+        .repl-input { color: #0066cc; }
+        .repl-output { color: #000; }
+        .repl-error { color: red; }
+        .repl-hint { color: #666; font-style: italic; }
+        .button-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+            align-items: center;
+        }
+        .button-row select {
+            min-width: 200px;
+            padding: 8px;
+        }
+        .loading-state { display: none; }
+        #loading-indicator {
+            text-align: center;
+            padding: 40px;
+            font-size: 1.1em;
+            color: #666;
+        }
+        .mode-info {
+            font-size: 0.85em;
+            color: #666;
+            margin-bottom: 15px;
+        }
+        #mode-badge { font-weight: bold; }
+        .badge-pthreads { color: #4caf50; }
+        .badge-single-threaded { color: #ff9800; }
+        .error { color: red; }
+        .inline-copy {
+            font-size: 0.8em;
+            padding: 2px 8px;
+        }
+        .crs-selector {
+            margin-bottom: 8px;
+        }
+        .crs-mode-toggle {
+            display: flex;
+            gap: 0;
+            margin-bottom: 8px;
+        }
+        .crs-mode-toggle button {
+            flex: 1;
+            padding: 5px 10px;
+            font-size: 0.85em;
+            border: 1px solid #ccc;
+            background: #f8f8f8;
+            cursor: pointer;
+            margin: 0;
+        }
+        .crs-mode-toggle button:first-child {
+            border-radius: 3px 0 0 3px;
+        }
+        .crs-mode-toggle button:last-child {
+            border-radius: 0 3px 3px 0;
+            border-left: none;
+        }
+        .crs-mode-toggle button.active {
+            background: #4a90d9;
+            color: #fff;
+            border-color: #4a90d9;
+        }
+        .crs-field {
+            margin-bottom: 6px;
+        }
+        .crs-field label {
+            display: block;
+            font-size: 0.8em;
+            color: #666;
+            margin-bottom: 3px;
+            font-weight: normal;
+        }
+        .crs-field.disabled {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+        .crs-field.disabled .crs-compound-note {
+            font-size: 0.8em;
+            color: #888;
+            font-style: italic;
+            padding: 4px 0;
+        }
+        .crs-input-row {
+            display: flex;
+            align-items: stretch;
+            position: relative;
+        }
+        .crs-input-row > input,
+        .crs-input-row > button {
+            margin: 0 !important;
+        }
+        .crs-search-input {
+            flex: 1;
+            box-sizing: border-box;
+            padding: 6px;
+            border: 1px solid #ccc;
+            border-radius: 3px 0 0 3px;
+        }
+        .crs-browse-btn {
+            padding: 0 8px;
+            border: 1px solid #ccc;
+            border-left: none;
+            border-radius: 0 3px 3px 0;
+            background: #f5f5f5;
+            cursor: pointer;
+            font-size: 12px;
+            box-sizing: border-box;
+        }
+        .crs-browse-btn:hover {
+            background: #e0e0e0;
+        }
+        .crs-chip {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            background: #e8f0fe;
+            border: 1px solid #b8d4f0;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+        .crs-chip .chip-code {
+            font-weight: bold;
+        }
+        .crs-chip .chip-name {
+            color: #555;
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .crs-chip .chip-info {
+            color: #4a90d9;
+            text-decoration: none;
+            font-size: 0.85em;
             cursor: pointer;
         }
-        input {
-            padding: 5px;
-            margin: 5px;
-            width: 150px;
+        .crs-chip .chip-info:hover { text-decoration: underline; }
+        .crs-chip .chip-clear {
+            cursor: pointer;
+            color: #999;
+            font-size: 1.1em;
+            line-height: 1;
+            padding: 0 2px;
         }
-        pre {
-            background: #f4f4f4;
-            padding: 10px;
+        .crs-chip .chip-clear:hover { color: #c00; }
+        .crs-manual-input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 6px;
+            border: 1px solid #ccc;
             border-radius: 3px;
-            overflow-x: auto;
         }
-        .error {
-            color: red;
+        .crs-manual-mode .prj-row {
+            display: flex;
+            gap: 6px;
+            align-items: center;
         }
-        .success {
-            color: green;
+        .crs-manual-mode .prj-row input[type="text"] {
+            flex: 1;
         }
+        .crs-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            max-height: 300px;
+            overflow-y: auto;
+            background: #fff;
+            border: 1px solid #ccc;
+            border-top: none;
+            border-radius: 0 0 3px 3px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+            z-index: 1000;
+            display: none;
+        }
+        .crs-dropdown-item {
+            padding: 6px 10px;
+            cursor: pointer;
+            font-size: 0.9em;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .crs-dropdown-item:hover,
+        .crs-dropdown-item.active {
+            background: #e8f0fe;
+        }
+        .crs-dropdown-item .crs-code {
+            font-weight: bold;
+            margin-right: 8px;
+        }
+        .crs-dropdown-item .crs-name {
+            color: #555;
+        }
+        .crs-dropdown-item .crs-deprecated {
+            color: #999;
+            font-style: italic;
+            font-size: 0.85em;
+            margin-left: 6px;
+        }
+        .crs-meta-panel {
+            margin-top: 4px;
+            padding: 6px 8px;
+            background: #f9f9f9;
+            border-radius: 3px;
+            font-size: 0.8em;
+            color: #555;
+            display: none;
+            max-height: 80px;
+            overflow-y: auto;
+        }
+        .crs-meta-panel.visible { display: block; }
+        .crs-meta-panel .meta-row { margin: 1px 0; }
+        .crs-meta-panel .meta-label { font-weight: bold; margin-right: 4px; }
+        .crs-meta-panel .meta-deprecated { color: #c00; font-weight: bold; }
+        .crs-meta-panel .meta-dialect { color: #4a90d9; font-style: italic; }
     </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/editor/editor.main.min.css">
     <script type="importmap">
     {
         "imports": {
             "cherry-cljs/cljs.core.js": "https://cdn.jsdelivr.net/npm/cherry-cljs@0.5.33/lib/cljs.core.js",
             "cherry-cljs/lib/clojure.string.js": "https://cdn.jsdelivr.net/npm/cherry-cljs@0.5.33/lib/clojure.string.js",
             "resource-tracker": "https://cdn.jsdelivr.net/npm/resource-tracker@0.0.1-alpha1/resource.mjs",
-            "proj-wasm": "https://cdn.jsdelivr.net/npm/proj-wasm@0.1.0-alpha4/dist/proj.mjs"
+            "proj-wasm": "https://cdn.jsdelivr.net/npm/proj-wasm@0.1.0-alpha5/dist/proj.mjs"
         }
     }
     </script>
 </head>
 <body>
-    <h1>PROJ WASM Simple Demo</h1>
-    
-    <div class="section" style="background-color: #f0f8ff;">
-        <h2>About This Demo</h2>
-        <p>
-            This is a browser-based demonstration of <a href="https://github.com/willcohen/clj-proj" target="_blank">clj-proj</a>, 
-            a Clojure/ClojureScript library that provides bindings to <a href="https://proj.org/" target="_blank">PROJ</a> 
-            (cartographic projections and coordinate transformations library).
-        </p>
-        <p>
-            <strong>Project Links:</strong> 
-            <a href="https://github.com/willcohen/clj-proj" target="_blank">GitHub Repository</a> | 
-            <a href="https://github.com/willcohen/clj-proj#readme" target="_blank">Documentation</a> | 
-            <a href="https://clojars.org/net.willcohen/proj" target="_blank">Clojars</a> | 
-            <a href="https://www.npmjs.com/package/proj-wasm" target="_blank">npm</a>
-        </p>
-        <p>
-            This demo runs PROJ directly in your browser using WebAssembly (WASM). The entire PROJ library, including its 
-            coordinate reference system database, has been compiled to WASM and runs entirely client-side. No server 
-            communication is required for the transformations.
-        </p>
-        <p>
-            <strong>How it's built:</strong>
-        </p>
-        <ul>
-            <li><strong>WebAssembly compilation:</strong> PROJ is compiled to WASM using 
-                <a href="https://emscripten.org/" target="_blank">Emscripten</a> 
-                (see <a href="https://github.com/willcohen/clj-proj/blob/main/bb.edn" target="_blank">build configuration</a>)</li>
-            <li><strong>ClojureScript → JavaScript:</strong> The Clojure code is compiled to JavaScript ES6 modules using 
-                <a href="https://github.com/squint-cljs/cherry" target="_blank">Cherry</a> 
-                (see <a href="https://github.com/willcohen/clj-proj/blob/main/src/cljc/net/willcohen/proj/proj.cljc" target="_blank">main source</a>)</li>
-            <li><strong>Function bindings:</strong> PROJ C function names are automatically extracted from 
-                <a href="https://github.com/willcohen/clj-proj/blob/main/src/cljc/net/willcohen/proj/fndefs.cljc" target="_blank">fndefs.cljc</a> 
-                and exported from WASM (no manual maintenance required)</li>
-            <li><strong>Module bundling:</strong> JavaScript modules are bundled with 
-                <a href="https://esbuild.github.io/" target="_blank">esbuild</a>, with dependencies kept external</li>
-            <li><strong>Memory management:</strong> C-allocated objects are automatically cleaned up using 
-                <a href="https://github.com/willcohen/resource-tracker" target="_blank">resource-tracker</a> for lifecycle management</li>
-            <li><strong>Embedded resources:</strong> The proj.db and proj.ini files are embedded directly in the WASM binary, 
-                eliminating filesystem requirements</li>
-        </ul>
-        <p>
-            See the <a href="https://github.com/willcohen/clj-proj#readme" target="_blank">README</a> for comprehensive documentation, 
-            installation instructions, and usage examples for both Clojure and JavaScript environments.
-        </p>
-    </div>
-    
-    <div class="section">
-        <h2>1. Initialize PROJ</h2>
-        <button id="initBtn">Initialize PROJ</button>
-        <div id="initStatus"></div>
+    <div id="loading-indicator">Loading WASM module...</div>
+    <div id="app-content" class="loading-state">
+
+        <div class="section about-section">
+            <h1>PROJ in the Browser</h1>
+            <p>A browser-based interface to <a href="https://proj.org/">PROJ</a>
+               <span id="proj-version"></span>, the cartographic projections and coordinate transformations library,
+               powered by <a href="https://github.com/willcohen/clj-proj">clj-proj</a>.
+               This demo runs the browser build; the same library also targets
+               Node.js and the JVM (native FFI on macOS/Linux/Windows via
+               <a href="https://github.com/cnuernber/dtype-next">dtype-next</a>,
+               or <a href="https://www.graalvm.org/latest/reference-manual/wasm/">GraalWasm</a> fallback on any platform).</p>
+            <p>
+                <a href="https://github.com/willcohen/clj-proj">GitHub</a> |
+                <a href="https://github.com/willcohen/clj-proj#readme">Documentation</a> |
+                <a href="https://clojars.org/net.willcohen/proj">Clojars</a> |
+                <a href="https://www.npmjs.com/package/proj-wasm">npm</a>
+            </p>
+            <details>
+                <summary>How it works</summary>
+                <p>PROJ runs directly in your browser using WebAssembly. The entire library, including its
+                   CRS database, runs client-side with no server communication required.</p>
+                <p style="font-size: 0.9em; margin: 6px 0;"><strong>Build:</strong></p>
+                <ul style="font-size: 0.9em; margin: 6px 0; padding-left: 20px;">
+                    <li>PROJ is compiled to WASM using <a href="https://emscripten.org/">Emscripten</a></li>
+                    <li>Clojure source is compiled to ES6 modules using <a href="https://github.com/squint-cljs/cherry">Cherry</a></li>
+                    <li>PROJ C function bindings are automatically extracted from <code>fndefs.cljc</code> and exported from WASM</li>
+                    <li>Modules are bundled with <a href="https://esbuild.github.io/">esbuild</a></li>
+                </ul>
+                <p style="font-size: 0.9em; margin: 6px 0;"><strong>Runtime:</strong></p>
+                <ul style="font-size: 0.9em; margin: 6px 0; padding-left: 20px;">
+                    <li>PROJ runs in Web Workers, keeping the main thread responsive</li>
+                    <li>With Cross-Origin Isolation (COOP/COEP headers), workers use the pthreads WASM build with SharedArrayBuffer; without it, workers fall back to a single-threaded WASM build</li>
+                    <li>Each PROJ context is pinned to a specific worker; the pool uses round-robin assignment</li>
+                    <li>The <code>proj.db</code> and <code>proj.ini</code> files are fetched at startup and written to Emscripten's virtual filesystem in each worker</li>
+                    <li>Grid shift files (NADCON, NTv2, etc.) are fetched on demand from <a href="https://cdn.proj.org/">cdn.proj.org</a> when a transformation requires them</li>
+                    <li>C-allocated objects are cleaned up using <a href="https://www.npmjs.com/package/resource-tracker">resource-tracker</a></li>
+                </ul>
+            </details>
+            <div class="mode-info">
+                Mode: <span id="mode-badge">...</span>
+                | Workers: <span id="worker-count">...</span>
+                | COI: <span id="coi-status">...</span>
+                <a href="#" id="coi-toggle">toggle</a>
+                | <a href="#" id="btn-reset-defaults">Reset to Defaults</a>
+            </div>
+        </div>
+
+        <div class="section" id="transform-section">
+            <h2>Coordinate Transformation</h2>
+            <div class="transform-grid">
+                <div class="transform-column">
+                    <label>Source CRS</label>
+                    <div id="source-crs-selector"></div>
+                    <input type="file" id="file-input-prj-source" accept=".prj" style="display:none">
+                    <div class="epoch-group">
+                        <input type="checkbox" id="source-epoch-enable">
+                        <span title="For dynamic datums like ITRF2014/ITRF2020. Specifies when coordinates were observed, enabling plate motion corrections.">Epoch:</span>
+                        <input type="number" id="source-epoch" step="0.1" placeholder="e.g. 2024.0" disabled>
+                    </div>
+                    <label>Input Coordinates</label>
+                    <textarea id="source-coordinates" rows="8" placeholder="lat lon (one pair per line)&#10;42.3603 -71.0591&#10;42.3554 -71.0655">42.3603 -71.0591</textarea>
+                    <div style="margin-top: 6px;">
+                        <input type="file" id="file-input-coords" accept=".txt,.tsv" style="display:none">
+                        <button id="btn-load-coords" style="font-size: 12px;">Load Coords</button>
+                    </div>
+                </div>
+                <div class="transform-column">
+                    <label>Target CRS</label>
+                    <div id="target-crs-selector"></div>
+                    <input type="file" id="file-input-prj-target" accept=".prj" style="display:none">
+                    <div class="epoch-group">
+                        <input type="checkbox" id="target-epoch-enable">
+                        <span title="For dynamic datums like ITRF2014/ITRF2020. Specifies when coordinates were observed, enabling plate motion corrections.">Epoch:</span>
+                        <input type="number" id="target-epoch" step="0.1" placeholder="e.g. 2024.0" disabled>
+                    </div>
+                    <label>Decimal Places
+                        <input type="number" id="decimal-places" value="4" min="0" max="15" style="width: 60px; margin-left: 8px;">
+                    </label>
+                    <label>Output Coordinates</label>
+                    <textarea id="target-coordinates" rows="8" readonly placeholder="Results appear here"></textarea>
+                    <div style="margin-top: 6px;">
+                        <button id="btn-copy-output" class="inline-copy">Copy Output</button>
+                    </div>
+                </div>
+            </div>
+            <div class="controls-row">
+                <label><input type="checkbox" id="promote-3d"> Promote to 3D</label>
+                <label><input type="checkbox" id="use-network" checked> Use Network</label>
+                <button id="btn-transform"><strong>Transform</strong></button>
+            </div>
+            <div class="summary-row">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <label>Operation Summary</label>
+                    <button id="btn-copy-summary" class="inline-copy">Copy</button>
+                </div>
+                <textarea id="transformation-summary" rows="4" readonly placeholder="Operation details appear after transform"></textarea>
+            </div>
+        </div>
+
+        <div class="section" id="crsinfo-section">
+            <h2>CRS Information</h2>
+            <div id="crs-info-selector"></div>
+            <div style="margin-top: 6px;">
+                <button id="btn-lookup-crs">Look Up</button>
+            </div>
+            <div id="crs-error" class="error" style="margin-top: 8px;"></div>
+            <div id="crs-results" style="display: none;">
+                <div class="crs-meta">
+                    <strong>Name:</strong> <span id="crs-name"></span>
+                    <strong>Type:</strong> <span id="crs-type"></span>
+                    <strong>Authority:</strong> <span id="crs-authority"></span>
+                </div>
+                <div id="crs-scope-remarks" class="crs-meta" style="display: none;">
+                    <strong>Scope:</strong> <span id="crs-scope"></span><br>
+                    <strong>Remarks:</strong> <span id="crs-remarks"></span>
+                </div>
+                <div id="crs-enhanced-meta" class="crs-meta" style="display: none;"></div>
+                <div class="crs-output-panel">
+                    <div class="panel-header">
+                        <strong>WKT2:2019</strong>
+                        <button class="inline-copy" onclick="copyToClipboard('crs-wkt', this)">Copy</button>
+                    </div>
+                    <textarea id="crs-wkt" rows="8" readonly></textarea>
+                </div>
+                <div class="crs-output-panel">
+                    <div class="panel-header">
+                        <strong>PROJJSON</strong>
+                        <button class="inline-copy" onclick="copyToClipboard('crs-projjson', this)">Copy</button>
+                    </div>
+                    <textarea id="crs-projjson" rows="8" readonly></textarea>
+                </div>
+                <div class="crs-output-panel">
+                    <div class="panel-header">
+                        <strong>PROJ String</strong>
+                        <button class="inline-copy" onclick="copyToClipboard('crs-projstr', this)">Copy</button>
+                    </div>
+                    <textarea id="crs-projstr" rows="3" readonly></textarea>
+                </div>
+            </div>
+        </div>
+
+        <div class="section" id="console-section">
+            <h2>Interactive Console</h2>
+            <div class="button-row">
+                <select id="exampleSelect" disabled>
+                    <option value="">Load Example...</option>
+                    <option value="basic-transform">Basic Transform</option>
+                    <option value="batch-transform">Batch Transform</option>
+                    <option value="crs-info">CRS Information</option>
+                    <option value="network-grids">Network &amp; Grid Files</option>
+                    <option value="promote-3d">Promote to 3D</option>
+                    <option value="epochs">Dynamic Datums &amp; Epochs</option>
+                    <option value="compound-crs">Compound CRS</option>
+                    <option value="authorities">Database Queries</option>
+                    <option value="operation-info">Operation Details</option>
+                    <option value="error-handling">Error Handling</option>
+                    <option value="naming-conventions">Naming Conventions</option>
+                    <option value="crs-catalog">CRS Catalog</option>
+                    <option value="benchmark">Benchmark</option>
+                </select>
+                <button id="btn-run" disabled>Run (Ctrl+Enter)</button>
+                <button id="btn-clear" disabled>Clear Output</button>
+            </div>
+            <div id="editor-container" style="height: 300px; border: 1px solid #ddd; margin-top: 10px;"></div>
+            <div id="replOutput"></div>
+        </div>
+
     </div>
 
-    <div class="section">
-        <h2>2. Create Transform</h2>
-        <label>Source CRS: <input id="sourceCRS" value="EPSG:4326" placeholder="e.g. EPSG:4326"></label><br>
-        <label>Target CRS: <input id="targetCRS" value="EPSG:2249" placeholder="e.g. EPSG:2249"></label><br>
-        <button id="createTransformBtn">Create Transform</button>
-        <div id="transformStatus"></div>
-    </div>
-
-    <div class="section">
-        <h2>3. Transform Coordinates</h2>
-        <label>Longitude: <input id="lon" type="number" value="-71.0579667" step="0.001"></label><br>
-        <label>Latitude: <input id="lat" type="number" value="42.3603222" step="0.001"></label><br>
-        <button id="transformBtn">Transform</button>
-        <div id="coordResults"></div>
-    </div>
-
-    <div class="section">
-        <h2>4. Get Transform Info</h2>
-        <button id="getWktBtn">Get WKT</button>
-        <button id="getProjJsonBtn">Get PROJJSON</button>
-        <button id="getAuthoritiesBtn">Get Authorities</button>
-        <div id="infoResults"></div>
-    </div>
-
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
     <script type="module">
         import * as proj from 'proj-wasm';
-        
+
+        window.proj = proj;
+
         let context = null;
-        let transformer = null;
-        
-        // Initialize PROJ
-        document.getElementById('initBtn').addEventListener('click', async () => {
-            const status = document.getElementById('initStatus');
+        let monacoEditor = null;
+        let crsCatalog = [];
+
+        // --- Examples ---
+        const examples = {
+            'basic-transform': `// Basic coordinate transformation: WGS84 to Web Mercator
+const ctx = await proj.contextCreate();
+const transformer = await proj.projCreateCrsToCrs({
+    context: ctx, source_crs: "EPSG:4326", target_crs: "EPSG:3857"
+});
+
+const coords = await proj.coordArray(1);
+await proj.setCoords(coords, [[42.3603, -71.0591, 0, 0]]);
+
+await proj.projTransArray({
+    p: transformer, direction: proj.PJ_FWD, n: 1, coord: coords
+});
+
+const result = await proj.getCoords(coords, 0);
+console.log("Input:  42.3603 N, 71.0580 W (Boston City Hall, WGS84)");
+console.log("Output:", result[0].toFixed(2), result[1].toFixed(2), "(Web Mercator, meters)");`,
+
+            'batch-transform': `// Batch transform: multiple coordinates at once
+const ctx = await proj.contextCreate();
+const t = await proj.projCreateCrsToCrs({
+    context: ctx, source_crs: "EPSG:4326", target_crs: "EPSG:2249"
+});
+
+const points = [
+    [42.3603, -71.0591, 0, 0],  // Boston City Hall
+    [42.3551, -71.0659, 0, 0],  // Boston Common
+    [42.3744, -71.1178, 0, 0],  // Harvard Yard
+];
+
+const coords = await proj.coordArray(points.length);
+await proj.setCoords(coords, points);
+await proj.projTransArray({ p: t, direction: proj.PJ_FWD, n: points.length, coord: coords });
+
+for (let i = 0; i < points.length; i++) {
+    const c = await proj.getCoords(coords, i);
+    console.log(\`Point \${i+1}: X=\${c[0].toFixed(2)} ft, Y=\${c[1].toFixed(2)} ft\`);
+}
+console.log("(MA State Plane, US feet)");`,
+
+            'crs-info': `// Get detailed CRS information
+const ctx = await proj.contextCreate();
+const crs = await proj.projCreateFromDatabase({
+    context: ctx, auth_name: "EPSG", code: "4326", category: proj.PJ_CATEGORY_CRS
+});
+
+const name = await proj.projGetName({ obj: crs });
+const type = await proj.projGetType({ obj: crs });
+const auth = await proj.projGetIdAuthName({ obj: crs, index: 0 });
+const code = await proj.projGetIdCode({ obj: crs, index: 0 });
+const remarks = await proj.projGetRemarks({ obj: crs });
+
+console.log("Name:", name);
+console.log("Type:", type);
+console.log("Authority:", auth + ":" + code);
+console.log("Remarks:", remarks);
+
+const wkt = await proj.projAsWkt({ context: ctx, pj: crs, type: proj.PJ_WKT2_2019, options: null });
+console.log("\\nWKT2:2019:\\n" + wkt);`,
+
+            'network-grids': `// Network grid fetching: NAD27 -> NAD83 (requires NADCON grid)
+const ctxOff = await proj.contextCreate({ network: false });
+await proj.projContextSetEnableNetwork({ context: ctxOff, enabled: 0 });
+
+const ctxOn = await proj.contextCreate();
+
+const coords1 = await proj.coordArray(1);
+const coords2 = await proj.coordArray(1);
+await proj.setCoords(coords1, [[42.36, -71.06, 0, 0]]);
+await proj.setCoords(coords2, [[42.36, -71.06, 0, 0]]);
+
+const tOff = await proj.projCreateCrsToCrs({
+    context: ctxOff, source_crs: "EPSG:4267", target_crs: "EPSG:26986"
+});
+const tOn = await proj.projCreateCrsToCrs({
+    context: ctxOn, source_crs: "EPSG:4267", target_crs: "EPSG:26986"
+});
+
+await proj.projTransArray({ p: tOff, direction: proj.PJ_FWD, n: 1, coord: coords1 });
+await proj.projTransArray({ p: tOn, direction: proj.PJ_FWD, n: 1, coord: coords2 });
+
+const rOff = await proj.getCoords(coords1, 0);
+const rOn = await proj.getCoords(coords2, 0);
+
+console.log("NAD27 -> NAD83 MA State Plane (meters)");
+console.log("Without grid:", rOff[0].toFixed(4), rOff[1].toFixed(4));
+console.log("With grid:   ", rOn[0].toFixed(4), rOn[1].toFixed(4));
+console.log("Difference:  ", Math.abs(rOn[0]-rOff[0]).toFixed(4), "m,", Math.abs(rOn[1]-rOff[1]).toFixed(4), "m");`,
+
+            'promote-3d': `// Promote to 3D: ellipsoid height shift across datums
+// WGS84 -> Swiss CH1903+ differ by ~51m in ellipsoidal height
+// Without 3D, the height difference is lost
+const ctx = await proj.contextCreate();
+const pt = [46.95, 7.45, 500, 0]; // Bern, 500m above WGS84 ellipsoid
+
+// --- 2D: height passes through unchanged ---
+const t2d = await proj.projCreateCrsToCrs({
+    context: ctx, source_crs: "EPSG:4326", target_crs: "EPSG:4150"
+});
+const c2d = await proj.coordArray(1);
+await proj.setCoords(c2d, [pt]);
+await proj.projTransArray({ p: t2d, direction: proj.PJ_FWD, n: 1, coord: c2d });
+const r2d = await proj.getCoords(c2d, 0);
+console.log("2D (no height transform):");
+console.log("  lat=" + r2d[0].toFixed(7) + " lon=" + r2d[1].toFixed(7) + " Z=" + r2d[2].toFixed(2));
+
+// --- 3D: ellipsoidal height is transformed ---
+let src3d = await proj.projCreateFromDatabase({
+    context: ctx, auth_name: "EPSG", code: "4326", category: proj.PJ_CATEGORY_CRS
+});
+let tgt3d = await proj.projCreateFromDatabase({
+    context: ctx, auth_name: "EPSG", code: "4150", category: proj.PJ_CATEGORY_CRS
+});
+src3d = await proj.projCrsPromoteTo3D({ context: ctx, crs_3D_name: "", crs_2D: src3d });
+tgt3d = await proj.projCrsPromoteTo3D({ context: ctx, crs_3D_name: "", crs_2D: tgt3d });
+
+const t3d = await proj.projCreateCrsToCrsFromPj({
+    context: ctx, source_crs: src3d, target_crs: tgt3d
+});
+const c3d = await proj.coordArray(1);
+await proj.setCoords(c3d, [pt]);
+await proj.projTransArray({ p: t3d, direction: proj.PJ_FWD, n: 1, coord: c3d });
+const r3d = await proj.getCoords(c3d, 0);
+console.log("\\n3D (height transformed):");
+console.log("  lat=" + r3d[0].toFixed(7) + " lon=" + r3d[1].toFixed(7) + " Z=" + r3d[2].toFixed(2));
+console.log("\\nHeight difference: " + (r3d[2] - r2d[2]).toFixed(2) + "m (Bessel vs WGS84 ellipsoid)");`,
+
+            'epochs': `// Plate motion over time: ITRF2014@epoch -> NAD83(2011)
+// North American plate moves ~2.5 cm/year relative to ITRF
+const ctx = await proj.contextCreate();
+
+const baseCrs = await proj.projCreateFromDatabase({
+    context: ctx, auth_name: "EPSG", code: "9000", category: proj.PJ_CATEGORY_CRS
+});
+
+const tgtCrs = await proj.projCreateFromDatabase({
+    context: ctx, auth_name: "EPSG", code: "6318", category: proj.PJ_CATEGORY_CRS
+});
+console.log("ITRF2014 -> NAD83(2011) at different epochs:\\n");
+
+for (const year of [2010, 2015, 2020, 2025, 2030]) {
+    let srcCrs = await proj.projCoordinateMetadataCreate({
+        context: ctx, crs: baseCrs, epoch: year
+    });
+    const transformer = await proj.projCreateCrsToCrsFromPj({
+        context: ctx, source_crs: srcCrs, target_crs: tgtCrs
+    });
+    const coords = await proj.coordArray(1);
+    await proj.setCoords(coords, [[42.3603, -71.0591, 0, 0]]);
+    await proj.projTransArray({
+        p: transformer, direction: proj.PJ_FWD, n: 1, coord: coords
+    });
+    const r = await proj.getCoords(coords, 0);
+    console.log("@" + year + ": lat=" + r[0].toFixed(7) + " lon=" + r[1].toFixed(7));
+}`,
+
+            'compound-crs': `// Compound CRS: horizontal + vertical
+const ctx = await proj.contextCreate();
+
+// EPSG:4326 (WGS84 2D) + EPSG:5773 (EGM96 geoid height)
+const transformer = await proj.projCreateCrsToCrs({
+    context: ctx,
+    source_crs: "EPSG:4326+EPSG:5773",
+    target_crs: "EPSG:4979"   // WGS84 3D (ellipsoidal height)
+});
+console.log("Compound CRS transformer created");
+console.log("EPSG:4326+EPSG:5773 -> EPSG:4979");
+
+const coords = await proj.coordArray(1);
+await proj.setCoords(coords, [[42.36, -71.06, 50, 0]]); // 50m geoid height
+await proj.projTransArray({ p: transformer, direction: proj.PJ_FWD, n: 1, coord: coords });
+const r = await proj.getCoords(coords, 0);
+console.log("Input:  lat=42.36, lon=-71.06, geoid_height=50m");
+console.log("Output: lat=" + r[0].toFixed(6) + ", lon=" + r[1].toFixed(6) + ", ellipsoid_height=" + r[2].toFixed(2) + "m");`,
+
+            'authorities': `// Query the PROJ database
+const ctx = await proj.contextCreate();
+
+const authorities = await proj.projGetAuthoritiesFromDatabase({ context: ctx });
+console.log("Available authorities:", authorities.join(", "));
+
+const epsgCodes = await proj.projGetCodesFromDatabase({ context: ctx, auth_name: "EPSG" });
+console.log("EPSG codes count:", epsgCodes.length);
+console.log("First 10:", epsgCodes.slice(0, 10).join(", "));
+console.log("Includes 4326:", epsgCodes.includes("4326"));
+console.log("Includes 3857:", epsgCodes.includes("3857"));`,
+
+            'operation-info': `// Get transformation operation details
+const ctx = await proj.contextCreate();
+const t = await proj.projCreateCrsToCrs({
+    context: ctx, source_crs: "EPSG:4326", target_crs: "EPSG:3857"
+});
+
+// The transformer is a CoordinateOperation -- query it directly
+const name = await proj.projGetName({ obj: t });
+const projStr = await proj.projAsProjString({
+    context: ctx, pj: t, type: proj.PJ_PROJ_5, options: null
+});
+const wkt = await proj.projAsWkt({
+    context: ctx, pj: t, type: proj.PJ_WKT2_2019, options: null
+});
+
+console.log("Operation:", name);
+console.log("\\nPROJ string:\\n" + projStr);
+console.log("\\nWKT2:2019:\\n" + wkt);`,
+
+            'error-handling': `// Error handling patterns
+const ctx = await proj.contextCreate();
+
+// 1. Invalid CRS
+try {
+    await proj.projCreateCrsToCrs({
+        context: ctx, source_crs: "INVALID:999", target_crs: "EPSG:4326"
+    });
+} catch (e) {
+    console.log("Invalid CRS error:", e.message);
+}
+
+// 2. Check error state
+const errno = await proj.projContextErrno({ context: ctx });
+console.log("Last error code:", errno);
+
+// 3. Valid operation still works after error
+const t = await proj.projCreateCrsToCrs({
+    context: ctx, source_crs: "EPSG:4326", target_crs: "EPSG:3857"
+});
+console.log("Valid transformer created after error: OK");
+
+// 4. Check if CRS is valid
+const crs = await proj.projCreateFromDatabase({
+    context: ctx, auth_name: "EPSG", code: "4326", category: proj.PJ_CATEGORY_CRS
+});
+const isCrs = await proj.projIsCrs({ obj: crs });
+console.log("Is CRS:", isCrs);`,
+
+            'naming-conventions': `// clj-proj exports every function in both camelCase and snake_case.
+// Choose whichever convention fits your project.
+
+// --- camelCase (idiomatic JavaScript) ---
+const ctx1 = await proj.contextCreate();
+const t1 = await proj.projCreateCrsToCrs({
+    context: ctx1, source_crs: "EPSG:4326", target_crs: "EPSG:3857"
+});
+const c1 = await proj.coordArray(1);
+await proj.setCoords(c1, [[42.3603, -71.0591, 0, 0]]);
+await proj.projTransArray({ p: t1, direction: proj.PJ_FWD, n: 1, coord: c1 });
+const r1 = await proj.getCoords(c1, 0);
+console.log("camelCase:", r1[0].toFixed(2), r1[1].toFixed(2));
+
+// --- snake_case (mirrors the PROJ C API) ---
+const ctx2 = await proj.context_create();
+const t2 = await proj.proj_create_crs_to_crs({
+    context: ctx2, source_crs: "EPSG:4326", target_crs: "EPSG:3857"
+});
+const c2 = await proj.coord_array(1);
+await proj.setCoords(c2, [[42.3603, -71.0591, 0, 0]]);
+await proj.proj_trans_array({ p: t2, direction: proj.PJ_FWD, n: 1, coord: c2 });
+const r2 = await proj.get_coord_array(c2, 0);
+console.log("snake_case:", r2[0].toFixed(2), r2[1].toFixed(2));
+
+console.log("\\nBoth styles produce identical results.");`,
+
+            'crs-catalog': `// Browse the full CRS catalog from PROJ's database
+const ctx = await proj.contextCreate();
+const all = await proj.getCrsInfoListFromDatabase({ context: ctx });
+console.log("Total CRS entries:", all.length);
+
+const epsg = all.filter(e => e.auth_name === "EPSG");
+console.log("EPSG entries:", epsg.length);
+
+// Find a specific CRS
+const wgs84 = all.find(e => e.auth_name === "EPSG" && e.code === "4326");
+console.log("\\nEPSG:4326 details:");
+console.log("  Name:", wgs84.name);
+console.log("  Type:", wgs84.type);
+console.log("  Deprecated:", wgs84.deprecated);
+console.log("  Bounds:", wgs84.west_lon_degree, "to", wgs84.east_lon_degree, "lon");
+console.log("  Area:", wgs84.area_name);
+
+// Search by name
+const utm = all.filter(e => e.name.includes("UTM zone 18N"));
+console.log("\\nCRS containing 'UTM zone 18N':", utm.length);
+utm.slice(0, 5).forEach(e =>
+    console.log(" ", e.auth_name + ":" + e.code, "-", e.name)
+);`,
+            'benchmark': `// Multi-worker benchmark: sweeps worker counts, measures transforms + CRS creation
+const TASKS = 16;
+const COORDS_PER_TASK = 10000;
+const CRS_OPS = 20;
+const max = navigator.hardwareConcurrency || 4;
+const counts = [...new Set([1, 2, max].filter(n => n <= max))];
+
+function randomCoords(n) {
+    const coords = [];
+    for (let i = 0; i < n; i++) {
+        coords.push([25 + Math.random() * 24, -125 + Math.random() * 57, 0, 0]);
+    }
+    return coords;
+}
+
+console.log(TASKS + " tasks x " + COORDS_PER_TASK + " coords = " + (TASKS * COORDS_PER_TASK).toLocaleString() + " total");
+console.log(CRS_OPS + " concurrent CRS creation ops");
+console.log("Worker counts to test: " + counts.join(", "));
+console.log("");
+
+const tResults = [];
+const cResults = [];
+
+for (const wc of counts) {
+    const shutdownFn = proj.shutdown || proj.shutdown_BANG_;
+    if (shutdownFn) await shutdownFn();
+    await proj.init(null, { workers: wc });
+
+    const mode = proj.getWorkerMode ? proj.getWorkerMode() : '?';
+    console.log(wc + " worker(s) [" + mode + "]");
+
+    // --- Transforms ---
+    const tasks = [];
+    for (let i = 0; i < TASKS; i++) {
+        const ctx = await proj.contextCreate({ network: false });
+        const t = await proj.projCreateCrsToCrs({
+            source_crs: "EPSG:4326", target_crs: "EPSG:3857", context: ctx
+        });
+        const ca = await proj.coordArray(COORDS_PER_TASK, 4, t);
+        await proj.setCoords(ca, randomCoords(COORDS_PER_TASK));
+        tasks.push({ transformer: t, coordArray: ca });
+    }
+
+    const t0 = performance.now();
+    await Promise.all(tasks.map(t =>
+        proj.projTransArray({
+            p: t.transformer, direction: proj.PJ_FWD || 1,
+            n: COORDS_PER_TASK, coord: t.coordArray
+        })
+    ));
+    const tElapsed = performance.now() - t0;
+    const total = TASKS * COORDS_PER_TASK;
+    const usPerCoord = tElapsed / total * 1000;
+
+    const c0 = await proj.getCoords(tasks[0].coordArray, 0);
+    const ok = Math.abs(c0[0]) > 1000 && Math.abs(c0[1]) > 1000;
+
+    tResults.push({ workers: wc, elapsed: tElapsed, usPerCoord, ok });
+    console.log("  transforms: " + tElapsed.toFixed(1) + "ms | " + usPerCoord.toFixed(2) + " us/coord | " + Math.round(total / tElapsed * 1000).toLocaleString() + " coords/sec" + (ok ? "" : " [SPOT CHECK FAILED]"));
+
+    // --- CRS Creation ---
+    const contexts = [];
+    for (let i = 0; i < CRS_OPS; i++) {
+        contexts.push(await proj.contextCreate({ network: false }));
+    }
+
+    const c1 = performance.now();
+    const transformers = await Promise.all(contexts.map(ctx =>
+        proj.projCreateCrsToCrs({
+            source_crs: "EPSG:4326", target_crs: "EPSG:3857", context: ctx
+        })
+    ));
+    const cElapsed = performance.now() - c1;
+    const allValid = transformers.every(t => !!t);
+
+    cResults.push({ workers: wc, elapsed: cElapsed, msPerOp: cElapsed / CRS_OPS, allValid });
+    console.log("  CRS create: " + cElapsed.toFixed(1) + "ms | " + (cElapsed / CRS_OPS).toFixed(1) + " ms/op" + (allValid ? "" : " [VALIDATION FAILED]"));
+}
+
+if (tResults.length > 1) {
+    const tBase = tResults[0].elapsed;
+    const cBase = cResults[0].elapsed;
+    console.log("\\nSpeedup vs 1 worker:");
+    for (let i = 0; i < tResults.length; i++) {
+        console.log("  " + tResults[i].workers + " worker(s): transforms " + (tBase / tResults[i].elapsed).toFixed(2) + "x, CRS " + (cBase / cResults[i].elapsed).toFixed(2) + "x");
+    }
+}
+
+// Restore max workers and update UI
+const shutdownFn2 = proj.shutdown || proj.shutdown_BANG_;
+if (shutdownFn2) await shutdownFn2();
+await proj.init(null, { workers: max });
+context = await proj.contextCreate();
+window.context = context;
+const finalMode = proj.getWorkerMode ? proj.getWorkerMode() : 'unknown';
+document.getElementById('mode-badge').textContent = finalMode;
+document.getElementById('mode-badge').className = finalMode === 'pthreads' ? 'badge-pthreads' : 'badge-single-threaded';
+document.getElementById('worker-count').textContent = proj.getWorkerCount ? proj.getWorkerCount() : '?';
+console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
+        };
+
+        // --- Init ---
+        async function initApp() {
+            const loader = document.getElementById('loading-indicator');
+            const content = document.getElementById('app-content');
+
             try {
                 await proj.init();
-                context = proj.context_create();
-                status.innerHTML = '<span class="success">✓ PROJ initialized successfully</span>';
-                console.log('PROJ initialized');
-            } catch (error) {
-                status.innerHTML = `<span class="error">✗ Error: ${error.message}</span>`;
-                console.error('Init error:', error);
-            }
-        });
-        
-        // Create transform
-        document.getElementById('createTransformBtn').addEventListener('click', () => {
-            const status = document.getElementById('transformStatus');
-            const sourceCRS = document.getElementById('sourceCRS').value;
-            const targetCRS = document.getElementById('targetCRS').value;
-            
-            if (!context) {
-                status.innerHTML = '<span class="error">Please initialize PROJ first</span>';
-                return;
-            }
-            
-            try {
-                // Clean up previous transformer
-                if (transformer) {
-                    proj.proj_destroy({ pj: transformer });
+                context = await proj.contextCreate();
+                window.context = context;
+
+                updateModeInfo();
+                displayVersion();
+                loadFromURLParams();
+
+                loader.style.display = 'none';
+                content.classList.remove('loading-state');
+
+                setupTransformSection();
+                setupCrsInfoSection();
+                setupConsole();
+
+                try {
+                    crsCatalog = await proj.getCrsInfoListFromDatabase({ context });
+                    createCrsSelector('source-crs-selector', {
+                        showPrjButton: true,
+                        fileInputId: 'file-input-prj-source',
+                        onValueChange: () => updateURLParams()
+                    });
+                    createCrsSelector('target-crs-selector', {
+                        showPrjButton: true,
+                        fileInputId: 'file-input-prj-target',
+                        onValueChange: () => updateURLParams()
+                    });
+                    createCrsSelector('crs-info-selector', {});
+                    restoreSelectorsFromURL();
+                } catch (e) {
+                    console.warn('CRS catalog load failed:', e.message);
                 }
-                
-                transformer = proj.proj_create_crs_to_crs({
-                    source_crs: sourceCRS,
-                    target_crs: targetCRS,
-                    context: context
-                });
-                
-                status.innerHTML = `<span class="success">✓ Transform created: ${sourceCRS} → ${targetCRS}</span>`;
-                console.log('Transform created:', transformer);
-            } catch (error) {
-                status.innerHTML = `<span class="error">✗ Error: ${error.message}</span>`;
-                console.error('Transform error:', error);
+            } catch (e) {
+                loader.textContent = 'Error: ' + e.message;
             }
+        }
+
+        // --- Version ---
+        function displayVersion() {
+            const major = proj.PROJ_VERSION_MAJOR;
+            const minor = proj.PROJ_VERSION_MINOR;
+            const patch = proj.PROJ_VERSION_PATCH;
+            if (major !== undefined) {
+                document.getElementById('proj-version').textContent = `v${major}.${minor}.${patch}`;
+            }
+        }
+
+        // --- Mode / COI ---
+        function updateModeInfo() {
+            document.getElementById('coi-status').textContent = self.crossOriginIsolated ? 'true' : 'false';
+            const mode = proj.getWorkerMode ? proj.getWorkerMode() : 'unknown';
+            const badge = document.getElementById('mode-badge');
+            badge.textContent = mode;
+            badge.className = mode === 'pthreads' ? 'badge-pthreads' : 'badge-single-threaded';
+            const count = proj.getWorkerCount ? proj.getWorkerCount() : '?';
+            document.getElementById('worker-count').textContent = count;
+        }
+
+        document.getElementById('coi-toggle').addEventListener('click', async (e) => {
+            e.preventDefault();
+            const isDisabled = localStorage.getItem('coi-disabled') === 'true';
+            if (isDisabled) {
+                localStorage.removeItem('coi-disabled');
+                alert('COOP/COEP will be ENABLED on reload (pthreads mode).');
+            } else {
+                localStorage.setItem('coi-disabled', 'true');
+                const regs = await navigator.serviceWorker.getRegistrations();
+                for (const reg of regs) await reg.unregister();
+                alert('COOP/COEP will be DISABLED on reload (single-threaded mode).');
+            }
+            location.reload();
         });
-        
-        // Transform coordinates
-        document.getElementById('transformBtn').addEventListener('click', () => {
-            const results = document.getElementById('coordResults');
-            
-            if (!transformer) {
-                results.innerHTML = '<span class="error">Please create a transform first</span>';
+
+        document.getElementById('btn-reset-defaults').addEventListener('click', (e) => {
+            e.preventDefault();
+            for (const sel of Object.values(crsSelectors)) sel.setValue('');
+            const srcSel = crsSelectors['source-crs-selector'];
+            const tgtSel = crsSelectors['target-crs-selector'];
+            if (srcSel) srcSel.setValue('EPSG:4326');
+            if (tgtSel) tgtSel.setValue('EPSG:2249');
+            document.getElementById('source-coordinates').value = '42.3603 -71.0591';
+            document.getElementById('target-coordinates').value = '';
+            document.getElementById('transformation-summary').value = '';
+            document.getElementById('promote-3d').checked = false;
+            document.getElementById('use-network').checked = true;
+            document.getElementById('source-epoch-enable').checked = false;
+            document.getElementById('source-epoch').disabled = true;
+            document.getElementById('source-epoch').value = '';
+            document.getElementById('target-epoch-enable').checked = false;
+            document.getElementById('target-epoch').disabled = true;
+            document.getElementById('target-epoch').value = '';
+            document.getElementById('decimal-places').value = '4';
+            document.getElementById('crs-results').style.display = 'none';
+            document.getElementById('crs-error').textContent = '';
+            window.history.replaceState(null, '', window.location.pathname);
+        });
+
+        // --- Transform Section ---
+        function setupTransformSection() {
+            document.getElementById('btn-transform').addEventListener('click', handleTransform);
+            document.getElementById('btn-copy-output').addEventListener('click', function() {
+                copyToClipboard('target-coordinates', this);
+            });
+            document.getElementById('btn-copy-summary').addEventListener('click', function() {
+                copyToClipboard('transformation-summary', this);
+            });
+            document.getElementById('btn-load-coords').addEventListener('click', () => {
+                document.getElementById('file-input-coords').click();
+            });
+            document.getElementById('file-input-coords').addEventListener('change', (e) => {
+                handleFileLoad(e, 'source-coordinates');
+            });
+
+            document.getElementById('file-input-prj-source').addEventListener('change', (e) => {
+                handleFileLoad(e, null, () => {}, (content) => {
+                    const sel = crsSelectors['source-crs-selector'];
+                    if (sel) sel.setValue(content);
+                });
+            });
+            document.getElementById('file-input-prj-target').addEventListener('change', (e) => {
+                handleFileLoad(e, null, () => {}, (content) => {
+                    const sel = crsSelectors['target-crs-selector'];
+                    if (sel) sel.setValue(content);
+                });
+            });
+
+            document.getElementById('source-epoch-enable').addEventListener('change', (e) => {
+                document.getElementById('source-epoch').disabled = !e.target.checked;
+            });
+            document.getElementById('target-epoch-enable').addEventListener('change', (e) => {
+                document.getElementById('target-epoch').disabled = !e.target.checked;
+            });
+        }
+
+        async function handleTransform() {
+            const output = document.getElementById('target-coordinates');
+            output.value = '... computing ...';
+
+            const srcSel = crsSelectors['source-crs-selector'];
+            const tgtSel = crsSelectors['target-crs-selector'];
+            const sourceCrs = srcSel ? srcSel.getValue() : '';
+            const targetCrs = tgtSel ? tgtSel.getValue() : '';
+            const sourceCoords = document.getElementById('source-coordinates').value.trim();
+            if (!sourceCrs || !targetCrs || !sourceCoords) {
+                output.value = 'Please fill in source CRS, target CRS, and coordinates.';
                 return;
             }
-            
+
+            const promote3D = document.getElementById('promote-3d').checked;
+            const useNetwork = document.getElementById('use-network').checked;
+            const srcEpochEnabled = document.getElementById('source-epoch-enable').checked;
+            const tgtEpochEnabled = document.getElementById('target-epoch-enable').checked;
+            const srcEpoch = srcEpochEnabled ? parseFloat(document.getElementById('source-epoch').value) : NaN;
+            const tgtEpoch = tgtEpochEnabled ? parseFloat(document.getElementById('target-epoch').value) : NaN;
+
             try {
-                const lon = parseFloat(document.getElementById('lon').value);
-                const lat = parseFloat(document.getElementById('lat').value);
-                
-                // Create coordinate array
-                const coordArray = proj.coord_array(1);
-                // EPSG:4326 uses lat/lon order, not lon/lat!
-                proj.set_coords_BANG_(coordArray, [[lat, lon, 0, 0]]);
-                
-                // Get malloc pointer
-                const malloc = coordArray.get ? coordArray.get('malloc') : coordArray.malloc;
-                
-                // Transform
-                const PJ_FWD = proj.PJ_FWD || 1;
-                proj.proj_trans_array({
-                    p: transformer,
-                    direction: PJ_FWD,
-                    n: 1,
-                    coord: malloc
+                await proj.projContextSetEnableNetwork({
+                    context, enabled: useNetwork ? 1 : 0
                 });
-                
-                // Get results
-                const array = coordArray.get ? coordArray.get('array') : coordArray.array;
-                const x = array[0];
-                const y = array[1];
-                
-                results.innerHTML = `
-                    <strong>Input (WGS84):</strong> Longitude: ${lon}, Latitude: ${lat}<br>
-                    <strong>Output (${document.getElementById('targetCRS').value}):</strong><br>
-                    &nbsp;&nbsp;X: ${x.toFixed(2)}<br>
-                    &nbsp;&nbsp;Y: ${y.toFixed(2)}<br>
-                    <small style="color: #666;">Note: For EPSG:2249 (MA State Plane), units are in US feet.<br>
-                    Boston City Hall should be approximately X: 775,635 ft, Y: 2,956,640 ft</small>
-                `;
-            } catch (error) {
-                results.innerHTML = `<span class="error">✗ Error: ${error.message}</span>`;
-                console.error('Transform error:', error);
+
+                let transformer;
+                if (!promote3D && isNaN(srcEpoch) && isNaN(tgtEpoch)) {
+                    transformer = await proj.projCreateCrsToCrs({
+                        context, source_crs: sourceCrs, target_crs: targetCrs
+                    });
+                } else {
+                    let srcPj = await parseCrs(sourceCrs);
+                    let tgtPj = await parseCrs(targetCrs);
+
+                    if (promote3D) {
+                        srcPj = await proj.projCrsPromoteTo3D({ context, crs_3D_name: "", crs_2D: srcPj });
+                        tgtPj = await proj.projCrsPromoteTo3D({ context, crs_3D_name: "", crs_2D: tgtPj });
+                    }
+                    if (!isNaN(srcEpoch)) {
+                        srcPj = await proj.projCoordinateMetadataCreate({
+                            context, crs: srcPj, epoch: srcEpoch
+                        });
+                    }
+                    if (!isNaN(tgtEpoch)) {
+                        tgtPj = await proj.projCoordinateMetadataCreate({
+                            context, crs: tgtPj, epoch: tgtEpoch
+                        });
+                    }
+
+                    transformer = await proj.projCreateCrsToCrsFromPj({
+                        context, source_crs: srcPj, target_crs: tgtPj
+                    });
+                }
+
+                const points = parseCoordinates(sourceCoords);
+                const coordArray = await proj.coordArray(points.length);
+                await proj.setCoords(coordArray,
+                    points.map(p => [p[0], p[1], p[2] || 0, p[3] || 0])
+                );
+
+                await proj.projTransArray({
+                    p: transformer, direction: proj.PJ_FWD,
+                    n: points.length, coord: coordArray
+                });
+
+                const dp = parseInt(document.getElementById('decimal-places').value) || 4;
+                const lines = [];
+                for (let i = 0; i < points.length; i++) {
+                    const c = await proj.getCoords(coordArray, i);
+                    lines.push(c.slice(0, Math.max(2, points[i].length))
+                        .map((v, j) => v.toFixed(j < 2 ? dp : 4)).join(' '));
+                }
+                output.value = lines.join('\n');
+
+                await showOperationSummary(transformer);
+            } catch (e) {
+                output.value = 'Error: ' + e.message;
             }
-        });
-        
-        // Get WKT
-        document.getElementById('getWktBtn').addEventListener('click', () => {
-            const results = document.getElementById('infoResults');
-            
-            if (!transformer) {
-                results.innerHTML = '<span class="error">Please create a transform first</span>';
-                return;
-            }
-            
+
+            updateURLParams();
+        }
+
+        function parseCoordinates(text) {
+            return text.split('\n')
+                .filter(l => l.trim())
+                .map(l => {
+                    let parts = l.split(',');
+                    if (parts.length < 2) parts = l.trim().split(/\s+/);
+                    return parts.filter(s => s).map(Number);
+                });
+        }
+
+        async function parseCrs(input) {
+            const t = await proj.projCreateCrsToCrs({
+                context, source_crs: input, target_crs: input
+            });
+            return await proj.projGetSourceCrs({ context, pj: t });
+        }
+
+        async function showOperationSummary(transformer) {
+            const box = document.getElementById('transformation-summary');
             try {
-                const targetCrs = proj.proj_get_target_crs({
-                    context: context,
-                    pj: transformer
+                const name = await proj.projGetName({ obj: transformer });
+                const projStr = await proj.projAsProjString({
+                    context, pj: transformer, type: proj.PJ_PROJ_5, options: null
                 });
-                
-                const wkt = proj.proj_as_wkt({
-                    context: context,
-                    pj: targetCrs,
-                    type: proj.PJ_WKT2_2019 || 2, // PJ_WKT2_2019
-                    options: null
-                });
-                
-                results.innerHTML = `<strong>WKT:</strong><pre>${wkt}</pre>`;
-                
-            } catch (error) {
-                results.innerHTML = `<span class="error">✗ Error: ${error.message}</span>`;
-                console.error('WKT error:', error);
+                box.value = `${name}\n\n${projStr}`;
+            } catch (e) {
+                box.value = 'Error: ' + e.message;
             }
-        });
-        
-        // Get PROJJSON
-        document.getElementById('getProjJsonBtn').addEventListener('click', () => {
-            const results = document.getElementById('infoResults');
-            
-            if (!transformer) {
-                results.innerHTML = '<span class="error">Please create a transform first</span>';
-                return;
+        }
+
+        // --- URL Persistence ---
+        function updateURLParams() {
+            const params = new URLSearchParams();
+            const srcSel = crsSelectors['source-crs-selector'];
+            const tgtSel = crsSelectors['target-crs-selector'];
+            if (srcSel) params.set('src', srcSel.getValue());
+            if (tgtSel) params.set('tgt', tgtSel.getValue());
+            params.set('coords', document.getElementById('source-coordinates').value);
+            if (document.getElementById('promote-3d').checked) params.set('p3d', '1');
+            if (!document.getElementById('use-network').checked) params.set('net', '0');
+            const se = document.getElementById('source-epoch').value;
+            const te = document.getElementById('target-epoch').value;
+            if (document.getElementById('source-epoch-enable').checked && se) params.set('se', se);
+            if (document.getElementById('target-epoch-enable').checked && te) params.set('te', te);
+
+            [...params.entries()].forEach(([k, v]) => { if (!v) params.delete(k); });
+            window.history.replaceState(null, '', '?' + params.toString());
+        }
+
+        function loadFromURLParams() {
+            const p = new URLSearchParams(window.location.search);
+            if (p.has('coords')) document.getElementById('source-coordinates').value = p.get('coords');
+            if (p.get('p3d') === '1') document.getElementById('promote-3d').checked = true;
+            if (p.get('net') === '0') document.getElementById('use-network').checked = false;
+            if (p.has('se')) {
+                document.getElementById('source-epoch-enable').checked = true;
+                document.getElementById('source-epoch').disabled = false;
+                document.getElementById('source-epoch').value = p.get('se');
             }
-            
+            if (p.has('te')) {
+                document.getElementById('target-epoch-enable').checked = true;
+                document.getElementById('target-epoch').disabled = false;
+                document.getElementById('target-epoch').value = p.get('te');
+            }
+            return p.get('run') === '1';
+        }
+
+        function restoreSelectorsFromURL() {
+            const p = new URLSearchParams(window.location.search);
+            const srcSel = crsSelectors['source-crs-selector'];
+            const tgtSel = crsSelectors['target-crs-selector'];
+            if (p.has('src') && srcSel) srcSel.setValue(p.get('src'));
+            else if (srcSel) srcSel.setValue('EPSG:4326');
+            if (p.has('tgt') && tgtSel) tgtSel.setValue(p.get('tgt'));
+            else if (tgtSel) tgtSel.setValue('EPSG:2249');
+        }
+
+        // --- Clipboard ---
+        window.copyToClipboard = async function(targetId, btn) {
+            const el = document.getElementById(targetId);
+            if (!el.value?.trim()) return;
+            await navigator.clipboard.writeText(el.value);
+            const orig = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(() => { btn.textContent = orig; }, 2000);
+        };
+
+        // --- File Loading ---
+        function handleFileLoad(event, targetId, onLoad, onContent) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const content = e.target.result.trim();
+                if (onContent) {
+                    onContent(content);
+                } else if (targetId) {
+                    document.getElementById(targetId).value = content;
+                }
+                if (onLoad) onLoad();
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+        }
+
+        // --- CRS Info Section ---
+        function setupCrsInfoSection() {
+            document.getElementById('btn-lookup-crs').addEventListener('click', lookupCrs);
+        }
+
+        async function lookupCrs() {
+            const sel = crsSelectors['crs-info-selector'];
+            const input = sel ? sel.getValue() : '';
+            if (!input) return;
+
+            document.getElementById('crs-error').textContent = '';
+            document.getElementById('crs-results').style.display = 'none';
+
             try {
-                const targetCrs = proj.proj_get_target_crs({
-                    context: context,
-                    pj: transformer
+                const pj = await parseCrs(input);
+
+                const name = await proj.projGetName({ obj: pj });
+                const type = await proj.projGetType({ pj });
+                const authName = await proj.projGetIdAuthName({ obj: pj, index: 0 });
+                const authCode = await proj.projGetIdCode({ obj: pj, index: 0 });
+
+                let remarks = '', scope = '';
+                try { remarks = await proj.projGetRemarks({ obj: pj }); } catch (e) {}
+                try { scope = await proj.projGetScope({ obj: pj }); } catch (e) {}
+
+                const wkt = await proj.projAsWkt({
+                    context, pj, type: proj.PJ_WKT2_2019, options: null
                 });
-                
-                const json = proj.proj_as_projjson({
-                    context: context,
-                    pj: targetCrs,
-                    options: null
+                const projjson = await proj.projAsProjjson({ context, pj, options: null });
+                const projStr = await proj.projAsProjString({
+                    context, pj, type: proj.PJ_PROJ_5, options: null
                 });
-                
-                const parsed = JSON.parse(json);
-                results.innerHTML = `<strong>PROJJSON:</strong><pre>${JSON.stringify(parsed, null, 2)}</pre>`;
-                
-            } catch (error) {
-                results.innerHTML = `<span class="error">✗ Error: ${error.message}</span>`;
-                console.error('PROJJSON error:', error);
+
+                document.getElementById('crs-name').textContent = name || '';
+                const typeName = PJ_TYPE_NAMES[type] || (type !== undefined ? 'Type ' + type : '');
+                document.getElementById('crs-type').textContent = typeName;
+                document.getElementById('crs-authority').textContent =
+                    (authName && authCode) ? `${authName}:${authCode}` : '';
+
+                const scopeRemarks = document.getElementById('crs-scope-remarks');
+                if (scope || remarks) {
+                    document.getElementById('crs-scope').textContent = scope || 'N/A';
+                    document.getElementById('crs-remarks').textContent = remarks || 'N/A';
+                    scopeRemarks.style.display = 'block';
+                } else {
+                    scopeRemarks.style.display = 'none';
+                }
+
+                document.getElementById('crs-wkt').value = wkt || '';
+                try {
+                    document.getElementById('crs-projjson').value =
+                        JSON.stringify(JSON.parse(projjson), null, 2);
+                } catch (e) {
+                    document.getElementById('crs-projjson').value = projjson || '';
+                }
+                document.getElementById('crs-projstr').value = projStr || '';
+
+                // Enhanced metadata
+                const enhancedEl = document.getElementById('crs-enhanced-meta');
+                const metaParts = [];
+
+                // Catalog metadata (area, bbox, projection)
+                if (authName && authCode) {
+                    const catEntry = crsCatalog.find(e =>
+                        e.auth_name.toLowerCase() === authName.toLowerCase() && e.code === authCode);
+                    if (catEntry) {
+                        if (catEntry.area_name) metaParts.push('<strong>Area:</strong> ' + escapeHtml(catEntry.area_name));
+                        if (catEntry.bbox_valid) {
+                            metaParts.push('<strong>Bounds:</strong> ' +
+                                catEntry.west_lon_degree.toFixed(2) + ' to ' + catEntry.east_lon_degree.toFixed(2) + ' lon, ' +
+                                catEntry.south_lat_degree.toFixed(2) + ' to ' + catEntry.north_lat_degree.toFixed(2) + ' lat');
+                        }
+                        if (catEntry.projection_method_name) metaParts.push('<strong>Projection:</strong> ' + escapeHtml(catEntry.projection_method_name));
+                        if (catEntry.celestial_body_name && catEntry.celestial_body_name !== 'Earth') {
+                            metaParts.push('<strong>Celestial Body:</strong> ' + escapeHtml(catEntry.celestial_body_name));
+                        }
+                    }
+                }
+
+                // Datum
+                try {
+                    let datum = null;
+                    try { datum = await proj.projCrsGetDatum({ context, crs: pj }); } catch (e) {}
+                    if (!datum) {
+                        try { datum = await proj.projCrsGetDatumForced({ context, crs: pj }); } catch (e) {}
+                    }
+                    if (datum) {
+                        const datumName = await proj.projGetName({ obj: datum });
+                        if (datumName) metaParts.push('<strong>Datum:</strong> ' + escapeHtml(datumName));
+                    }
+                } catch (e) {}
+
+                // Ellipsoid
+                try {
+                    const ellipsoid = await proj.projGetEllipsoid({ context, pj });
+                    if (ellipsoid) {
+                        const ellName = await proj.projGetName({ obj: ellipsoid });
+                        if (ellName) metaParts.push('<strong>Ellipsoid:</strong> ' + escapeHtml(ellName));
+                    }
+                } catch (e) {}
+
+                // Coordinate System
+                try {
+                    const cs = await proj.projCrsGetCoordinateSystem({ context, crs: pj });
+                    if (cs) {
+                        const csType = await proj.projCsGetType({ context, cs });
+                        const CS_TYPE_NAMES = {
+                            0: 'Unknown', 1: 'Cartesian', 2: 'Ellipsoidal',
+                            3: 'Vertical', 4: 'Spherical', 5: 'Ordinal', 6: 'Parametric',
+                            7: 'DateTimeTemporal', 8: 'TemporalCount', 9: 'TemporalMeasure'
+                        };
+                        const csName = CS_TYPE_NAMES[csType] || ('Type ' + csType);
+                        metaParts.push('<strong>Coord System:</strong> ' + escapeHtml(csName));
+                    }
+                } catch (e) {}
+
+                // WKT dialect detection (if input looks like WKT)
+                if (input.match(/^[A-Z]/i) && input.includes('[')) {
+                    try {
+                        const dialect = await proj.projContextGuessWktDialect({ context, wkt: input });
+                        const dialectName = WKT_DIALECT_NAMES[dialect];
+                        if (dialectName) metaParts.push('<strong>Input Dialect:</strong> <em>' + escapeHtml(dialectName) + '</em>');
+                    } catch (e) {}
+                }
+
+                if (metaParts.length > 0) {
+                    enhancedEl.innerHTML = metaParts.join('<br>');
+                    enhancedEl.style.display = 'block';
+                } else {
+                    enhancedEl.style.display = 'none';
+                }
+
+                document.getElementById('crs-results').style.display = 'block';
+            } catch (e) {
+                document.getElementById('crs-error').textContent = 'Error: ' + e.message;
             }
-        });
-        
-        // Get authorities
-        document.getElementById('getAuthoritiesBtn').addEventListener('click', () => {
-            const results = document.getElementById('infoResults');
-            
-            if (!context) {
-                results.innerHTML = '<span class="error">Please initialize PROJ first</span>';
-                return;
-            }
-            
+        }
+
+        // --- Console ---
+        function setupConsole() {
+            require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
+            require(['vs/editor/editor.main'], function () {
+                monacoEditor = monaco.editor.create(document.getElementById('editor-container'), {
+                    value: '// Try: transform Boston coordinates from WGS84 to Web Mercator\n' +
+                           'const ctx = await proj.contextCreate();\n' +
+                           'const t = await proj.projCreateCrsToCrs({\n' +
+                           '    context: ctx, source_crs: "EPSG:4326", target_crs: "EPSG:3857"\n' +
+                           '});\n' +
+                           'const coords = await proj.coordArray(1);\n' +
+                           'await proj.setCoords(coords, [[42.36, -71.06, 0, 0]]);\n' +
+                           'await proj.projTransArray({ p: t, direction: 1, n: 1, coord: coords });\n' +
+                           'const result = await proj.getCoords(coords, 0);\n' +
+                           'console.log("X:", result[0], "Y:", result[1]);',
+                    language: 'javascript',
+                    theme: 'vs-dark',
+                    minimap: { enabled: false },
+                    lineNumbers: 'on',
+                    wordWrap: 'on',
+                    automaticLayout: true,
+                    scrollBeyondLastLine: false
+                });
+
+                monacoEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runREPL);
+
+                monaco.languages.registerCompletionItemProvider('javascript', {
+                    provideCompletionItems: function (model, position) {
+                        const suggestions = [
+                            'contextCreate', 'projCreateCrsToCrs', 'projCreateFromDatabase',
+                            'coordArray', 'setCoords', 'getCoordArray', 'projTransArray',
+                            'projAsWkt', 'projAsProjjson', 'projAsProjString',
+                            'projGetName', 'projGetType', 'projGetRemarks',
+                            'projGetAuthoritiesFromDatabase', 'projGetCodesFromDatabase',
+                            'projCrsPromoteTo3D', 'projCoordinateMetadataCreate',
+                            'projCreateCrsToCrsFromPj', 'projContextSetEnableNetwork',
+                            'projGetIdAuthName', 'projGetIdCode',
+                            'projContextErrno', 'projIsCrs',
+                            'getCrsInfoListFromDatabase',
+                            'PJ_FWD', 'PJ_INV', 'PJ_WKT2_2019', 'PJ_PROJ_5', 'PJ_CATEGORY_CRS',
+                        ].map(label => ({
+                            label: 'proj.' + label,
+                            kind: monaco.languages.CompletionItemKind.Function,
+                            insertText: label,
+                            detail: 'proj-wasm'
+                        }));
+                        return { suggestions };
+                    }
+                });
+
+                document.getElementById('exampleSelect').disabled = false;
+                document.getElementById('btn-run').disabled = false;
+                document.getElementById('btn-clear').disabled = false;
+            });
+
+            document.getElementById('btn-run').addEventListener('click', runREPL);
+            document.getElementById('btn-clear').addEventListener('click', clearOutput);
+            document.getElementById('exampleSelect').addEventListener('change', loadExample);
+        }
+
+        async function runREPL() {
+            const code = monacoEditor.getValue().trim();
+            if (!code) return;
+
+            replLog('> ' + code.split('\n').join('\n  '), 'input');
+
+            const logs = [];
+            const origLog = console.log;
+            console.log = (...args) => {
+                logs.push(args.map(formatValue).join(' '));
+                origLog.apply(console, args);
+            };
+
             try {
-                const authorities = proj.proj_get_authorities_from_database();
-                results.innerHTML = `<strong>Authorities:</strong><pre>${JSON.stringify(authorities, null, 2)}</pre>`;
-            } catch (error) {
-                results.innerHTML = `<span class="error">✗ Error: ${error.message}</span>`;
-                console.error('Authorities error:', error);
+                const asyncFn = new Function('proj', 'context',
+                    `return (async () => { ${code} })()`
+                );
+                const result = await asyncFn(proj, context);
+
+                console.log = origLog;
+                logs.forEach(l => replLog(l, 'output'));
+                if (result !== undefined) replLog(formatValue(result), 'output');
+            } catch (e) {
+                console.log = origLog;
+                logs.forEach(l => replLog(l, 'output'));
+                replLog('Error: ' + e.message, 'error');
             }
-        });
+            replLog('', 'output');
+        }
+
+        function replLog(text, type) {
+            const el = document.createElement('div');
+            el.className = `repl-line repl-${type}`;
+            el.textContent = text;
+            const out = document.getElementById('replOutput');
+            out.appendChild(el);
+            out.scrollTop = out.scrollHeight;
+        }
+
+        function formatValue(v) {
+            if (v === null) return 'null';
+            if (v === undefined) return 'undefined';
+            if (typeof v === 'number') return String(v);
+            if (typeof v === 'string') return v;
+            if (Array.isArray(v)) {
+                if (v.length <= 5) return `[${v.map(formatValue).join(', ')}]`;
+                return `Array(${v.length}) [${v.slice(0, 5).map(formatValue).join(', ')}...]`;
+            }
+            if (typeof v === 'object') {
+                try { return JSON.stringify(v, null, 2); } catch (e) { return String(v); }
+            }
+            return String(v);
+        }
+
+        function clearOutput() {
+            document.getElementById('replOutput').innerHTML = '';
+            replLog('// Output cleared.', 'hint');
+        }
+
+        function loadExample() {
+            const select = document.getElementById('exampleSelect');
+            const key = select.value;
+            if (!key || !examples[key]) return;
+
+            clearOutput();
+            monacoEditor.setValue(examples[key]);
+            monacoEditor.focus();
+            select.value = '';
+        }
+
+        // --- CRS Selector Component ---
+        const HORIZONTAL_TYPES = new Set([9, 10, 12, 13, 15, 16, 28]);
+        const VERTICAL_TYPES = new Set([14]);
+        const PJ_TYPE_NAMES = {
+            9: 'Geodetic CRS', 10: 'Geocentric CRS', 12: 'Geographic 2D CRS',
+            13: 'Geographic 3D CRS', 14: 'Vertical CRS', 15: 'Projected CRS',
+            16: 'Compound CRS', 17: 'Temporal CRS', 18: 'Engineering CRS',
+            19: 'Bound CRS', 28: 'Derived Projected CRS'
+        };
+        const WKT_DIALECT_NAMES = {
+            0: 'WKT2:2019', 1: 'WKT2:2015', 2: 'WKT1 (GDAL/OGC)', 3: 'WKT1 (ESRI)'
+        };
+        const crsSelectors = {};
+
+        function escapeHtml(s) {
+            return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        function bboxOverlaps(a, b) {
+            if (!a || !b || !a.bbox_valid || !b.bbox_valid) return true;
+            return a.west_lon_degree <= b.east_lon_degree &&
+                   a.east_lon_degree >= b.west_lon_degree &&
+                   a.south_lat_degree <= b.north_lat_degree &&
+                   a.north_lat_degree >= b.south_lat_degree;
+        }
+
+        function filterCatalog(query, typeFilter, bboxFilter) {
+            const q = query ? query.toLowerCase() : '';
+            const results = [];
+            for (let i = 0; i < crsCatalog.length; i++) {
+                const e = crsCatalog[i];
+                if (typeFilter && !typeFilter.has(e.type)) continue;
+                if (bboxFilter && !bboxOverlaps(bboxFilter, e)) continue;
+                if (q) {
+                    const id = (e.auth_name + ':' + e.code).toLowerCase();
+                    const name = (e.name || '').toLowerCase();
+                    if (!id.includes(q) && !name.includes(q)) continue;
+                }
+                results.push(e);
+            }
+            return results;
+        }
+
+        function createSearchField(container, label, typeFilter, onSelect) {
+            const field = document.createElement('div');
+            field.className = 'crs-field';
+
+            const lbl = document.createElement('label');
+            lbl.textContent = label;
+            field.appendChild(lbl);
+
+            const inputRow = document.createElement('div');
+            inputRow.className = 'crs-input-row';
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'crs-search-input';
+            input.placeholder = 'Search by code or name...';
+            inputRow.appendChild(input);
+
+            const browseBtn = document.createElement('button');
+            browseBtn.className = 'crs-browse-btn';
+            browseBtn.innerHTML = '&#9662;';
+            browseBtn.title = 'Browse all';
+            browseBtn.type = 'button';
+            inputRow.appendChild(browseBtn);
+
+            const dropdown = document.createElement('div');
+            dropdown.className = 'crs-dropdown';
+            inputRow.appendChild(dropdown);
+
+            field.appendChild(inputRow);
+
+            const chipEl = document.createElement('div');
+            chipEl.className = 'crs-chip';
+            chipEl.style.display = 'none';
+            field.appendChild(chipEl);
+
+            const compoundNote = document.createElement('div');
+            compoundNote.className = 'crs-compound-note';
+            compoundNote.textContent = 'Included in compound CRS';
+            compoundNote.style.display = 'none';
+            field.appendChild(compoundNote);
+
+            container.appendChild(field);
+
+            let activeIdx = -1;
+            let filtered = [];
+            let debounceTimer = null;
+            let selectedEntry = null;
+            let currentBboxFilter = null;
+
+            function doFilter(showAll) {
+                const q = input.value.trim();
+                if (!showAll && !q) { dropdown.style.display = 'none'; return; }
+                filtered = filterCatalog(q, typeFilter, currentBboxFilter);
+                activeIdx = -1;
+                renderDropdown();
+            }
+
+            function renderDropdown() {
+                dropdown.innerHTML = '';
+                if (filtered.length === 0) { dropdown.style.display = 'none'; return; }
+                filtered.forEach((entry, i) => {
+                    const item = document.createElement('div');
+                    item.className = 'crs-dropdown-item' + (i === activeIdx ? ' active' : '');
+                    const code = entry.auth_name + ':' + entry.code;
+                    item.innerHTML = '<span class="crs-code">' + escapeHtml(code) + '</span>' +
+                        '<span class="crs-name">' + escapeHtml(entry.name || '') + '</span>' +
+                        (entry.deprecated ? '<span class="crs-deprecated">(deprecated)</span>' : '');
+                    item.addEventListener('mousedown', (e) => { e.preventDefault(); selectItem(i); });
+                    dropdown.appendChild(item);
+                });
+                dropdown.style.display = 'block';
+            }
+
+            function selectItem(idx) {
+                if (idx < 0 || idx >= filtered.length) return;
+                selectedEntry = filtered[idx];
+                dropdown.style.display = 'none';
+                filtered = [];
+                activeIdx = -1;
+                showChip(selectedEntry);
+                if (onSelect) onSelect(selectedEntry);
+            }
+
+            function showChip(entry) {
+                const code = entry.auth_name + ':' + entry.code;
+                const infoUrl = `https://spatialreference.org/ref/${entry.auth_name.toLowerCase()}/${entry.code}/`;
+                chipEl.innerHTML = '<span class="chip-code">' + escapeHtml(code) + '</span>' +
+                    '<span class="chip-name">' + escapeHtml(entry.name || '') + '</span>' +
+                    '<a class="chip-info" href="' + infoUrl + '" target="_blank" rel="noopener" title="View on spatialreference.org">i</a>' +
+                    '<span class="chip-clear" title="Clear selection">&times;</span>';
+                chipEl.querySelector('.chip-clear').addEventListener('click', clearSelection);
+                chipEl.style.display = 'flex';
+                inputRow.style.display = 'none';
+            }
+
+            function clearSelection(skipFocus) {
+                selectedEntry = null;
+                chipEl.style.display = 'none';
+                inputRow.style.display = '';
+                input.value = '';
+                if (!skipFocus) input.focus();
+                if (onSelect) onSelect(null);
+            }
+
+            input.addEventListener('input', () => {
+                clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(doFilter, 100);
+            });
+
+            input.addEventListener('keydown', (e) => {
+                if (dropdown.style.display === 'none' || filtered.length === 0) return;
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    activeIdx = Math.min(activeIdx + 1, filtered.length - 1);
+                    renderDropdown();
+                    dropdown.querySelector('.active')?.scrollIntoView({ block: 'nearest' });
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    activeIdx = Math.max(activeIdx - 1, 0);
+                    renderDropdown();
+                    dropdown.querySelector('.active')?.scrollIntoView({ block: 'nearest' });
+                } else if (e.key === 'Enter' && activeIdx >= 0) {
+                    e.preventDefault();
+                    selectItem(activeIdx);
+                } else if (e.key === 'Escape') {
+                    dropdown.style.display = 'none';
+                    activeIdx = -1;
+                }
+            });
+
+            input.addEventListener('blur', () => {
+                setTimeout(() => { dropdown.style.display = 'none'; }, 200);
+            });
+
+            input.addEventListener('focus', () => {
+                if (input.value.trim()) doFilter();
+            });
+
+            browseBtn.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                if (dropdown.style.display === 'block') {
+                    dropdown.style.display = 'none';
+                } else {
+                    input.focus();
+                    doFilter(true);
+                }
+            });
+
+            return {
+                getEntry: () => selectedEntry,
+                setEntry: (entry, skipFocus) => { if (entry) { selectedEntry = entry; showChip(entry); } else { clearSelection(skipFocus); } },
+                setBboxFilter: (entry) => { currentBboxFilter = entry; },
+                setDisabled: (disabled, note) => {
+                    if (disabled) {
+                        field.classList.add('disabled');
+                        compoundNote.style.display = 'block';
+                        compoundNote.textContent = note || 'Included in compound CRS';
+                        inputRow.style.display = 'none';
+                        chipEl.style.display = 'none';
+                        selectedEntry = null;
+                    } else {
+                        field.classList.remove('disabled');
+                        compoundNote.style.display = 'none';
+                        if (!selectedEntry) inputRow.style.display = '';
+                    }
+                },
+                field
+            };
+        }
+
+        function createCrsSelector(containerId, options) {
+            const container = document.getElementById(containerId);
+            if (!container) return null;
+            const { onValueChange, showPrjButton, fileInputId, defaultValue } = options || {};
+
+            let mode = 'catalog';
+            const selectorDiv = document.createElement('div');
+            selectorDiv.className = 'crs-selector';
+
+            const toggle = document.createElement('div');
+            toggle.className = 'crs-mode-toggle';
+            const btnCatalog = document.createElement('button');
+            btnCatalog.textContent = 'Browse Database';
+            btnCatalog.className = 'active';
+            const btnManual = document.createElement('button');
+            btnManual.textContent = 'Manual Input';
+            toggle.appendChild(btnCatalog);
+            toggle.appendChild(btnManual);
+            selectorDiv.appendChild(toggle);
+
+            const catalogDiv = document.createElement('div');
+            catalogDiv.className = 'crs-catalog-mode';
+
+            const manualDiv = document.createElement('div');
+            manualDiv.className = 'crs-manual-mode';
+            manualDiv.style.display = 'none';
+
+            function notifyChange() { if (onValueChange) onValueChange(); }
+
+            const hField = createSearchField(catalogDiv, 'Horizontal or 3D CRS', HORIZONTAL_TYPES, (entry) => {
+                if (entry && entry.type === 16) {
+                    vField.setDisabled(true, 'Included in compound CRS');
+                } else {
+                    vField.setDisabled(false);
+                }
+                vField.setBboxFilter(entry);
+                updateMetaPanel();
+                notifyChange();
+            });
+
+            const vField = createSearchField(catalogDiv, 'Vertical CRS (optional)', VERTICAL_TYPES, () => {
+                updateMetaPanel();
+                notifyChange();
+            });
+
+            selectorDiv.appendChild(catalogDiv);
+
+            if (showPrjButton && fileInputId) {
+                const prjRow = document.createElement('div');
+                prjRow.className = 'prj-row';
+                const manualInput = document.createElement('input');
+                manualInput.type = 'text';
+                manualInput.className = 'crs-manual-input';
+                manualInput.placeholder = 'EPSG:XXXX, WKT, or PROJ string';
+                prjRow.appendChild(manualInput);
+                const prjBtn = document.createElement('button');
+                prjBtn.textContent = 'Load .prj';
+                prjBtn.style.cssText = 'white-space: nowrap; padding: 6px 10px; font-size: 12px;';
+                prjBtn.addEventListener('click', () => document.getElementById(fileInputId).click());
+                prjRow.appendChild(prjBtn);
+                manualDiv.appendChild(prjRow);
+                manualDiv._input = manualInput;
+            } else {
+                const manualInput = document.createElement('input');
+                manualInput.type = 'text';
+                manualInput.className = 'crs-manual-input';
+                manualInput.placeholder = 'EPSG:XXXX, WKT, or PROJ string';
+                manualDiv.appendChild(manualInput);
+                manualDiv._input = manualInput;
+            }
+
+            manualDiv._input.addEventListener('input', () => {
+                updateMetaPanel();
+                notifyChange();
+            });
+
+            selectorDiv.appendChild(manualDiv);
+
+            const metaPanel = document.createElement('div');
+            metaPanel.className = 'crs-meta-panel';
+            selectorDiv.appendChild(metaPanel);
+
+            container.appendChild(selectorDiv);
+
+            btnCatalog.addEventListener('click', () => {
+                mode = 'catalog';
+                btnCatalog.classList.add('active');
+                btnManual.classList.remove('active');
+                catalogDiv.style.display = '';
+                manualDiv.style.display = 'none';
+                updateMetaPanel();
+                notifyChange();
+            });
+            btnManual.addEventListener('click', () => {
+                mode = 'manual';
+                btnManual.classList.add('active');
+                btnCatalog.classList.remove('active');
+                catalogDiv.style.display = 'none';
+                manualDiv.style.display = '';
+                updateMetaPanel();
+                notifyChange();
+            });
+
+            function updateMetaPanel() {
+                metaPanel.innerHTML = '';
+                metaPanel.classList.remove('visible');
+                if (mode === 'catalog') {
+                    const h = hField.getEntry();
+                    if (!h) return;
+                    const parts = [];
+                    const typeName = PJ_TYPE_NAMES[h.type] || ('Type ' + h.type);
+                    parts.push('<span class="meta-row"><span class="meta-label">Type:</span>' + escapeHtml(typeName) + '</span>');
+                    if (h.area_name) parts.push('<span class="meta-row"><span class="meta-label">Area:</span>' + escapeHtml(h.area_name) + '</span>');
+                    if (h.bbox_valid) {
+                        parts.push('<span class="meta-row"><span class="meta-label">Bounds:</span>' +
+                            h.west_lon_degree.toFixed(2) + ' to ' + h.east_lon_degree.toFixed(2) + ' lon, ' +
+                            h.south_lat_degree.toFixed(2) + ' to ' + h.north_lat_degree.toFixed(2) + ' lat</span>');
+                    }
+                    if (h.projection_method_name) parts.push('<span class="meta-row"><span class="meta-label">Projection:</span>' + escapeHtml(h.projection_method_name) + '</span>');
+                    if (h.deprecated) parts.push('<span class="meta-row meta-deprecated">DEPRECATED</span>');
+                    const v = vField.getEntry();
+                    if (v) {
+                        parts.push('<span class="meta-row"><span class="meta-label">Vertical:</span>' +
+                            escapeHtml(v.auth_name + ':' + v.code + ' - ' + (v.name || '')) + '</span>');
+                    }
+                    metaPanel.innerHTML = parts.join('<br>');
+                    metaPanel.classList.add('visible');
+                } else {
+                    const val = manualDiv._input.value.trim();
+                    if (!val) return;
+                    const m = val.match(/^([A-Z_]+):(\d+)/i);
+                    if (m) {
+                        const entry = crsCatalog.find(e => e.auth_name.toLowerCase() === m[1].toLowerCase() && e.code === m[2]);
+                        if (entry) {
+                            const typeName = PJ_TYPE_NAMES[entry.type] || ('Type ' + entry.type);
+                            metaPanel.innerHTML = '<span class="meta-row"><span class="meta-label">Name:</span>' + escapeHtml(entry.name || '') + '</span><br>' +
+                                '<span class="meta-row"><span class="meta-label">Type:</span>' + escapeHtml(typeName) + '</span>' +
+                                (entry.area_name ? '<br><span class="meta-row"><span class="meta-label">Area:</span>' + escapeHtml(entry.area_name) + '</span>' : '') +
+                                (entry.deprecated ? '<br><span class="meta-row meta-deprecated">DEPRECATED</span>' : '');
+                            metaPanel.classList.add('visible');
+                        }
+                    }
+                    if (val.match(/^[A-Z]/i) && val.includes('[')) {
+                        detectWktDialect(val, metaPanel);
+                    }
+                }
+            }
+
+            async function detectWktDialect(wkt, panel) {
+                try {
+                    const dialect = await proj.projContextGuessWktDialect({ context, wkt });
+                    const name = WKT_DIALECT_NAMES[dialect];
+                    if (name) {
+                        const existing = panel.innerHTML;
+                        const dialectHtml = '<span class="meta-row meta-dialect">Detected: ' + escapeHtml(name) + '</span>';
+                        panel.innerHTML = existing ? existing + '<br>' + dialectHtml : dialectHtml;
+                        panel.classList.add('visible');
+                    }
+                } catch (e) {}
+            }
+
+            if (defaultValue) {
+                const m = defaultValue.match(/^([A-Z_]+):(\d+)/i);
+                if (m) {
+                    const entry = crsCatalog.find(e => e.auth_name.toLowerCase() === m[1].toLowerCase() && e.code === m[2]);
+                    if (entry && HORIZONTAL_TYPES.has(entry.type)) {
+                        hField.setEntry(entry);
+                        updateMetaPanel();
+                    } else {
+                        mode = 'manual';
+                        btnManual.classList.add('active');
+                        btnCatalog.classList.remove('active');
+                        catalogDiv.style.display = 'none';
+                        manualDiv.style.display = '';
+                        manualDiv._input.value = defaultValue;
+                        updateMetaPanel();
+                    }
+                } else {
+                    mode = 'manual';
+                    btnManual.classList.add('active');
+                    btnCatalog.classList.remove('active');
+                    catalogDiv.style.display = 'none';
+                    manualDiv.style.display = '';
+                    manualDiv._input.value = defaultValue;
+                    updateMetaPanel();
+                }
+            }
+
+            const selector = {
+                getValue: () => {
+                    if (mode === 'manual') return manualDiv._input.value.trim();
+                    const h = hField.getEntry();
+                    if (!h) return '';
+                    const hCode = h.auth_name + ':' + h.code;
+                    const v = vField.getEntry();
+                    if (!v) return hCode;
+                    return hCode + '+' + v.auth_name + ':' + v.code;
+                },
+                setValue: (str) => {
+                    if (!str) {
+                        mode = 'catalog';
+                        btnCatalog.classList.add('active');
+                        btnManual.classList.remove('active');
+                        catalogDiv.style.display = '';
+                        manualDiv.style.display = 'none';
+                        hField.setEntry(null, true);
+                        vField.setDisabled(false);
+                        vField.setEntry(null, true);
+                        manualDiv._input.value = '';
+                        updateMetaPanel();
+                        return;
+                    }
+                    const compound = str.match(/^([A-Z_]+:\d+)\+([A-Z_]+:\d+)$/i);
+                    if (compound) {
+                        const [, hPart, vPart] = compound;
+                        const hm = hPart.match(/^([A-Z_]+):(\d+)$/i);
+                        const vm = vPart.match(/^([A-Z_]+):(\d+)$/i);
+                        if (hm && vm) {
+                            const hEntry = crsCatalog.find(e => e.auth_name.toLowerCase() === hm[1].toLowerCase() && e.code === hm[2]);
+                            const vEntry = crsCatalog.find(e => e.auth_name.toLowerCase() === vm[1].toLowerCase() && e.code === vm[2]);
+                            if (hEntry) {
+                                mode = 'catalog';
+                                btnCatalog.classList.add('active');
+                                btnManual.classList.remove('active');
+                                catalogDiv.style.display = '';
+                                manualDiv.style.display = 'none';
+                                hField.setEntry(hEntry);
+                                if (vEntry) vField.setEntry(vEntry);
+                                updateMetaPanel();
+                                return;
+                            }
+                        }
+                    }
+                    const m = str.match(/^([A-Z_]+):(\d+)$/i);
+                    if (m) {
+                        const entry = crsCatalog.find(e => e.auth_name.toLowerCase() === m[1].toLowerCase() && e.code === m[2]);
+                        if (entry && HORIZONTAL_TYPES.has(entry.type)) {
+                            mode = 'catalog';
+                            btnCatalog.classList.add('active');
+                            btnManual.classList.remove('active');
+                            catalogDiv.style.display = '';
+                            manualDiv.style.display = 'none';
+                            hField.setEntry(entry);
+                            updateMetaPanel();
+                            return;
+                        }
+                    }
+                    mode = 'manual';
+                    btnManual.classList.add('active');
+                    btnCatalog.classList.remove('active');
+                    catalogDiv.style.display = 'none';
+                    manualDiv.style.display = '';
+                    manualDiv._input.value = str;
+                    updateMetaPanel();
+                },
+                getMode: () => mode,
+                getHorizontalEntry: () => hField.getEntry(),
+                getVerticalEntry: () => vField.getEntry(),
+                updateMetaPanel
+            };
+            crsSelectors[containerId] = selector;
+            return selector;
+        }
+
+        // --- Start ---
+        window.addEventListener('load', initApp);
     </script>
 </body>
 </html>
