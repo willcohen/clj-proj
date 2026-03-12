@@ -1155,7 +1155,15 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
                 setupConsole();
 
                 try {
-                    crsCatalog = await proj.getCrsInfoListFromDatabase({ context });
+                    // Dedup: PROJ returns multiple rows per CRS when there are multiple usage entries
+                    const rawCatalog = await proj.getCrsInfoListFromDatabase({ context });
+                    const seen = new Set();
+                    crsCatalog = rawCatalog.filter(e => {
+                        const key = `${e.auth_name}:${e.code}`;
+                        if (seen.has(key)) return false;
+                        seen.add(key);
+                        return true;
+                    });
                     createCrsSelector('source-crs-selector', {
                         showPrjButton: true,
                         fileInputId: 'file-input-prj-source',
