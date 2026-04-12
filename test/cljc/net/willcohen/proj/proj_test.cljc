@@ -173,6 +173,22 @@
                  (str "T should be 0.0, got " t))))))))
 
 #?(:clj
+   (deftest coord-to-coord-array-test
+     (with-each-implementation
+       (testing "coord->coord-array creates a 1-element coord array from a single coordinate"
+         (let [ca (proj/coord->coord-array [42.3603222 -71.0579667 100.0 0.0])]
+           (is (not (nil? ca)) "coord->coord-array should not return nil")
+           (let [[x y z t] (proj/get-coords ca 0)]
+             (is (< (Math/abs (- x 42.3603222)) 0.0001)
+                 (str "X should be 42.3603222, got " x))
+             (is (< (Math/abs (- y -71.0579667)) 0.0001)
+                 (str "Y should be -71.0579667, got " y))
+             (is (< (Math/abs (- z 100.0)) 0.0001)
+                 (str "Z should be 100.0, got " z))
+             (is (< (Math/abs (- t 0.0)) 0.0001)
+                 (str "T should be 0.0, got " t))))))))
+
+#?(:clj
    (deftest transformation-modifies-coords-test
      (with-each-implementation
        (with-test-context [ctx]

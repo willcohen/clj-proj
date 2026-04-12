@@ -29,7 +29,7 @@
 
 (def implementation (atom nil))
 (def force-graal (atom false))
-(defn toggle-graal! [] (swap! force-graal not))
+(defn toggle-graal! [] (swap! force-graal not) (reset! implementation nil))
 (defn force-graal! [] (reset! force-graal true) (reset! implementation nil))
 (defn force-ffi! [] (reset! force-graal false) (reset! implementation nil))
 
@@ -525,24 +525,28 @@
 (defn coord->coord-array
   [coord]
   #?(:clj
-     (case @implementation
-       :ffi (if (dt-t/tensor? coord)
-              (let [coord-array (coord-array 1)
-                    len (count coord)]
-                (reduce #(dt-t/mset! %1 0 %2 (dt-t/mget coord %2)) coord-array (range len)))
-              (coord->coord-array (dt-t/->tensor coord)))
-       :graal (wasm/set-coord-array coord (coord-array 1)))
+     (do
+       (when (nil? @implementation)
+         (init!))
+       (case @implementation
+         :ffi (if (dt-t/tensor? coord)
+                (let [coord-array (coord-array 1)
+                      len (count coord)]
+                  (reduce #(dt-t/mset! %1 0 %2 (dt-t/mget coord %2)) coord-array (range len)))
+                (coord->coord-array (dt-t/->tensor coord)))
+         :graal (wasm/set-coord-array coord (coord-array 1))))
      :cljs
      (case @implementation
-       :node (set-coord-array coord (coord-array 1)))))
+       (:node :browser) (set-coord-array coord (coord-array 1)))))
 
-(defn set-coord!
-  "Sets the value of a single coordinate in a coord-array tensor.
+#?(:clj
+   (defn set-coord!
+     "Sets the value of a single coordinate in a coord-array tensor.
    The index of the first coord in a tensor is 0.
    If using an array generated with coord-array, the coord provided should be an array of four doubles.
    Otherwise, the coord should have the same shape as a single coordinate in the provided tensor."
-  [ca idx coord]
-  (dt-t/mset! ca idx coord))
+     [ca idx coord]
+     (dt-t/mset! ca idx coord)))
 
 #?(:clj
    (defn set-col!

@@ -599,6 +599,31 @@ describe('proj-wasm Node.js API', () => {
     }
   });
 
+  test('coordToCoordArray creates a 1-element coord array', async () => {
+    const ca = await proj.coordToCoordArray([42.3603222, -71.0579667, 100.0, 0.0]);
+    assert(ca, 'coordToCoordArray should return a truthy value');
+
+    const coords = await proj.getCoords(ca, 0);
+    assert(coords, 'getCoords should return coordinates');
+
+    assert(
+      Math.abs(coords[0] - 42.3603222) < 0.0001,
+      `X should be 42.3603222, got ${coords[0]}`
+    );
+    assert(
+      Math.abs(coords[1] - (-71.0579667)) < 0.0001,
+      `Y should be -71.0579667, got ${coords[1]}`
+    );
+    assert(
+      Math.abs(coords[2] - 100.0) < 0.0001,
+      `Z should be 100.0, got ${coords[2]}`
+    );
+    assert(
+      Math.abs(coords[3] - 0.0) < 0.0001,
+      `T should be 0.0, got ${coords[3]}`
+    );
+  });
+
   test('CRS transformation without explicit context', async () => {
     const transformer = await proj.projCreateCrsToCrs({
       source_crs: "EPSG:4326",

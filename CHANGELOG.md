@@ -6,6 +6,13 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ### Added
 - GitHub Actions CI: build native (linux-amd64, linux-aarch64, darwin-aarch64, windows-amd64 cross-compile), WASM, and run tests
+- `coord->coord-array` tests across FFI, GraalVM, Node.js, and Browser
+
+### Fixed
+- `coord->coord-array`: missing `:browser` case in CLJS dispatch
+- `coord->coord-array`: missing auto-initialization before dispatch
+- `set-coord!`: wrapped JVM-only (was incorrectly cross-platform)
+- `toggle-graal!`: now resets `implementation` to nil like `force-graal!`/`force-ffi!`
 
 ## [0.1.0-alpha7] - 2026-03-06
 

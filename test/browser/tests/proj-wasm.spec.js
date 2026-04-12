@@ -60,6 +60,39 @@ test.describe('PROJ WASM Browser Tests', () => {
     expect(apiCheck.proj_destroy).toBe(true);
   });
 
+  test('coordToCoordArray creates a 1-element coord array', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+
+      try {
+        const ca = await proj.coordToCoordArray([42.3603222, -71.0579667, 100.0, 0.0]);
+        if (!ca) return { error: 'coordToCoordArray returned falsy' };
+
+        const coords = await proj.getCoords(ca, 0);
+        if (!coords) return { error: 'getCoords returned falsy' };
+
+        return {
+          x: coords[0],
+          y: coords[1],
+          z: coords[2],
+          t: coords[3],
+          xOk: Math.abs(coords[0] - 42.3603222) < 0.0001,
+          yOk: Math.abs(coords[1] - (-71.0579667)) < 0.0001,
+          zOk: Math.abs(coords[2] - 100.0) < 0.0001,
+          tOk: Math.abs(coords[3] - 0.0) < 0.0001
+        };
+      } catch (e) {
+        return { error: e.message };
+      }
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.xOk).toBe(true);
+    expect(result.yOk).toBe(true);
+    expect(result.zOk).toBe(true);
+    expect(result.tOk).toBe(true);
+  });
+
   test('can create and use a context', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
