@@ -8,6 +8,9 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - GitHub Actions CI: build native (linux-amd64, linux-aarch64, darwin-aarch64, windows-amd64 cross-compile), WASM, and run tests
 - `coord->coord-array` tests across FFI, GraalVM, Node.js, and Browser
 
+### Changed
+- PROJ 9.8.1 (was 9.8.0)
+
 ### Fixed
 - `coord->coord-array`: missing `:browser` case in CLJS dispatch
 - `coord->coord-array`: missing auto-initialization before dispatch

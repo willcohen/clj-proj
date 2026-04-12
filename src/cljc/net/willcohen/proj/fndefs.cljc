@@ -14,7 +14,7 @@
 
 (def ^{:tag 'long} PROJ_VERSION_MAJOR 9)
 (def ^{:tag 'long} PROJ_VERSION_MINOR 8)
-(def ^{:tag 'long} PROJ_VERSION_PATCH 0)
+(def ^{:tag 'long} PROJ_VERSION_PATCH 1)
 
 ;; PJ_CATEGORY
 (def ^{:tag 'long} PJ_CATEGORY_ELLIPSOID 0)

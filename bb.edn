@@ -10,7 +10,7 @@
              [clojure.edn :as edn]
              [clojure.java.shell :as shell])
 
-  :init (do (def proj-source {:type :tag :ref "9.8.0"})
+  :init (do (def proj-source {:type :tag :ref "9.8.1"})
             (def sqlite-version-url "3510200")
             (def sqlite-year "2026")
             (def zlib-version "1.3.2")
