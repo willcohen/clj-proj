@@ -49,9 +49,9 @@
    :proj_create_from_wkt {:rettype :pointer ; PJ *
                           :argtypes [['context :pointer]
                                      ['wkt :string]
-                                     ['options :pointer] ; const char *const *options
-                                     ['out_warnings :pointer] ; PROJ_STRING_LIST *out_warnings
-                                     ['out_grammar_errors :pointer]] ; PROJ_STRING_LIST *out_grammar_errors
+                                     ['options :pointer?] ; const char *const *options, NULL ok
+                                     ['out_warnings :pointer?] ; PROJ_STRING_LIST *out_warnings, NULL ok
+                                     ['out_grammar_errors :pointer?]] ; PROJ_STRING_LIST *out_grammar_errors, NULL ok
                           :proj-returns :pj}
    :proj_create_from_database {:rettype :pointer ; PJ *
                                :argtypes [['context :pointer]
@@ -220,7 +220,12 @@
                                                 :argtypes [['context :pointer]
                                                            ['auth_name :string]
                                                            ['out_result_count :pointer]] ; int *out_result_count
-                                                :proj-returns :pj-celestial-body-info-list}
+                                                :proj-returns :struct-list
+                                                :struct-def :proj-celestial-body-info
+                                                :struct-fields [[:auth-name :string 0]
+                                                                [:name :string 4]]
+                                                :struct-destroy-fn "proj_celestial_body_list_destroy"
+                                                :count-arg-name 'out_result_count}
    :proj_celestial_body_list_destroy {:rettype :void
                                       :argtypes [['list :pointer]]} ; PROJ_CELESTIAL_BODY_INFO **list
    :proj_get_crs_list_parameters_create {:rettype :pointer ; PROJ_CRS_LIST_PARAMETERS *
@@ -233,7 +238,25 @@
                                                      ['auth_name :string]
                                                      ['params :pointer] ; const PROJ_CRS_LIST_PARAMETERS *params
                                                      ['out_result_count :pointer]] ; int *out_result_count
-                                          :proj-returns :pj-crs-info-list}
+                                          :proj-returns :struct-list
+                                          :struct-def :proj-crs-info
+                                          :struct-fields [[:auth-name :string 0]
+                                                          [:code :string 4]
+                                                          [:name :string 8]
+                                                          [:type :int 12]
+                                                          [:deprecated :boolean 16]
+                                                          [:bbox-valid :boolean 20]
+                                                          [:west-lon-degree :double 24]
+                                                          [:south-lat-degree :double 32]
+                                                          [:east-lon-degree :double 40]
+                                                          [:north-lat-degree :double 48]
+                                                          [:area-name :string 56]
+                                                          [:projection-method-name :string 60]
+                                                          [:celestial-body-name :string 64]]
+                                          :struct-destroy-fn "proj_crs_info_list_destroy"
+                                          :struct-params-create "proj_get_crs_list_parameters_create"
+                                          :struct-params-destroy "proj_get_crs_list_parameters_destroy"
+                                          :count-arg-name 'out_result_count}
    :proj_crs_info_list_destroy {:rettype :void
                                 :argtypes [['list :pointer]]} ; PROJ_CRS_INFO **list
    :proj_get_units_from_database {:rettype :pointer ; PROJ_UNIT_INFO **
@@ -242,7 +265,17 @@
                                              ['category :string]
                                              ['allow_deprecated :int32]
                                              ['out_result_count :pointer]] ; int *out_result_count
-                                  :proj-returns :pj-unit-info-list}
+                                  :proj-returns :struct-list
+                                  :struct-def :proj-unit-info
+                                  :struct-fields [[:auth-name :string 0]
+                                                  [:code :string 4]
+                                                  [:name :string 8]
+                                                  [:category :string 12]
+                                                  [:conv-factor :double 16]
+                                                  [:proj-short-name :string 24]
+                                                  [:deprecated :boolean 28]]
+                                  :struct-destroy-fn "proj_unit_list_destroy"
+                                  :count-arg-name 'out_result_count}
    :proj_unit_list_destroy {:rettype :void
                             :argtypes [['list :pointer]]} ; PROJ_UNIT_INFO **list
    :proj_insert_object_session_create {:rettype :pointer ; PJ_INSERT_SESSION *
@@ -271,7 +304,7 @@
                          :argtypes [['str :string]]} ; char *str
    :proj_create_operation_factory_context {:rettype :pointer ; PJ_OPERATION_FACTORY_CONTEXT *
                                            :argtypes [['context :pointer]
-                                                      ['authority :string]]
+                                                      ['authority :string]] ; NULL or "" = any authority
                                            :proj-returns :pj-operation-factory-context}
    :proj_operation_factory_context_destroy {:rettype :void ; takes a context, but is a destroy fn
                                             :argtypes [['ctx :pointer]], ; PJ_OPERATION_FACTORY_CONTEXT *ctx

@@ -631,7 +631,7 @@ test.describe('PROJ WASM Browser Tests', () => {
       const proj = window.proj;
       const context = await proj.context_create();
 
-      const entries = await proj.getCrsInfoListFromDatabase({ context, auth_name: 'EPSG' });
+      const entries = await proj.projGetCrsInfoListFromDatabase({ context, auth_name: 'EPSG' });
 
       if (!entries || !Array.isArray(entries)) {
         return { error: 'did not return an array', type: typeof entries };
@@ -640,7 +640,10 @@ test.describe('PROJ WASM Browser Tests', () => {
       const wgs84 = entries.find(e => e.code === '4326');
 
       // Test without auth filter
-      const allEntries = await proj.getCrsInfoListFromDatabase({ context });
+      const allEntries = await proj.projGetCrsInfoListFromDatabase({ context });
+
+      // Nonexistent authority returns empty array
+      const empty = await proj.projGetCrsInfoListFromDatabase({ context, auth_name: 'NONEXISTENT_AUTH_ZZZZZ' });
 
       return {
         isArray: true,
@@ -653,8 +656,11 @@ test.describe('PROJ WASM Browser Tests', () => {
         bboxValid: wgs84 ? wgs84.bbox_valid : null,
         hasWestLon: wgs84 ? typeof wgs84.west_lon_degree === 'number' : false,
         hasAreaName: wgs84 ? typeof wgs84.area_name === 'string' : false,
+        projMethodNull: wgs84 ? wgs84.projection_method_name === null : false,
         allCount: allEntries ? allEntries.length : 0,
-        allHasMore: allEntries ? allEntries.length > entries.length : false
+        allHasMore: allEntries ? allEntries.length > entries.length : false,
+        emptyIsArray: Array.isArray(empty),
+        emptyLength: empty ? empty.length : -1
       };
     });
 
@@ -668,7 +674,182 @@ test.describe('PROJ WASM Browser Tests', () => {
     expect(result.bboxValid).toBe(true);
     expect(result.hasWestLon).toBe(true);
     expect(result.hasAreaName).toBe(true);
+    expect(result.projMethodNull).toBe(true);
     expect(result.allHasMore).toBe(true);
+    expect(result.emptyIsArray).toBe(true);
+    expect(result.emptyLength).toBe(0);
+  });
+
+  test('can get units from database', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const context = await proj.context_create();
+      const entries = await proj.projGetUnitsFromDatabase({ context, auth_name: 'EPSG', category: 'linear', allow_deprecated: 0 });
+      if (!entries || !Array.isArray(entries)) {
+        return { error: 'did not return an array', type: typeof entries };
+      }
+      const meter = entries.find(e => e.code === '9001');
+      const usFoot = entries.find(e => e.code === '9003');
+      return {
+        isArray: true,
+        count: entries.length,
+        hasEntries: entries.length > 0,
+        hasMeter: !!meter,
+        authName: meter ? meter.auth_name : null,
+        hasConvFactor: meter ? typeof meter.conv_factor === 'number' : false,
+        deprecated: meter ? meter.deprecated : null,
+        hasUsFoot: !!usFoot,
+        usFootConvFactor: usFoot ? usFoot.conv_factor : null
+      };
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.isArray).toBe(true);
+    expect(result.hasEntries).toBe(true);
+    expect(result.hasMeter).toBe(true);
+    expect(result.authName).toBe('EPSG');
+    expect(result.hasConvFactor).toBe(true);
+    expect(result.deprecated).toBe(false);
+    expect(result.hasUsFoot).toBe(true);
+    expect(result.usFootConvFactor).toBeGreaterThan(0.3);
+    expect(result.usFootConvFactor).toBeLessThan(0.4);
+  });
+
+  test('can get celestial body list from database', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const context = await proj.context_create();
+      const entries = await proj.projGetCelestialBodyListFromDatabase({ context, auth_name: '' });
+      if (!entries || !Array.isArray(entries)) {
+        return { error: 'did not return an array', type: typeof entries };
+      }
+      const earth = entries.find(e => e.name === 'Earth');
+      return {
+        isArray: true,
+        count: entries.length,
+        hasEntries: entries.length > 0,
+        hasEarth: !!earth,
+        authName: earth ? earth.auth_name : null
+      };
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.isArray).toBe(true);
+    expect(result.hasEntries).toBe(true);
+    expect(result.hasEarth).toBe(true);
+    expect(typeof result.authName).toBe('string');
+  });
+
+  // Object Inspection tests
+
+  test('can inspect CRS properties', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const context = await proj.context_create();
+      const crs = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+      if (!crs) return { error: 'CRS not created' };
+      const name = await proj.proj_get_name({ obj: crs });
+      const type = await proj.proj_get_type({ obj: crs });
+      const deprecated = await proj.proj_is_deprecated({ obj: crs });
+      const wkt = await proj.proj_as_wkt({ context, pj: crs });
+      const json = await proj.proj_as_projjson({ context, pj: crs });
+      return {
+        name, type, deprecated,
+        wktIsString: typeof wkt === 'string',
+        wktHasName: wkt ? wkt.includes('WGS 84') : false,
+        jsonIsString: typeof json === 'string',
+        jsonHasType: json ? json.includes('GeographicCRS') : false
+      };
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.name).toBe('WGS 84');
+    expect(result.type).toBe(12);
+    expect(result.deprecated).toBe(0);
+    expect(result.wktIsString).toBe(true);
+    expect(result.wktHasName).toBe(true);
+    expect(result.jsonIsString).toBe(true);
+    expect(result.jsonHasType).toBe(true);
+  });
+
+  test('can get source and target CRS from transformation', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const context = await proj.context_create();
+      const tx = await proj.proj_create_crs_to_crs({ context, source_crs: 'EPSG:4326', target_crs: 'EPSG:2249' });
+      const src = await proj.proj_get_source_crs({ context, pj: tx });
+      const tgt = await proj.proj_get_target_crs({ context, pj: tx });
+      const srcName = src ? await proj.proj_get_name({ obj: src }) : null;
+      const tgtName = tgt ? await proj.proj_get_name({ obj: tgt }) : null;
+      const projStr = await proj.proj_as_proj_string({ context, pj: tx, type: 0 });
+      return { srcName, tgtName, projStrIsString: typeof projStr === 'string' };
+    });
+    expect(result.srcName).toBe('WGS 84');
+    expect(result.tgtName).toContain('Massachusetts');
+    expect(result.projStrIsString).toBe(true);
+  });
+
+  // CRS Decomposition tests
+
+  test('can decompose CRS structure', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const context = await proj.context_create();
+      const projected = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '2249' });
+      const geodetic = await proj.proj_crs_get_geodetic_crs({ ctx: context, crs: projected });
+      const geodeticName = geodetic ? await proj.proj_get_name({ obj: geodetic }) : null;
+
+      const crs4326 = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+      const cs = await proj.proj_crs_get_coordinate_system({ ctx: context, crs: crs4326 });
+      const axisCount = cs ? await proj.proj_cs_get_axis_count({ ctx: context, cs }) : null;
+
+      const ellipsoid = await proj.proj_get_ellipsoid({ ctx: context, obj: crs4326 });
+      const ellipsoidName = ellipsoid ? await proj.proj_get_name({ obj: ellipsoid }) : null;
+
+      const datum = await proj.proj_crs_get_datum_forced({ ctx: context, crs: crs4326 });
+      const datumName = datum ? await proj.proj_get_name({ obj: datum }) : null;
+
+      return { geodeticName, axisCount, ellipsoidName, datumName };
+    });
+    expect(result.geodeticName).toContain('NAD83');
+    expect(result.axisCount).toBe(2);
+    expect(result.ellipsoidName).toBe('WGS 84');
+    expect(result.datumName).toContain('World Geodetic System 1984');
+  });
+
+  // Operation Factory tests
+
+  test('can find operations between CRS', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const context = await proj.context_create();
+      const src = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+      const tgt = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '2249' });
+      const ofc = await proj.proj_create_operation_factory_context({ context });
+      const ops = ofc ? await proj.proj_create_operations({ context, source_crs: src, target_crs: tgt, operationContext: ofc }) : null;
+      const count = ops ? await proj.proj_list_get_count({ result: ops }) : 0;
+      const tx = await proj.proj_create_crs_to_crs({ context, source_crs: 'EPSG:4326', target_crs: 'EPSG:3857' });
+      const normalized = tx ? await proj.proj_normalize_for_visualization({ context, obj: tx }) : null;
+      return { hasOfc: !!ofc, hasOps: !!ops, count, hasNormalized: !!normalized };
+    });
+    expect(result.hasOfc).toBe(true);
+    expect(result.hasOps).toBe(true);
+    expect(result.count).toBeGreaterThan(0);
+    expect(result.hasNormalized).toBe(true);
+  });
+
+  // CreateFromWkt test
+
+  test('can create CRS from WKT roundtrip', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const context = await proj.context_create();
+      const crs = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+      const wkt = await proj.proj_as_wkt({ context, pj: crs });
+      const crsFromWkt = await proj.proj_create_from_wkt({ context, wkt });
+      const name = crsFromWkt ? await proj.proj_get_name({ obj: crsFromWkt }) : null;
+      return { hasWkt: typeof wkt === 'string', hasCrs: !!crsFromWkt, name };
+    });
+    expect(result.hasWkt).toBe(true);
+    expect(result.hasCrs).toBe(true);
+    expect(result.name).toBe('WGS 84');
   });
 
   test('resource tracking with releasing blocks in browser', async ({ page }) => {

@@ -101,7 +101,7 @@
   (with-each-implementation
     (with-test-context [ctx]
       (testing "get-crs-info-list-from-database returns CRS entries for EPSG"
-        (let [entries (proj/get-crs-info-list-from-database {:context ctx :auth-name "EPSG"})]
+        (let [entries (proj/proj-get-crs-info-list-from-database {:context ctx :auth-name "EPSG"})]
           (is (coll? entries) "Result should be a collection")
           (is (> (count entries) 1000) "EPSG should have >1000 CRS entries")
           (let [wgs84 (first (filter #(= "4326" (:code %)) entries))]
@@ -113,10 +113,47 @@
             (is (number? (:west-lon-degree wgs84)))
             (is (string? (:area-name wgs84))))))
       (testing "get-crs-info-list-from-database with no auth-name returns entries from multiple authorities"
-        (let [entries (proj/get-crs-info-list-from-database {:context ctx})
+        (let [entries (proj/proj-get-crs-info-list-from-database {:context ctx})
               auths (into #{} (map :auth-name entries))]
           (is (> (count auths) 1) "Should have entries from multiple authorities")
-          (is (contains? auths "EPSG") "Should include EPSG"))))))
+          (is (contains? auths "EPSG") "Should include EPSG")))
+      (testing "nullable struct fields return nil for absent values"
+        (let [entries (proj/proj-get-crs-info-list-from-database {:context ctx :auth-name "EPSG"})
+              wgs84 (first (filter #(= "4326" (:code %)) entries))]
+          (is (nil? (:projection-method-name wgs84))
+              "Geographic CRS should have nil projection-method-name")))
+      (testing "nonexistent authority returns empty list"
+        (let [entries (proj/proj-get-crs-info-list-from-database {:context ctx :auth-name "NONEXISTENT_AUTH_ZZZZZ"})]
+          (is (= [] entries) "Nonexistent authority should return empty vector"))))))
+
+(deftest get-units-from-database-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-get-units-from-database returns unit entries"
+        (let [entries (proj/proj-get-units-from-database {:context ctx :auth-name "EPSG" :category "linear" :allow-deprecated 0})]
+          (is (coll? entries) "Result should be a collection")
+          (is (pos? (count entries)) "Should have unit entries")
+          (let [meter (first (filter #(= "9001" (:code %)) entries))]
+            (is (some? meter) "Should contain EPSG:9001 (metre)")
+            (is (= "EPSG" (:auth-name meter)))
+            (is (string? (:name meter)))
+            (is (number? (:conv-factor meter)))
+            (is (= false (:deprecated meter))))
+          (let [us-foot (first (filter #(= "9003" (:code %)) entries))]
+            (is (some? us-foot) "Should contain EPSG:9003 (US survey foot)")
+            (is (= "EPSG" (:auth-name us-foot)))
+            (is (< 0.3 (:conv-factor us-foot) 0.4) "US survey foot conv-factor ~0.3048")))))))
+
+(deftest get-celestial-body-list-from-database-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-get-celestial-body-list-from-database returns celestial bodies"
+        (let [entries (proj/proj-get-celestial-body-list-from-database {:context ctx :auth-name ""})]
+          (is (coll? entries) "Result should be a collection")
+          (is (pos? (count entries)) "Should have celestial body entries")
+          (let [earth (first (filter #(= "Earth" (:name %)) entries))]
+            (is (some? earth) "Should contain Earth")
+            (is (string? (:auth-name earth)))))))))
 
 (deftest initialization-test
   (with-each-implementation
@@ -232,6 +269,214 @@
         (is (some #{"ESRI"} authorities) "Should contain ESRI")
         (is (some #{"PROJ"} authorities) "Should contain PROJ")
         (is (some #{"OGC"} authorities) "Should contain OGC")))))
+
+;; Object Inspection tests
+
+(deftest get-name-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-get-name returns the name of a CRS"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
+          (is (some? crs))
+          (is (= "WGS 84" (proj/proj-get-name {:obj crs}))))))))
+
+(deftest get-type-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-get-type returns a PJ_TYPE integer"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
+          (is (some? crs))
+          (let [t (proj/proj-get-type {:obj crs})]
+            (is (number? t))
+            (is (= 12 t) "EPSG:4326 should be PJ_TYPE_GEOGRAPHIC_2D_CRS (12)")))))))
+
+(deftest is-deprecated-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-is-deprecated returns 0 for non-deprecated CRS"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
+          (is (= 0 (proj/proj-is-deprecated {:obj crs}))))))))
+
+(deftest as-wkt-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-as-wkt returns a WKT string"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+              wkt (proj/proj-as-wkt {:context ctx :pj crs})]
+          (is (string? wkt))
+          (is (> (count wkt) 100) "WKT should be a substantial string")
+          (is (re-find #"WGS 84" wkt) "WKT should mention WGS 84"))))))
+
+(deftest as-proj-json-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-as-projjson returns a PROJJSON string"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+              json (proj/proj-as-projjson {:context ctx :pj crs})]
+          (is (string? json))
+          (is (re-find #"GeographicCRS" json) "PROJJSON should contain type"))))))
+
+(deftest as-proj-string-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-as-proj-string returns a PROJ string"
+        (let [tx (proj/proj-create-crs-to-crs {:context ctx :source-crs "EPSG:4326" :target-crs "EPSG:3857"})
+              s (proj/proj-as-proj-string {:context ctx :pj tx :type 0})]
+          (is (string? s))
+          (is (re-find #"proj" s) "PROJ string should contain proj keyword"))))))
+
+(deftest get-source-target-crs-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-get-source-crs and proj-get-target-crs return CRS objects"
+        (let [tx (proj/proj-create-crs-to-crs {:context ctx :source-crs "EPSG:4326" :target-crs "EPSG:2249"})
+              src (proj/proj-get-source-crs {:context ctx :pj tx})
+              tgt (proj/proj-get-target-crs {:context ctx :pj tx})]
+          (is (some? src) "Should return source CRS")
+          (is (some? tgt) "Should return target CRS")
+          (is (= "WGS 84" (proj/proj-get-name {:obj src})))
+          (is (re-find #"Massachusetts" (proj/proj-get-name {:obj tgt}))))))))
+
+;; CRS Decomposition tests
+
+(deftest get-geodetic-crs-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-crs-get-geodetic-crs extracts the geodetic CRS"
+        (let [projected (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"})
+              geodetic (proj/proj-crs-get-geodetic-crs {:ctx ctx :crs projected})]
+          (is (some? geodetic))
+          (is (re-find #"NAD83" (proj/proj-get-name {:obj geodetic}))))))))
+
+(deftest get-coordinate-system-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-crs-get-coordinate-system returns a CS object"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+              cs (proj/proj-crs-get-coordinate-system {:ctx ctx :crs crs})]
+          (is (some? cs) "Should return a coordinate system"))))))
+
+(deftest get-axis-count-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-cs-get-axis-count returns axis count"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+              cs (proj/proj-crs-get-coordinate-system {:ctx ctx :crs crs})
+              count (proj/proj-cs-get-axis-count {:ctx ctx :cs cs})]
+          (is (= 2 count) "EPSG:4326 should have 2 axes"))))))
+
+(deftest get-ellipsoid-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-get-ellipsoid returns the ellipsoid"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+              ellipsoid (proj/proj-get-ellipsoid {:ctx ctx :obj crs})]
+          (is (some? ellipsoid))
+          (is (= "WGS 84" (proj/proj-get-name {:obj ellipsoid}))))))))
+
+(deftest get-datum-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-crs-get-datum-forced returns the datum for WGS 84"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+              datum (proj/proj-crs-get-datum-forced {:ctx ctx :crs crs})]
+          (is (some? datum))
+          (is (re-find #"World Geodetic System 1984"
+                       (proj/proj-get-name {:obj datum}))))))))
+
+#?(:clj
+   (deftest promote-demote-3d-test
+     (with-each-implementation
+       (with-test-context [ctx]
+         (testing "proj-crs-promote-to-3D and proj-crs-demote-to-2D roundtrip"
+           (let [crs-2d (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+                 crs-3d (proj/proj-crs-promote-to-3D {:ctx ctx :crs-3D-name "" :crs-2D crs-2d})
+                 crs-back (proj/proj-crs-demote-to-2D {:ctx ctx :crs-2D-name "" :crs-3D crs-3d})]
+             (is (some? crs-3d) "Should promote to 3D")
+             (is (some? crs-back) "Should demote back to 2D")
+             (let [cs-3d (proj/proj-crs-get-coordinate-system {:ctx ctx :crs crs-3d})
+                   cs-2d (proj/proj-crs-get-coordinate-system {:ctx ctx :crs crs-back})]
+               (is (= 3 (proj/proj-cs-get-axis-count {:ctx ctx :cs cs-3d})))
+               (is (= 2 (proj/proj-cs-get-axis-count {:ctx ctx :cs cs-2d}))))))))))
+
+;; Operation Factory tests
+
+(deftest create-operations-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "operation factory finds operations between CRS"
+        (let [src (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+              tgt (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"})
+              ofc (proj/proj-create-operation-factory-context {:context ctx})
+              ops (proj/proj-create-operations {:context ctx :source_crs src :target_crs tgt :operationContext ofc})]
+          (is (some? ofc) "Should create operation factory context")
+          (is (some? ops) "Should find operations")
+          (let [count (proj/proj-list-get-count {:result ops})]
+            (is (pos? count) "Should find at least one operation")))))))
+
+(deftest normalize-for-visualization-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-normalize-for-visualization returns a normalized CRS"
+        (let [tx (proj/proj-create-crs-to-crs {:context ctx :source-crs "EPSG:4326" :target-crs "EPSG:3857"})
+              normalized (proj/proj-normalize-for-visualization {:context ctx :obj tx})]
+          (is (some? normalized) "Should return a normalized transformation"))))))
+
+(deftest create-from-wkt-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-create-from-wkt creates a CRS from WKT"
+        (let [crs-orig (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+              wkt (proj/proj-as-wkt {:context ctx :pj crs-orig})
+              crs-wkt (proj/proj-create-from-wkt {:context ctx :wkt wkt})]
+          (is (some? crs-wkt) "Should create CRS from WKT")
+          (is (= "WGS 84" (proj/proj-get-name {:obj crs-wkt}))))))))
+
+;; QueryImplementation test
+
+(deftest query-implementation-test
+  (with-each-implementation
+    (testing "Implementation predicates reflect current state"
+      (let [impl @proj/implementation]
+        (case impl
+          :ffi (do (is (proj/ffi?)) (is (not (proj/graal?))))
+          :graal (do (is (proj/graal?)) (is (not (proj/ffi?))))
+          (is true "CLJS implementation"))))))
+
+;; SetCoord / SetColumn tests (JVM only)
+
+#?(:clj
+   (deftest set-coord-test
+     (with-each-implementation
+       (when (proj/ffi?)
+         (testing "set-coord! sets a single coordinate at an index"
+           (let [ca (proj/coord-array 2)]
+             (proj/set-coords! ca [[0 0 0 0] [0 0 0 0]])
+             (proj/set-coord! ca 1 [10.0 20.0 30.0 40.0])
+             (let [[x y z t] (proj/get-coords ca 1)]
+               (is (< (Math/abs (- x 10.0)) 0.001))
+               (is (< (Math/abs (- y 20.0)) 0.001))
+               (is (< (Math/abs (- z 30.0)) 0.001))
+               (is (< (Math/abs (- t 40.0)) 0.001)))))))))
+
+#?(:clj
+   (deftest set-column-test
+     (with-each-implementation
+       (when (proj/ffi?)
+         (testing "set-col! and convenience wrappers set coordinate columns"
+           (let [ca (proj/coord-array 3)]
+             (proj/set-coords! ca [[0 0 0 0] [0 0 0 0] [0 0 0 0]])
+             (proj/set-xcol! ca [1.0 2.0 3.0])
+             (proj/set-ycol! ca [4.0 5.0 6.0])
+             (let [[x0 y0 _ _] (proj/get-coords ca 0)
+                   [x1 y1 _ _] (proj/get-coords ca 1)
+                   [x2 y2 _ _] (proj/get-coords ca 2)]
+               (is (< (Math/abs (- x0 1.0)) 0.001))
+               (is (< (Math/abs (- x1 2.0)) 0.001))
+               (is (< (Math/abs (- x2 3.0)) 0.001))
+               (is (< (Math/abs (- y0 4.0)) 0.001))
+               (is (< (Math/abs (- y1 5.0)) 0.001))
+               (is (< (Math/abs (- y2 6.0)) 0.001)))))))))
 
  ;; Tests documenting known issues - these currently fail but document expected behavior
 

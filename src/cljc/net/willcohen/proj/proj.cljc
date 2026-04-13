@@ -13,6 +13,7 @@
                [clojure.tools.logging :as log]
                [clojure.string :as string]
                [tech.v3.datatype.struct :as dt-struct]
+               [net.willcohen.proj.impl.struct :as proj-struct]
                [net.willcohen.proj.wasm :as wasm]
                [net.willcohen.proj.fndefs :as pdefs]
                [net.willcohen.proj.macros :refer [define-all-proj-public-fns tsgcd]])
@@ -314,13 +315,15 @@
          proj-context-destroy
          proj-errno proj-errno-string
          proj-log-func proj-log-level
+         proj-get-crs-info-list-from-database
+         proj-get-units-from-database
+         proj-get-celestial-body-list-from-database
          context-create context-set-database-path context-set-enable-network
          proj-context-create proj-context-set-database-path
          proj-context-set-enable-network)
 
 (def ^:private pj-return-types-set
-  #{:pj :pj-list :pj-celestial-body-info-list :pj-crs-list-parameters
-    :pj-crs-info-list :pj-unit-info-list :pj-insert-session
+  #{:pj :pj-list :pj-crs-list-parameters :pj-insert-session
     :pj-operation-factory-context})
 
 (def proj-type->destroy-fn
@@ -329,10 +332,7 @@
    :pj-list "proj_list_destroy"
    :string-list "proj_string_list_destroy"
    :pj-context "proj_context_destroy"
-   :pj-celestial-body-info-list "proj_celestial_body_list_destroy"
    :pj-crs-list-parameters "proj_get_crs_list_parameters_destroy"
-   :pj-crs-info-list "proj_crs_info_list_destroy"
-   :pj-unit-info-list "proj_unit_list_destroy"
    :pj-insert-session "proj_insert_object_session_destroy"
    :pj-operation-factory-context "proj_operation_factory_context_destroy"})
 
@@ -755,11 +755,18 @@
                      (sequential? provided-val)
                      (= :string-array? (:semantic-type semantics-for-arg)))
                 #?(:clj (if (graal?)
-                          (wasm/string-array-to-polyglot-array provided-val)
+                          (wasm/string-list-to-native-array provided-val)
                           (StringArray. (into-array String provided-val)))
-                   :cljs (wasm/string-array-to-polyglot-array provided-val))
+                   :cljs (wasm/string-list-to-native-array provided-val))
 
-                ;; Otherwise use provided value
+                ;; Nil pointer args become 0 (null pointer)
+                (and (nil? provided-val) (#{:pointer :pointer?} arg-type)) 0
+
+                ;; Nil string args: "" on FFI (string->c needs a string), 0 on WASM (NULL)
+                (and (nil? provided-val) (= arg-type :string))
+                #?(:clj (if (ffi?) "" 0)
+                   :cljs 0)
+
                 :else provided-val)))
           argtypes)))
 
@@ -785,10 +792,6 @@
       ;; For CLJ, convert the pointer to strings
       :string-list #?(:cljs result
                       :clj (string-array-pointer->strs result nil))
-      ;; Worker already parsed struct array and destroyed C list
-      ;; CLJ: raw pointer, use get-crs-info-list-from-database wrapper instead
-      :pj-crs-info-list #?(:cljs result
-                           :clj result)
       ;; Track all PROJ pointer types
       #?(:cljs
          (if-let [destroy-fn-name (proj-type->destroy-fn proj-returns)]
@@ -965,6 +968,171 @@
                      (aset opts arg-name target-ctx)))
                  opts))))))))
 
+#?(:clj
+   (defn- ensure-struct-defs!
+     "Force registration of dtype-next struct definitions."
+     []
+     @proj-struct/crs-info-def*
+     @proj-struct/unit-info-def*
+     @proj-struct/celestial-body-info-def*))
+
+#?(:clj
+   (defn- read-struct-field-ffi
+     "Read a single struct field from a JNA Pointer using the dtype-next struct offset."
+     [^com.sun.jna.Pointer jna-ptr offset field-type]
+     (case field-type
+       :string (let [p (.getPointer jna-ptr (int offset))]
+                 (when p (.getString p 0 "UTF-8")))
+       :int (.getInt jna-ptr (int offset))
+       :double (.getDouble jna-ptr (int offset))
+       :boolean (not= 0 (.getInt jna-ptr (int offset))))))
+
+#?(:clj
+   (defn- read-struct-ffi
+     "Read a C struct into a Clojure map using dtype-next struct definition for offsets."
+     [^com.sun.jna.Pointer jna-ptr struct-def-key struct-fields]
+     (let [layout (:layout-map (dt-struct/get-struct-def struct-def-key))]
+       (persistent!
+        (reduce (fn [m [kw field-type _wasm-offset]]
+                  (let [offset (:offset (get layout kw))]
+                    (assoc! m kw (read-struct-field-ffi jna-ptr offset field-type))))
+                (transient {})
+                struct-fields)))))
+
+#?(:clj
+   (defn- read-struct-wasm
+     "Read a C struct from WASM memory using explicit offsets."
+     [struct-addr struct-fields]
+     (let [get-value-fn (.getMember @wasm/p "getValue")
+           utf8-to-string-fn (.getMember @wasm/p "UTF8ToString")
+           gv (fn [ptr type] (.asInt (.execute get-value-fn (object-array [ptr type]))))
+           gv-double (fn [ptr] (.asDouble (.execute get-value-fn (object-array [ptr "double"]))))
+           read-str (fn [addr]
+                      (if (zero? addr) nil
+                          (.asString (.execute utf8-to-string-fn (object-array [addr])))))]
+       (persistent!
+        (reduce (fn [m [kw field-type wasm-offset]]
+                  (assoc! m kw
+                          (case field-type
+                            :string (read-str (gv (+ struct-addr wasm-offset) "*"))
+                            :int (gv (+ struct-addr wasm-offset) "i32")
+                            :double (gv-double (+ struct-addr wasm-offset))
+                            :boolean (not= 0 (gv (+ struct-addr wasm-offset) "i32")))))
+                (transient {})
+                struct-fields)))))
+
+#?(:clj
+   (defn- dispatch-struct-list-ffi
+     "Handle struct-list dispatch for FFI platform."
+     [fn-key fn-def args]
+     (ensure-struct-defs!)
+     (let [{:keys [struct-def struct-fields struct-destroy-fn
+                   struct-params-create struct-params-destroy]} fn-def
+           count-ptr (com.sun.jna.Memory. 4)
+           _ (.setInt count-ptr 0 0)
+           params-ptr (when struct-params-create
+                        (call-ffi-fn (keyword struct-params-create) []))
+           args (mapv (fn [[arg-spec arg-type] arg-val]
+                        (let [aname (str arg-spec)]
+                          (cond
+                            (= aname "out_result_count") count-ptr
+                            (and (= aname "params") params-ptr) params-ptr
+                            (and (= arg-type :string) (nil? arg-val)) ""
+                            :else arg-val)))
+                      (:argtypes fn-def) args)
+           result-ptr (call-ffi-fn fn-key args)
+           count (.getInt count-ptr 0)]
+       (when params-ptr
+         (call-ffi-fn (keyword struct-params-destroy) [params-ptr]))
+       (if (and result-ptr (pos? count))
+         (let [jna-ptr (-> result-ptr dt-ptr/ptr-value com.sun.jna.Pointer.)
+               entries (mapv (fn [i]
+                               (read-struct-ffi
+                                (.getPointer jna-ptr (* i 8))
+                                struct-def struct-fields))
+                             (range count))]
+           (call-ffi-fn (keyword struct-destroy-fn) [result-ptr])
+           entries)
+         (do
+           (when result-ptr
+             (call-ffi-fn (keyword struct-destroy-fn) [result-ptr]))
+           [])))))
+
+#?(:clj
+   (defn- dispatch-struct-list-graal
+     "Handle struct-list dispatch for GraalVM/WASM platform."
+     [fn-key fn-def args]
+     (let [{:keys [struct-fields struct-destroy-fn
+                   struct-params-create struct-params-destroy]} fn-def
+           malloc-fn (.getMember @wasm/p "_malloc")
+           free-fn (.getMember @wasm/p "_free")
+           ccall-fn (.getMember @wasm/p "ccall")
+           count-ptr (.asInt (.execute malloc-fn (object-array [4])))
+           params-ptr (when struct-params-create
+                        (.asInt (.execute ccall-fn
+                                          (into-array Object
+                                                      [(name struct-params-create) "number"
+                                                       (org.graalvm.polyglot.proxy.ProxyArray/fromArray (object-array []))
+                                                       (org.graalvm.polyglot.proxy.ProxyArray/fromArray (object-array []))]))))
+           args (mapv (fn [[arg-spec arg-type] arg-val]
+                        (let [aname (str arg-spec)]
+                          (cond
+                            (= aname "out_result_count") count-ptr
+                            (and (= aname "params") params-ptr) params-ptr
+                            (= arg-type :string) (or arg-val "")
+                            (nil? arg-val) 0
+                            (and (= arg-type :pointer) (is-context? arg-val))
+                            (wasm/address-as-int (context-ptr arg-val))
+                            (= arg-type :pointer) (wasm/address-as-int arg-val)
+                            :else arg-val)))
+                      (:argtypes fn-def) args)
+           arg-types (mapv (fn [[_ t]]
+                             (case t
+                               :pointer "number"
+                               :string "string"
+                               :int32 "number"
+                               :size-t "number"
+                               "number"))
+                           (:argtypes fn-def))
+           list-ptr (.asInt
+                     (.execute ccall-fn
+                               (into-array Object
+                                           [(string/replace (name fn-key) "-" "_")
+                                            "number"
+                                            (org.graalvm.polyglot.proxy.ProxyArray/fromArray
+                                             (object-array arg-types))
+                                            (org.graalvm.polyglot.proxy.ProxyArray/fromArray
+                                             (object-array args))])))
+           get-value-fn (.getMember @wasm/p "getValue")
+           count (.asInt (.execute get-value-fn (object-array [count-ptr "i32"])))]
+       (.execute free-fn (object-array [count-ptr]))
+       (when (and params-ptr struct-params-destroy)
+         (.execute ccall-fn
+                   (into-array Object
+                               [(name struct-params-destroy) "void"
+                                (org.graalvm.polyglot.proxy.ProxyArray/fromArray (object-array ["number"]))
+                                (org.graalvm.polyglot.proxy.ProxyArray/fromArray (object-array [params-ptr]))])))
+       (if (and (not= list-ptr 0) (pos? count))
+         (let [entries (mapv (fn [i]
+                               (let [struct-addr (.asInt (.execute get-value-fn
+                                                                   (object-array [(+ list-ptr (* i 4)) "*"])))]
+                                 (read-struct-wasm struct-addr struct-fields)))
+                             (range count))]
+           (.execute ccall-fn
+                     (into-array Object
+                                 [(name struct-destroy-fn) "void"
+                                  (org.graalvm.polyglot.proxy.ProxyArray/fromArray (object-array ["number"]))
+                                  (org.graalvm.polyglot.proxy.ProxyArray/fromArray (object-array [list-ptr]))]))
+           entries)
+         (do
+           (when (not= list-ptr 0)
+             (.execute ccall-fn
+                       (into-array Object
+                                   [(name struct-destroy-fn) "void"
+                                    (org.graalvm.polyglot.proxy.ProxyArray/fromArray (object-array ["number"]))
+                                    (org.graalvm.polyglot.proxy.ProxyArray/fromArray (object-array [list-ptr]))])))
+           [])))))
+
 (defn ^:async dispatch-proj-fn
   "Central dispatcher for all PROJ functions"
   [fn-key fn-def opts]
@@ -989,18 +1157,26 @@
                                           (when (#{:ctx :context} first-arg-name)
                                             (aget opts (if (= first-arg-name :ctx) "context" "ctx"))))
                                       (resolve-context-val opts first-arg-name)))))]
-    (if (should-use-context-dispatch? fn-key fn-def opts)
-      (let [context-atom (get-context-atom opts fn-def)
-            remaining-args (get-remaining-args opts fn-def)
-            result #?(:clj (dispatch-context-fn fn-key fn-def context-atom remaining-args)
-                      :cljs (js-await (dispatch-context-fn fn-key fn-def context-atom remaining-args)))
-            result (process-return-value-with-tracking result fn-def)]
-        (if ctx-for-result (attach-context-to-result result ctx-for-result) result))
-      (let [args (extract-args fn-def opts)
-            result #?(:clj (dispatch-to-platform-with-args fn-key fn-def args)
-                      :cljs (js-await (dispatch-to-platform-with-args fn-key fn-def args)))
-            result (process-return-value-with-tracking result fn-def)]
-        (if ctx-for-result (attach-context-to-result result ctx-for-result) result)))))
+    (if (= :struct-list (:proj-returns fn-def))
+      #?(:clj (let [args (extract-args fn-def opts)]
+                (case @implementation
+                  :ffi (dispatch-struct-list-ffi fn-key fn-def args)
+                  :graal (dispatch-struct-list-graal fn-key fn-def args)))
+         :cljs (let [args (extract-args fn-def opts)
+                     result (js-await (dispatch-to-platform-with-args fn-key fn-def args))]
+                 result))
+      (if (should-use-context-dispatch? fn-key fn-def opts)
+        (let [context-atom (get-context-atom opts fn-def)
+              remaining-args (get-remaining-args opts fn-def)
+              result #?(:clj (dispatch-context-fn fn-key fn-def context-atom remaining-args)
+                        :cljs (js-await (dispatch-context-fn fn-key fn-def context-atom remaining-args)))
+              result (process-return-value-with-tracking result fn-def)]
+          (if ctx-for-result (attach-context-to-result result ctx-for-result) result))
+        (let [args (extract-args fn-def opts)
+              result #?(:clj (dispatch-to-platform-with-args fn-key fn-def args)
+                        :cljs (js-await (dispatch-to-platform-with-args fn-key fn-def args)))
+              result (process-return-value-with-tracking result fn-def)]
+          (if ctx-for-result (attach-context-to-result result ctx-for-result) result))))))
 
 #?(:clj
    ;; Generate all PROJ functions at runtime for ClojureScript
@@ -1073,127 +1249,3 @@
 #?(:cljs (def setCoordArray set-coord-array))
 #?(:cljs (def getCoordArray get-coord-array))
 
-#?(:cljs
-   (defn ^:async get-crs-info-list-from-database
-     "Returns the full CRS catalog from PROJ's database as a vector of maps.
-      Each map has keys: :auth-name :code :name :type :deprecated :bbox-valid
-      :west-lon-degree :south-lat-degree :east-lon-degree :north-lat-degree
-      :area-name :projection-method-name :celestial-body-name
-      Options:
-        :context   - PROJ context (auto-created if omitted)
-        :auth-name - authority name filter, e.g. \"EPSG\" (all authorities if omitted)"
-     ([opts]
-      (ensure-initialized!)
-      (let [ctx (or (if (object? opts) (aget opts "context") (:context opts))
-                    (js-await (context-create)))
-            auth-name (if (object? opts)
-                        (or (aget opts "auth_name") (aget opts "auth-name"))
-                        (or (:auth-name opts) (:auth_name opts)))
-            ctx-ptr (context-ptr ctx)
-            worker-idx (if (and (object? ctx) (some? (.-worker-idx ctx)))
-                         (.-worker-idx ctx)
-                         0)
-            raw (js-await (wasm/worker-call worker-idx
-                                            {:cmd "crs_info_list"
-                                             :context ctx-ptr
-                                             :authName auth-name}))]
-        raw)))
-   :clj
-   (defn get-crs-info-list-from-database
-     "Returns the full CRS catalog from PROJ's database as a vector of maps.
-      Each map has keys: :auth-name :code :name :type :deprecated :bbox-valid
-      :west-lon-degree :south-lat-degree :east-lon-degree :north-lat-degree
-      :area-name :projection-method-name :celestial-body-name
-      Options:
-        :context   - PROJ context (required)
-        :auth-name - authority name filter, e.g. \"EPSG\" (all authorities if omitted)"
-     ([opts]
-      (ensure-initialized!)
-      (let [ctx (:context opts)
-            auth-name (or (:auth-name opts) (:auth_name opts) "")
-            ctx-ptr (context-ptr ctx)]
-        (case @implementation
-          :ffi
-          (let [params-ptr (call-ffi-fn :proj_get_crs_list_parameters_create [])
-                count-ptr (com.sun.jna.Memory. 4)
-                _ (.setInt count-ptr 0 0)
-                result-ptr (call-ffi-fn :proj_get_crs_info_list_from_database
-                                        [ctx-ptr auth-name params-ptr count-ptr])
-                count (.getInt count-ptr 0)]
-            (call-ffi-fn :proj_get_crs_list_parameters_destroy [params-ptr])
-            (if (and result-ptr (pos? count))
-              (let [jna-ptr (-> result-ptr dt-ptr/ptr-value com.sun.jna.Pointer.)
-                    entries (mapv
-                             (fn [i]
-                               (let [struct-ptr (.getPointer jna-ptr (* i 8))
-                                     read-str (fn [offset]
-                                                (let [p (.getPointer struct-ptr offset)]
-                                                  (when p (.getString p 0 "UTF-8"))))]
-                                 {:auth-name (read-str 0)
-                                  :code (read-str 8)
-                                  :name (read-str 16)
-                                  :type (.getInt struct-ptr 24)
-                                  :deprecated (not= 0 (.getInt struct-ptr 28))
-                                  :bbox-valid (not= 0 (.getInt struct-ptr 32))
-                                  :west-lon-degree (.getDouble struct-ptr 40)
-                                  :south-lat-degree (.getDouble struct-ptr 48)
-                                  :east-lon-degree (.getDouble struct-ptr 56)
-                                  :north-lat-degree (.getDouble struct-ptr 64)
-                                  :area-name (read-str 72)
-                                  :projection-method-name (read-str 80)
-                                  :celestial-body-name (read-str 88)}))
-                             (range count))]
-                (call-ffi-fn :proj_crs_info_list_destroy [result-ptr])
-                entries)
-              []))
-          :graal
-          (let [malloc-fn (.getMember @wasm/p "_malloc")
-                free-fn (.getMember @wasm/p "_free")
-                get-value-fn (.getMember @wasm/p "getValue")
-                utf8-to-string-fn (.getMember @wasm/p "UTF8ToString")
-                ccall-fn (.getMember @wasm/p "ccall")
-                count-ptr (.asInt (.execute malloc-fn (object-array [4])))
-                ctx-int (wasm/address-as-int ctx-ptr)
-                list-ptr (.asInt
-                          (.execute ccall-fn
-                                    (into-array Object
-                                                ["proj_get_crs_info_list_from_database"
-                                                 "number"
-                                                 (org.graalvm.polyglot.proxy.ProxyArray/fromArray
-                                                  (object-array ["number" "string" "number" "number"]))
-                                                 (org.graalvm.polyglot.proxy.ProxyArray/fromArray
-                                                  (object-array [ctx-int (or auth-name "") 0 count-ptr]))])))
-                count (.asInt (.execute get-value-fn (object-array [count-ptr "i32"])))]
-            (.execute free-fn (object-array [count-ptr]))
-            (if (and (not= list-ptr 0) (pos? count))
-              (let [read-str (fn [addr]
-                               (if (zero? addr) nil
-                                   (.asString (.execute utf8-to-string-fn (object-array [addr])))))
-                    gv (fn [ptr type] (.asInt (.execute get-value-fn (object-array [ptr type]))))
-                    gv-double (fn [ptr type] (.asDouble (.execute get-value-fn (object-array [ptr type]))))
-                    entries (mapv
-                             (fn [i]
-                               (let [s (gv (+ list-ptr (* i 4)) "*")]
-                                 {:auth-name (read-str (gv s "*"))
-                                  :code (read-str (gv (+ s 4) "*"))
-                                  :name (read-str (gv (+ s 8) "*"))
-                                  :type (gv (+ s 12) "i32")
-                                  :deprecated (not= 0 (gv (+ s 16) "i32"))
-                                  :bbox-valid (not= 0 (gv (+ s 20) "i32"))
-                                  :west-lon-degree (gv-double (+ s 24) "double")
-                                  :south-lat-degree (gv-double (+ s 32) "double")
-                                  :east-lon-degree (gv-double (+ s 40) "double")
-                                  :north-lat-degree (gv-double (+ s 48) "double")
-                                  :area-name (read-str (gv (+ s 56) "*"))
-                                  :projection-method-name (read-str (gv (+ s 60) "*"))
-                                  :celestial-body-name (read-str (gv (+ s 64) "*"))}))
-                             (range count))]
-                (.execute ccall-fn
-                          (into-array Object
-                                      ["proj_crs_info_list_destroy" "void"
-                                       (org.graalvm.polyglot.proxy.ProxyArray/fromArray (object-array ["number"]))
-                                       (org.graalvm.polyglot.proxy.ProxyArray/fromArray (object-array [list-ptr]))]))
-                entries)
-              [])))))))
-
-#?(:cljs (def getCrsInfoListFromDatabase get-crs-info-list-from-database))

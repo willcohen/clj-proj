@@ -264,26 +264,30 @@ if (isNode) {
   onMessage = (handler) => { self.onmessage = (e) => handler(e.data); };
 }
 
-function readCrsInfoList(module, listPtr, count) {
-  const readStr = (ptr) => ptr ? module.UTF8ToString(ptr) : '';
+function readStructList(module, listPtr, count, structFields) {
+  const readStr = (ptr) => ptr ? module.UTF8ToString(ptr) : null;
   const entries = [];
   for (let i = 0; i < count; i++) {
     const s = module.getValue(listPtr + i * 4, '*');
-    entries.push({
-      auth_name: readStr(module.getValue(s, '*')),
-      code: readStr(module.getValue(s + 4, '*')),
-      name: readStr(module.getValue(s + 8, '*')),
-      type: module.getValue(s + 12, 'i32'),
-      deprecated: module.getValue(s + 16, 'i32') !== 0,
-      bbox_valid: module.getValue(s + 20, 'i32') !== 0,
-      west_lon_degree: module.getValue(s + 24, 'double'),
-      south_lat_degree: module.getValue(s + 32, 'double'),
-      east_lon_degree: module.getValue(s + 40, 'double'),
-      north_lat_degree: module.getValue(s + 48, 'double'),
-      area_name: readStr(module.getValue(s + 56, '*')),
-      projection_method_name: readStr(module.getValue(s + 60, '*')),
-      celestial_body_name: readStr(module.getValue(s + 64, '*'))
-    });
+    const entry = {};
+    for (const field of structFields) {
+      const { key, type, offset } = field;
+      switch (type) {
+        case 'string':
+          entry[key] = readStr(module.getValue(s + offset, '*'));
+          break;
+        case 'int':
+          entry[key] = module.getValue(s + offset, 'i32');
+          break;
+        case 'double':
+          entry[key] = module.getValue(s + offset, 'double');
+          break;
+        case 'boolean':
+          entry[key] = module.getValue(s + offset, 'i32') !== 0;
+          break;
+      }
+    }
+    entries.push(entry);
   }
   return entries;
 }
@@ -402,6 +406,18 @@ onMessage(async (data) => {
           }
         }
 
+        // For struct-list: allocate count pointer and optional params
+        if (projReturns === 'struct-list') {
+          const countPtr = module._malloc(4);
+          module.setValue(countPtr, 0, 'i32');
+          args[args.length - 1] = countPtr;
+          if (data.structParamsCreate) {
+            const paramsPtr = module.ccall(data.structParamsCreate, 'number', [], []);
+            args[args.length - 2] = paramsPtr;
+            data._paramsPtr = paramsPtr;
+          }
+        }
+
         const rawResult = module.ccall(fnName, returnType, argTypes, args);
 
         // Handle special return types that need post-processing in worker
@@ -423,12 +439,23 @@ onMessage(async (data) => {
               offset++;
             }
             result = { result: strings, coordData };
-          } else if (projReturns === 'pj-crs-info-list' && rawResult !== 0) {
+          } else if (projReturns === 'struct-list' && rawResult !== 0) {
             const countPtr = args[args.length - 1];
             const count = module.getValue(countPtr, 'i32');
-            const crsResult = readCrsInfoList(module, rawResult, count);
-            module.ccall('proj_crs_info_list_destroy', null, ['number'], [rawResult]);
-            result = { result: crsResult, coordData };
+            const structResult = readStructList(module, rawResult, count, data.structFields);
+            module.ccall(data.structDestroyFn, null, ['number'], [rawResult]);
+            if (data._paramsPtr && data.structParamsDestroy) {
+              module.ccall(data.structParamsDestroy, null, ['number'], [data._paramsPtr]);
+            }
+            module._free(countPtr);
+            result = { result: structResult, coordData };
+          } else if (projReturns === 'struct-list' && rawResult === 0) {
+            const countPtr = args[args.length - 1];
+            if (data._paramsPtr && data.structParamsDestroy) {
+              module.ccall(data.structParamsDestroy, null, ['number'], [data._paramsPtr]);
+            }
+            module._free(countPtr);
+            result = { result: [], coordData };
           } else {
             result = { result: rawResult, coordData };
           }
@@ -443,11 +470,22 @@ onMessage(async (data) => {
               offset++;
             }
             result = strings;
-          } else if (projReturns === 'pj-crs-info-list' && rawResult !== 0) {
+          } else if (projReturns === 'struct-list' && rawResult !== 0) {
             const countPtr = args[args.length - 1];
             const count = module.getValue(countPtr, 'i32');
-            result = readCrsInfoList(module, rawResult, count);
-            module.ccall('proj_crs_info_list_destroy', null, ['number'], [rawResult]);
+            result = readStructList(module, rawResult, count, data.structFields);
+            module.ccall(data.structDestroyFn, null, ['number'], [rawResult]);
+            if (data._paramsPtr && data.structParamsDestroy) {
+              module.ccall(data.structParamsDestroy, null, ['number'], [data._paramsPtr]);
+            }
+            module._free(countPtr);
+          } else if (projReturns === 'struct-list' && rawResult === 0) {
+            const countPtr = args[args.length - 1];
+            if (data._paramsPtr && data.structParamsDestroy) {
+              module.ccall(data.structParamsDestroy, null, ['number'], [data._paramsPtr]);
+            }
+            module._free(countPtr);
+            result = [];
           } else {
             result = rawResult;
           }
@@ -478,31 +516,6 @@ onMessage(async (data) => {
       case 'heapf64_get': {
         const { offset, length } = data;
         result = Array.from(module.HEAPF64.subarray(offset, offset + length));
-        break;
-      }
-
-      case 'crs_info_list': {
-        const { context, authName } = data;
-        const countPtr = module._malloc(4);
-        module.setValue(countPtr, 0, 'i32');
-        const listPtr = module.ccall(
-          'proj_get_crs_info_list_from_database', 'number',
-          ['number', 'string', 'number', 'number'],
-          [context, authName || null, 0, countPtr]
-        );
-        const count = module.getValue(countPtr, 'i32');
-        module._free(countPtr);
-
-        if (listPtr === 0 || count === 0) {
-          if (listPtr !== 0) {
-            module.ccall('proj_crs_info_list_destroy', null, ['number'], [listPtr]);
-          }
-          result = [];
-          break;
-        }
-
-        result = readCrsInfoList(module, listPtr, count);
-        module.ccall('proj_crs_info_list_destroy', null, ['number'], [listPtr]);
         break;
       }
 

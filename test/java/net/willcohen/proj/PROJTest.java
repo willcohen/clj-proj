@@ -43,6 +43,8 @@ public class PROJTest {
             testTransformation();
             testTransformationFromPj();
             testGetCrsInfoList();
+            testGetUnits();
+            testGetCelestialBodies();
 
             System.out.println("\n=== Test Results ===");
             System.out.println("Passed: " + testsPassed);
@@ -330,6 +332,75 @@ public class PROJTest {
 
         } catch (Exception e) {
             fail("getCrsInfoListFromDatabase failed: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static void testGetUnits() {
+        System.out.println("Test: PROJ.getUnitsFromDatabase()");
+        try {
+            Object ctx = PROJ.contextCreate();
+            List<Map<String, Object>> entries = PROJ.getUnitsFromDatabase(ctx, "EPSG", "linear", false);
+            if (entries == null || entries.isEmpty()) {
+                fail("No unit entries returned for EPSG linear");
+                return;
+            }
+            pass("Got " + entries.size() + " EPSG linear unit entries");
+
+            Map<String, Object> meter = null;
+            Map<String, Object> usFoot = null;
+            for (Map<String, Object> e : entries) {
+                if ("9001".equals(e.get("code"))) meter = e;
+                if ("9003".equals(e.get("code"))) usFoot = e;
+            }
+            if (meter != null) {
+                pass("Found EPSG:9001 (metre): " + meter.get("name"));
+                if (meter.get("conv-factor") instanceof Number) {
+                    pass("conv-factor is a number: " + meter.get("conv-factor"));
+                } else {
+                    fail("conv-factor is not a number: " + meter.get("conv-factor"));
+                }
+            } else {
+                fail("EPSG:9001 (metre) not found in results");
+            }
+            if (usFoot != null) {
+                double cf = ((Number) usFoot.get("conv-factor")).doubleValue();
+                if (cf > 0.3 && cf < 0.4) {
+                    pass("Found EPSG:9003 (US survey foot), conv-factor=" + cf);
+                } else {
+                    fail("US survey foot conv-factor out of range: " + cf);
+                }
+            } else {
+                fail("EPSG:9003 (US survey foot) not found in results");
+            }
+        } catch (Exception e) {
+            fail("getUnitsFromDatabase failed: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static void testGetCelestialBodies() {
+        System.out.println("Test: PROJ.getCelestialBodyListFromDatabase()");
+        try {
+            Object ctx = PROJ.contextCreate();
+            List<Map<String, Object>> entries = PROJ.getCelestialBodyListFromDatabase(ctx);
+            if (entries == null || entries.isEmpty()) {
+                fail("No celestial body entries returned");
+                return;
+            }
+            pass("Got " + entries.size() + " celestial body entries");
+
+            Map<String, Object> earth = null;
+            for (Map<String, Object> e : entries) {
+                if ("Earth".equals(e.get("name"))) { earth = e; break; }
+            }
+            if (earth != null) {
+                pass("Found Earth: auth-name=" + earth.get("auth-name"));
+            } else {
+                fail("Earth not found in celestial body results");
+            }
+        } catch (Exception e) {
+            fail("getCelestialBodyListFromDatabase failed: " + e.getMessage());
             e.printStackTrace();
         }
     }

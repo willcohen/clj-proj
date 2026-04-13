@@ -800,7 +800,7 @@ describe('proj-wasm Node.js API', () => {
   test('can get CRS info list from database', async () => {
     const context = await proj.context_create();
 
-    const entries = await proj.getCrsInfoListFromDatabase({ context, auth_name: 'EPSG' });
+    const entries = await proj.projGetCrsInfoListFromDatabase({ context, auth_name: 'EPSG' });
     assert(Array.isArray(entries), 'should return an array');
     assert(entries.length > 1000, `EPSG should have >1000 CRS entries, got ${entries.length}`);
 
@@ -814,9 +814,176 @@ describe('proj-wasm Node.js API', () => {
     assert(typeof wgs84.area_name === 'string', 'area_name should be a string');
 
     // Test without auth filter
-    const allEntries = await proj.getCrsInfoListFromDatabase({ context });
+    const allEntries = await proj.projGetCrsInfoListFromDatabase({ context });
     assert(allEntries.length > entries.length,
       `All-authority query (${allEntries.length}) should return more than EPSG-only (${entries.length})`);
+
+    // Nullable fields: geographic CRS has no projection method
+    assert.strictEqual(wgs84.projection_method_name, null,
+      'Geographic CRS should have null projection_method_name');
+
+    // Nonexistent authority returns empty array
+    const empty = await proj.projGetCrsInfoListFromDatabase({ context, auth_name: 'NONEXISTENT_AUTH_ZZZZZ' });
+    assert(Array.isArray(empty), 'nonexistent authority should return an array');
+    assert.strictEqual(empty.length, 0, 'nonexistent authority should return empty array');
+  });
+
+  test('can get units from database', async () => {
+    const context = await proj.context_create();
+    const entries = await proj.projGetUnitsFromDatabase({ context, auth_name: 'EPSG', category: 'linear', allow_deprecated: 0 });
+    assert(Array.isArray(entries), 'should return an array');
+    assert(entries.length > 0, `should have unit entries, got ${entries.length}`);
+    const meter = entries.find(e => e.code === '9001');
+    assert(meter, 'should contain EPSG:9001 (metre)');
+    assert.strictEqual(meter.auth_name, 'EPSG');
+    assert(typeof meter.conv_factor === 'number', 'conv_factor should be a number');
+    assert.strictEqual(meter.deprecated, false);
+
+    const usFoot = entries.find(e => e.code === '9003');
+    assert(usFoot, 'should contain EPSG:9003 (US survey foot)');
+    assert(usFoot.conv_factor > 0.3 && usFoot.conv_factor < 0.4, `US survey foot conv_factor ~0.3048, got ${usFoot.conv_factor}`);
+  });
+
+  test('can get celestial body list from database', async () => {
+    const context = await proj.context_create();
+    const entries = await proj.projGetCelestialBodyListFromDatabase({ context, auth_name: '' });
+    assert(Array.isArray(entries), 'should return an array');
+    assert(entries.length > 0, `should have celestial body entries, got ${entries.length}`);
+    const earth = entries.find(e => e.name === 'Earth');
+    assert(earth, 'should contain Earth');
+    assert(typeof earth.auth_name === 'string', 'auth_name should be a string');
+  });
+
+  // Object Inspection tests
+
+  test('can get name of a CRS', async () => {
+    const context = await proj.context_create();
+    const crs = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+    assert(crs, 'CRS should be created');
+    const name = await proj.proj_get_name({ obj: crs });
+    assert.strictEqual(name, 'WGS 84');
+  });
+
+  test('can get type of a CRS', async () => {
+    const context = await proj.context_create();
+    const crs = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+    const type = await proj.proj_get_type({ obj: crs });
+    assert.strictEqual(type, 12, 'EPSG:4326 should be PJ_TYPE_GEOGRAPHIC_2D_CRS (12)');
+  });
+
+  test('can check if CRS is deprecated', async () => {
+    const context = await proj.context_create();
+    const crs = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+    const deprecated = await proj.proj_is_deprecated({ obj: crs });
+    assert.strictEqual(deprecated, 0, 'WGS 84 should not be deprecated');
+  });
+
+  test('can export CRS as WKT', async () => {
+    const context = await proj.context_create();
+    const crs = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+    const wkt = await proj.proj_as_wkt({ context, pj: crs });
+    assert(typeof wkt === 'string', 'WKT should be a string');
+    assert(wkt.length > 100, 'WKT should be substantial');
+    assert(wkt.includes('WGS 84'), 'WKT should mention WGS 84');
+  });
+
+  test('can export CRS as PROJJSON', async () => {
+    const context = await proj.context_create();
+    const crs = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+    const json = await proj.proj_as_projjson({ context, pj: crs });
+    assert(typeof json === 'string', 'PROJJSON should be a string');
+    assert(json.includes('GeographicCRS'), 'PROJJSON should contain type');
+  });
+
+  test('can export transformation as PROJ string', async () => {
+    const context = await proj.context_create();
+    const tx = await proj.proj_create_crs_to_crs({ context, source_crs: 'EPSG:4326', target_crs: 'EPSG:3857' });
+    const s = await proj.proj_as_proj_string({ context, pj: tx, type: 0 });
+    assert(typeof s === 'string', 'PROJ string should be a string');
+  });
+
+  test('can get source and target CRS from transformation', async () => {
+    const context = await proj.context_create();
+    const tx = await proj.proj_create_crs_to_crs({ context, source_crs: 'EPSG:4326', target_crs: 'EPSG:2249' });
+    const src = await proj.proj_get_source_crs({ context, pj: tx });
+    const tgt = await proj.proj_get_target_crs({ context, pj: tx });
+    assert(src, 'Should return source CRS');
+    assert(tgt, 'Should return target CRS');
+    const srcName = await proj.proj_get_name({ obj: src });
+    const tgtName = await proj.proj_get_name({ obj: tgt });
+    assert.strictEqual(srcName, 'WGS 84');
+    assert(tgtName.includes('Massachusetts'), `Target should be Massachusetts, got ${tgtName}`);
+  });
+
+  // CRS Decomposition tests
+
+  test('can get geodetic CRS from projected CRS', async () => {
+    const context = await proj.context_create();
+    const projected = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '2249' });
+    const geodetic = await proj.proj_crs_get_geodetic_crs({ ctx: context, crs: projected });
+    assert(geodetic, 'Should return geodetic CRS');
+    const name = await proj.proj_get_name({ obj: geodetic });
+    assert(name.includes('NAD83'), `Geodetic CRS should be NAD83, got ${name}`);
+  });
+
+  test('can get coordinate system and axis count', async () => {
+    const context = await proj.context_create();
+    const crs = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+    const cs = await proj.proj_crs_get_coordinate_system({ ctx: context, crs });
+    assert(cs, 'Should return coordinate system');
+    const count = await proj.proj_cs_get_axis_count({ ctx: context, cs });
+    assert.strictEqual(count, 2, 'EPSG:4326 should have 2 axes');
+  });
+
+  test('can get ellipsoid from CRS', async () => {
+    const context = await proj.context_create();
+    const crs = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+    const ellipsoid = await proj.proj_get_ellipsoid({ ctx: context, obj: crs });
+    assert(ellipsoid, 'Should return ellipsoid');
+    const name = await proj.proj_get_name({ obj: ellipsoid });
+    assert.strictEqual(name, 'WGS 84');
+  });
+
+  test('can get datum from CRS', async () => {
+    const context = await proj.context_create();
+    const crs = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+    const datum = await proj.proj_crs_get_datum_forced({ ctx: context, crs });
+    assert(datum, 'Should return datum');
+    const name = await proj.proj_get_name({ obj: datum });
+    assert(name.includes('World Geodetic System 1984'), `Datum should be WGS 84, got ${name}`);
+  });
+
+  // Operation Factory tests
+
+  test('can find operations between CRS', async () => {
+    const ctx = await proj.context_create();
+    const src = await proj.proj_create_from_database({ context: ctx, auth_name: 'EPSG', code: '4326' });
+    const tgt = await proj.proj_create_from_database({ context: ctx, auth_name: 'EPSG', code: '2249' });
+    const ofc = await proj.proj_create_operation_factory_context({ context: ctx });
+    assert(ofc, 'Should create operation factory context');
+    const ops = await proj.proj_create_operations({ context: ctx, source_crs: src, target_crs: tgt, operationContext: ofc });
+    assert(ops, 'Should return operations list');
+    const count = await proj.proj_list_get_count({ result: ops });
+    assert(typeof count === 'number', `Operation count should be a number, got ${typeof count}`);
+  });
+
+  test('can normalize for visualization', async () => {
+    const context = await proj.context_create();
+    const tx = await proj.proj_create_crs_to_crs({ context, source_crs: 'EPSG:4326', target_crs: 'EPSG:3857' });
+    const normalized = await proj.proj_normalize_for_visualization({ context, obj: tx });
+    assert(normalized, 'Should return normalized transformation');
+  });
+
+  // CreateFromWkt test
+
+  test('can create CRS from WKT', async () => {
+    const context = await proj.context_create();
+    const crs = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+    const wkt = await proj.proj_as_wkt({ context, pj: crs });
+    const crsFromWkt = await proj.proj_create_from_wkt({ context, wkt });
+    assert(crsFromWkt, 'Should create CRS from WKT');
+    const name = await proj.proj_get_name({ obj: crsFromWkt });
+    assert.strictEqual(name, 'WGS 84');
   });
 
   test('ctx/context alias: functions with ctx param accept context key', async () => {

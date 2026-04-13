@@ -307,7 +307,7 @@
 (declare arg->js-literal arg-array->js-array-string keyword->js-string keyword-array->js-string)
 
 (defn ^:async proj-emscripten-helper
-  [f return-type arg-types args & [proj-returns force-worker-idx]]
+  [f return-type arg-types args & [proj-returns force-worker-idx fn-def]]
   (let [proj-returns (or proj-returns nil)]
     (ensure-proj-initialized!)
     #?(:clj
@@ -377,6 +377,16 @@
                                 :argTypes (clj->js (mapv name arg-types))
                                 :args (clj->js converted-args)}
                          proj-returns (assoc :projReturns (name proj-returns))
+                         (and (= proj-returns :struct-list) fn-def)
+                         (assoc :structFields
+                                (clj->js (mapv (fn [[kw ftype wasm-offset]]
+                                                 #js {:key (.replace (name kw) (js/RegExp. "-" "g") "_")
+                                                      :type (name ftype)
+                                                      :offset wasm-offset})
+                                               (:struct-fields fn-def)))
+                                :structDestroyFn (:struct-destroy-fn fn-def)
+                                :structParamsCreate (:struct-params-create fn-def)
+                                :structParamsDestroy (:struct-params-destroy fn-def))
                          (seq coord-arrays)
                          (assoc :coordArrays
                                 (clj->js (mapv (fn [ca]
@@ -626,29 +636,25 @@
          (tsgcd (.execute (.getMember @p "stringToUTF8") (into-array Object [s (address-as-polyglot-value addr) len])))
          addr))))
 
-#?(:clj
-   (defn string-array-to-polyglot-array
-     "Allocates an array of strings on the Emscripten heap and returns a pointer to an array of pointers.
-   Each string is allocated individually, and then an array of pointers to these strings is created.
-   Returns a Polyglot Value representing the `char**`."
-     [s-list]
+(defn string-list-to-native-array
+  "CLJ: Allocates an array of strings on the Emscripten heap, returns a Polyglot char**.
+   CLJS: Returns a JS array (the worker handles allocation via ccall)."
+  [s-list]
+  #?(:cljs (clj->js (vec s-list))
+     :clj
      (if (empty? s-list)
-       (tsgcd (.asValue context 0)) ; Return NULL pointer for empty list
+       (tsgcd (.asValue context 0))
        (let [string-pointers (mapv allocate-string-on-heap s-list)
              num-strings (count string-pointers)
-              ;; Allocate memory for the array of pointers (char**)
-              ;; Each pointer is 4 bytes on 32-bit Emscripten WASM
-             array-of-pointers-size (* (inc num-strings) 4) ; +1 for null terminator
+             array-of-pointers-size (* (inc num-strings) 4)
              array-of-pointers-addr (address-as-polyglot-value (malloc array-of-pointers-size))]
          (tsgcd
           (do
-             ;; Write each string pointer into the allocated array
             (doseq [idx (range num-strings)]
               (let [ptr (nth string-pointers idx)
                     offset (* idx 4)]
                 (.execute (.getMember @p "setValue")
                           (into-array Object [(+ (address-as-int array-of-pointers-addr) offset) (address-as-int ptr) "*"]))))
-             ;; Null-terminate the array of pointers
             (.execute (.getMember @p "setValue")
                       (into-array Object [(+ (address-as-int array-of-pointers-addr) (* num-strings 4)) 0 "*"]))
             array-of-pointers-addr))))))
@@ -705,7 +711,8 @@
                                                     ccall-arg-types
                                                     args
                                                     proj-returns
-                                                    force-worker-idx)))]
+                                                    force-worker-idx
+                                                    (when (= proj-returns :struct-list) fn-def))))]
     #?(:clj
        (case rettype
          :pointer (if (nil? result)

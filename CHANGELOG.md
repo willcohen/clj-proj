@@ -7,8 +7,16 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - GitHub Actions CI: build native (linux-amd64, linux-aarch64, darwin-aarch64, windows-amd64 cross-compile), WASM, and run tests
 - `coord->coord-array` tests across FFI, GraalVM, Node.js, and Browser
+- Struct-aware return type system: C struct array functions auto-generated from `:struct-fields` metadata in fndefs
+- `proj-get-units-from-database` / `projGetUnitsFromDatabase` / `PROJ.getUnitsFromDatabase()`
+- `proj-get-celestial-body-list-from-database` / `projGetCelestialBodyListFromDatabase` / `PROJ.getCelestialBodyListFromDatabase()`
+- Test coverage for object inspection, CRS decomposition, operation factory, `create-from-wkt`, `set-coord!`, `set-col!` across all platforms
 
 ### Changed
+- BREAKING: `get-crs-info-list-from-database` renamed to `proj-get-crs-info-list-from-database` (Clojure) / `projGetCrsInfoListFromDatabase` (JS)
+- Struct-list dispatch replaces hand-written CRS info list wrapper (~120 lines removed)
+- FFI struct field access via dtype-next struct system instead of hardcoded byte offsets
+- `string-array-to-polyglot-array` renamed to `string-list-to-native-array`, now cross-platform
 - PROJ 9.8.1 (was 9.8.0)
 
 ### Fixed
@@ -16,6 +24,12 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - `coord->coord-array`: missing auto-initialization before dispatch
 - `set-coord!`: wrapped JVM-only (was incorrectly cross-platform)
 - `toggle-graal!`: now resets `implementation` to nil like `force-graal!`/`force-ffi!`
+- JS: null C string pointers in struct results now return `null` (was `""`)
+- JS: null struct-list result now returns `[]` and frees allocated memory
+- Nil string args: FFI gets `""`, WASM gets NULL (was crashing or mismatched)
+- Nil pointer args default to 0 (null pointer) in `extract-args`
+- `proj_create_from_wkt`: pointer args changed to `:pointer?` (nullable)
+
 
 ## [0.1.0-alpha7] - 2026-03-06
 

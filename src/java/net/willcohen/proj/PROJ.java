@@ -71,6 +71,8 @@ public class PROJ {
     private static IFn getAuthoritiesFromDatabaseFn;
     private static IFn getCodesFromDatabaseFn;
     private static IFn getCrsInfoListFromDatabaseFn;
+    private static IFn getUnitsFromDatabaseFn;
+    private static IFn getCelestialBodyListFromDatabaseFn;
     private static IFn contextDestroyFn;
     private static IFn destroyFn;
 
@@ -565,12 +567,12 @@ public class PROJ {
      */
     @SuppressWarnings("unchecked")
     public static List<Map<String, Object>> getCrsInfoListFromDatabase(Object context, String authName) {
-        if (getCrsInfoListFromDatabaseFn == null) getCrsInfoListFromDatabaseFn = getVar("get-crs-info-list-from-database");
+        if (getCrsInfoListFromDatabaseFn == null) getCrsInfoListFromDatabaseFn = getVar("proj-get-crs-info-list-from-database");
         IPersistentMap opts = authName != null
             ? map(kw("context"), context, kw("auth-name"), authName)
             : map(kw("context"), context);
         Object result = getCrsInfoListFromDatabaseFn.invoke(opts);
-        return convertCrsInfoList((List<Map<Keyword, Object>>) result);
+        return convertKeywordMaps((List<Map<Keyword, Object>>) result);
     }
 
     /**
@@ -581,6 +583,62 @@ public class PROJ {
     @SuppressWarnings("unchecked")
     public static List<Map<String, Object>> getCrsInfoListFromDatabase(Object context) {
         return getCrsInfoListFromDatabase(context, null);
+    }
+
+    /**
+     * Get unit information from PROJ's database.
+     * Each map has keys: auth-name, code, name, category, conv-factor, proj-short-name, deprecated.
+     * @param context the PROJ context (optional, pass null to auto-create)
+     * @param authName authority name filter (e.g., "EPSG"), or null for all
+     * @param category unit category filter (e.g., "linear", "angular"), or null for all
+     * @param allowDeprecated whether to include deprecated units
+     * @return list of unit info maps with String keys
+     */
+    @SuppressWarnings("unchecked")
+    public static List<Map<String, Object>> getUnitsFromDatabase(Object context, String authName, String category, boolean allowDeprecated) {
+        if (getUnitsFromDatabaseFn == null) getUnitsFromDatabaseFn = getVar("proj-get-units-from-database");
+        IPersistentMap opts = map(kw("context"), context,
+                                  kw("auth-name"), authName != null ? authName : "",
+                                  kw("category"), category != null ? category : "",
+                                  kw("allow-deprecated"), allowDeprecated ? 1 : 0);
+        Object result = getUnitsFromDatabaseFn.invoke(opts);
+        return convertKeywordMaps((List<Map<Keyword, Object>>) result);
+    }
+
+    /**
+     * Get unit information from PROJ's database for all authorities and categories.
+     * @param context the PROJ context
+     * @return list of unit info maps with String keys
+     */
+    @SuppressWarnings("unchecked")
+    public static List<Map<String, Object>> getUnitsFromDatabase(Object context) {
+        return getUnitsFromDatabase(context, null, null, false);
+    }
+
+    /**
+     * Get celestial body information from PROJ's database.
+     * Each map has keys: auth-name, name.
+     * @param context the PROJ context (optional, pass null to auto-create)
+     * @param authName authority name filter, or null for all
+     * @return list of celestial body info maps with String keys
+     */
+    @SuppressWarnings("unchecked")
+    public static List<Map<String, Object>> getCelestialBodyListFromDatabase(Object context, String authName) {
+        if (getCelestialBodyListFromDatabaseFn == null) getCelestialBodyListFromDatabaseFn = getVar("proj-get-celestial-body-list-from-database");
+        IPersistentMap opts = map(kw("context"), context,
+                                  kw("auth-name"), authName != null ? authName : "");
+        Object result = getCelestialBodyListFromDatabaseFn.invoke(opts);
+        return convertKeywordMaps((List<Map<Keyword, Object>>) result);
+    }
+
+    /**
+     * Get celestial body information from PROJ's database for all authorities.
+     * @param context the PROJ context
+     * @return list of celestial body info maps with String keys
+     */
+    @SuppressWarnings("unchecked")
+    public static List<Map<String, Object>> getCelestialBodyListFromDatabase(Object context) {
+        return getCelestialBodyListFromDatabase(context, null);
     }
 
     // --- Cleanup (usually not needed due to automatic resource tracking) ---
@@ -638,7 +696,7 @@ public class PROJ {
     }
 
     @SuppressWarnings("unchecked")
-    private static List<Map<String, Object>> convertCrsInfoList(List<Map<Keyword, Object>> cljList) {
+    private static List<Map<String, Object>> convertKeywordMaps(List<Map<Keyword, Object>> cljList) {
         List<Map<String, Object>> result = new ArrayList<>(cljList.size());
         for (Map<Keyword, Object> entry : cljList) {
             Map<String, Object> javaMap = new HashMap<>();
