@@ -8,8 +8,9 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - GitHub Actions CI: build native (linux-amd64, linux-aarch64, darwin-aarch64, windows-amd64 cross-compile), WASM, and run tests
 - `coord->coord-array` tests across FFI, GraalVM, Node.js, and Browser
 - Struct-aware return type system: C struct array functions auto-generated from `:struct-fields` metadata in fndefs
-- `proj-get-units-from-database` / `projGetUnitsFromDatabase` / `PROJ.getUnitsFromDatabase()`
-- `proj-get-celestial-body-list-from-database` / `projGetCelestialBodyListFromDatabase` / `PROJ.getCelestialBodyListFromDatabase()`
+- `proj_get_units_from_database`
+- `proj_get_celestial_body_list_from_database`
+- `proj_create`: raw binding for PROJ strings, WKT, and pipeline definitions (e.g., `+proj=pipeline +step +proj=robin`)
 - Test coverage for object inspection, CRS decomposition, operation factory, `create-from-wkt`, `set-coord!`, `set-col!` across all platforms
 
 ### Changed

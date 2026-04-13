@@ -45,6 +45,7 @@ public class PROJTest {
             testGetCrsInfoList();
             testGetUnits();
             testGetCelestialBodies();
+            testCreate();
 
             System.out.println("\n=== Test Results ===");
             System.out.println("Passed: " + testsPassed);
@@ -401,6 +402,47 @@ public class PROJTest {
             }
         } catch (Exception e) {
             fail("getCelestialBodyListFromDatabase failed: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private static void testCreate() {
+        System.out.println("Test: PROJ.create()");
+        try {
+            Object ctx = PROJ.contextCreate();
+
+            Object robin = PROJ.create(ctx, "+proj=robin");
+            if (robin != null) {
+                pass("Created PJ from PROJ string (+proj=robin)");
+            } else {
+                fail("create(+proj=robin) returned null");
+            }
+
+            Object epsg = PROJ.create(ctx, "EPSG:4326");
+            if (epsg != null) {
+                pass("Created PJ from EPSG code");
+            } else {
+                fail("create(EPSG:4326) returned null");
+            }
+
+            Object pipeline = PROJ.create(ctx,
+                "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=robin");
+            if (pipeline != null) {
+                pass("Created PJ from pipeline definition");
+            } else {
+                fail("create(pipeline) returned null");
+            }
+
+            // Verify the EPSG object is usable
+            Object noCtx = PROJ.create("EPSG:4326");
+            if (noCtx != null) {
+                pass("Created PJ without explicit context");
+            } else {
+                fail("create(EPSG:4326) without context returned null");
+            }
+
+        } catch (Exception e) {
+            fail("create test failed: " + e.getMessage());
             e.printStackTrace();
         }
     }

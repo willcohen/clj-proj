@@ -1007,4 +1007,29 @@ describe('proj-wasm Node.js API', () => {
     assert.strictEqual(epoch, 2024.0, 'Epoch should round-trip as 2024.0');
   });
 
+  test('proj_create with PROJ string', async () => {
+    const context = await proj.context_create();
+    const pj = await proj.proj_create({ context, definition: '+proj=robin' });
+    assert(pj, 'Should create PJ from PROJ string');
+    assert(pj !== 0, 'Should not be null pointer');
+  });
+
+  test('proj_create with EPSG code', async () => {
+    const context = await proj.context_create();
+    const pj = await proj.proj_create({ context, definition: 'EPSG:4326' });
+    assert(pj, 'Should create PJ from EPSG code');
+    const name = await proj.proj_get_name({ obj: pj });
+    assert.strictEqual(name, 'WGS 84');
+  });
+
+  test('proj_create with pipeline definition', async () => {
+    const context = await proj.context_create();
+    const pj = await proj.proj_create({
+      context,
+      definition: '+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=robin'
+    });
+    assert(pj, 'Should create PJ from pipeline');
+    assert(pj !== 0, 'Should not be null pointer');
+  });
+
 });

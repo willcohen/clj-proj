@@ -898,4 +898,39 @@ test.describe('PROJ WASM Browser Tests', () => {
       expect(result.releasingBlockCompleted).toBe(true);
     }
   });
+
+  test('proj_create with PROJ string and pipeline', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      try {
+        const context = await proj.context_create();
+
+        const robin = await proj.proj_create({ context, definition: '+proj=robin' });
+        if (!robin || robin === 0) return { error: 'robin is null/0' };
+
+        const epsg = await proj.proj_create({ context, definition: 'EPSG:4326' });
+        if (!epsg || epsg === 0) return { error: 'epsg is null/0' };
+
+        const name = await proj.proj_get_name({ obj: epsg });
+
+        const pipeline = await proj.proj_create({
+          context,
+          definition: '+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=robin'
+        });
+
+        return {
+          robinCreated: !!robin && robin !== 0,
+          epsgName: name,
+          pipelineCreated: !!pipeline && pipeline !== 0
+        };
+      } catch (e) {
+        return { error: e.message };
+      }
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.robinCreated).toBe(true);
+    expect(result.epsgName).toBe('WGS 84');
+    expect(result.pipelineCreated).toBe(true);
+  });
 });

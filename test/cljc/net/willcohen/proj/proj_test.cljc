@@ -432,6 +432,21 @@
           (is (some? crs-wkt) "Should create CRS from WKT")
           (is (= "WGS 84" (proj/proj-get-name {:obj crs-wkt}))))))))
 
+(deftest create-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-create with PROJ string"
+        (let [pj (proj/proj-create {:context ctx :definition "+proj=robin"})]
+          (is (some? pj))))
+      (testing "proj-create with EPSG code"
+        (let [pj (proj/proj-create {:context ctx :definition "EPSG:4326"})]
+          (is (some? pj))
+          (is (= "WGS 84" (proj/proj-get-name {:obj pj})))))
+      (testing "proj-create with pipeline"
+        (let [pj (proj/proj-create {:context ctx
+                                    :definition "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=robin"})]
+          (is (some? pj)))))))
+
 ;; QueryImplementation test
 
 (deftest query-implementation-test

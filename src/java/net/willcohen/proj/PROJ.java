@@ -64,6 +64,7 @@ public class PROJ {
     private static IFn errorCodeToStringFn;
 
     // Generated PROJ functions (most commonly used)
+    private static IFn createFn;
     private static IFn createCrsToCrsFn;
     private static IFn createCrsToCrsFromPjFn;
     private static IFn createFromDatabaseFn;
@@ -440,6 +441,32 @@ public class PROJ {
         return createCrsToCrsFromPjFn.invoke(map(
             kw("source-crs"), sourceCrs,
             kw("target-crs"), targetCrs
+        ));
+    }
+
+    /**
+     * Create a PROJ object from a definition string (PROJ string, WKT, or pipeline).
+     * @param context the PROJ context
+     * @param definition the definition string (e.g., "+proj=robin", "EPSG:4326", pipeline)
+     * @return PJ object
+     */
+    public static Object create(Object context, String definition) {
+        if (createFn == null) createFn = getVar("proj-create");
+        return createFn.invoke(map(
+            kw("context"), context,
+            kw("definition"), definition
+        ));
+    }
+
+    /**
+     * Create a PROJ object from a definition string using default context.
+     * @param definition the definition string
+     * @return PJ object
+     */
+    public static Object create(String definition) {
+        if (createFn == null) createFn = getVar("proj-create");
+        return createFn.invoke(map(
+            kw("definition"), definition
         ));
     }
 

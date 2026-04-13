@@ -213,6 +213,10 @@
    :proj_context_guess_wkt_dialect {:rettype :int32 ; PJ_GUESSED_WKT_DIALECT
                                     :argtypes [['context :pointer]
                                                ['wkt :string]]}
+   :proj_create {:rettype :pointer ; PJ *
+                 :argtypes [['context :pointer]
+                            ['definition :string]]
+                 :proj-returns :pj}
    :proj_create_from_wkt {:rettype :pointer ; PJ *
                           :argtypes [['context :pointer]
                                      ['wkt :string]
