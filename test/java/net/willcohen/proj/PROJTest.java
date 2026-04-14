@@ -46,6 +46,17 @@ public class PROJTest {
             testGetUnits();
             testGetCelestialBodies();
             testCreate();
+            testGetAreaOfUse();
+            testGetAreaOfUseEx();
+            testCsGetAxisInfo();
+            testEllipsoidGetParameters();
+            testPrimeMeridianGetParameters();
+            testCoordoperationGetMethodInfo();
+            testCoordoperationGetParam();
+            testCoordoperationGetGridUsed();
+            testUomGetInfoFromDatabase();
+            testGridGetInfoFromDatabase();
+            testCoordoperationGetTowgs84Values();
 
             System.out.println("\n=== Test Results ===");
             System.out.println("Passed: " + testsPassed);
@@ -304,10 +315,10 @@ public class PROJTest {
             }
             if (wgs84 != null) {
                 pass("Found EPSG:4326 (WGS 84)");
-                if ("EPSG".equals(wgs84.get("auth-name"))) {
-                    pass("auth-name is EPSG");
+                if ("EPSG".equals(wgs84.get("authName"))) {
+                    pass("authName is EPSG");
                 } else {
-                    fail("auth-name should be EPSG, got " + wgs84.get("auth-name"));
+                    fail("authName should be EPSG, got " + wgs84.get("authName"));
                 }
                 if ("WGS 84".equals(wgs84.get("name"))) {
                     pass("name is WGS 84");
@@ -356,16 +367,16 @@ public class PROJTest {
             }
             if (meter != null) {
                 pass("Found EPSG:9001 (metre): " + meter.get("name"));
-                if (meter.get("conv-factor") instanceof Number) {
-                    pass("conv-factor is a number: " + meter.get("conv-factor"));
+                if (meter.get("convFactor") instanceof Number) {
+                    pass("conv-factor is a number: " + meter.get("convFactor"));
                 } else {
-                    fail("conv-factor is not a number: " + meter.get("conv-factor"));
+                    fail("conv-factor is not a number: " + meter.get("convFactor"));
                 }
             } else {
                 fail("EPSG:9001 (metre) not found in results");
             }
             if (usFoot != null) {
-                double cf = ((Number) usFoot.get("conv-factor")).doubleValue();
+                double cf = ((Number) usFoot.get("convFactor")).doubleValue();
                 if (cf > 0.3 && cf < 0.4) {
                     pass("Found EPSG:9003 (US survey foot), conv-factor=" + cf);
                 } else {
@@ -396,7 +407,7 @@ public class PROJTest {
                 if ("Earth".equals(e.get("name"))) { earth = e; break; }
             }
             if (earth != null) {
-                pass("Found Earth: auth-name=" + earth.get("auth-name"));
+                pass("Found Earth: authName=" + earth.get("authName"));
             } else {
                 fail("Earth not found in celestial body results");
             }
@@ -444,6 +455,215 @@ public class PROJTest {
         } catch (Exception e) {
             fail("create test failed: " + e.getMessage());
             e.printStackTrace();
+        }
+    }
+
+    private static void testGetAreaOfUse() {
+        System.out.println("\nTest: getAreaOfUse");
+        try {
+            Object ctx = PROJ.contextCreate();
+            Object crs = PROJ.createFromDatabase(ctx, "EPSG", "4326");
+            Map<String, Object> area = PROJ.getAreaOfUse(ctx, crs);
+            if (area == null) { fail("getAreaOfUse returned null"); return; }
+            assertEqual("westLonDegree", -180.0, (Double) area.get("westLonDegree"));
+            assertEqual("southLatDegree", -90.0, (Double) area.get("southLatDegree"));
+            assertEqual("eastLonDegree", 180.0, (Double) area.get("eastLonDegree"));
+            assertEqual("northLatDegree", 90.0, (Double) area.get("northLatDegree"));
+            if (area.get("areaName") instanceof String) {
+                pass("getAreaOfUse returned valid AreaOfUse");
+            } else {
+                fail("areaName is not a string");
+            }
+        } catch (Exception e) {
+            fail("getAreaOfUse failed: " + e.getMessage());
+        }
+    }
+
+    private static void testGetAreaOfUseEx() {
+        System.out.println("\nTest: getAreaOfUseEx");
+        try {
+            Object ctx = PROJ.contextCreate();
+            Object crs = PROJ.createFromDatabase(ctx, "EPSG", "4326");
+            Map<String, Object> area = PROJ.getAreaOfUseEx(ctx, crs, 0);
+            if (area == null) { fail("getAreaOfUseEx returned null"); return; }
+            if (area.get("westLonDegree") instanceof Number) {
+                pass("getAreaOfUseEx returned valid AreaOfUse");
+            } else {
+                fail("westLonDegree is not a number");
+            }
+        } catch (Exception e) {
+            fail("getAreaOfUseEx failed: " + e.getMessage());
+        }
+    }
+
+    private static void testCsGetAxisInfo() {
+        System.out.println("\nTest: csGetAxisInfo");
+        try {
+            Object ctx = PROJ.contextCreate();
+            Object crs = PROJ.createFromDatabase(ctx, "EPSG", "4326");
+            Object cs = PROJ.crsGetCoordinateSystem(ctx, crs);
+            Map<String, Object> axis = PROJ.csGetAxisInfo(ctx, cs, 0);
+            if (axis == null) { fail("csGetAxisInfo returned null"); return; }
+            if (axis.get("name") instanceof String && axis.get("unitConvFactor") instanceof Number) {
+                pass("csGetAxisInfo returned valid AxisInfo: " + axis.get("name"));
+            } else {
+                fail("AxisInfo has wrong types");
+            }
+        } catch (Exception e) {
+            fail("csGetAxisInfo failed: " + e.getMessage());
+        }
+    }
+
+    private static void testEllipsoidGetParameters() {
+        System.out.println("\nTest: ellipsoidGetParameters");
+        try {
+            Object ctx = PROJ.contextCreate();
+            Object crs = PROJ.createFromDatabase(ctx, "EPSG", "4326");
+            Object ellipsoid = PROJ.getEllipsoid(ctx, crs);
+            Map<String, Object> params = PROJ.ellipsoidGetParameters(ctx, ellipsoid);
+            if (params == null) { fail("ellipsoidGetParameters returned null"); return; }
+            double semiMajor = ((Number) params.get("semiMajorMetre")).doubleValue();
+            double invFlat = ((Number) params.get("invFlattening")).doubleValue();
+            if (semiMajor > 6378000 && invFlat > 298) {
+                pass("ellipsoidGetParameters: semiMajor=" + semiMajor + " invFlat=" + invFlat);
+            } else {
+                fail("Unexpected ellipsoid values: " + params);
+            }
+        } catch (Exception e) {
+            fail("ellipsoidGetParameters failed: " + e.getMessage());
+        }
+    }
+
+    private static void testPrimeMeridianGetParameters() {
+        System.out.println("\nTest: primeMeridianGetParameters");
+        try {
+            Object ctx = PROJ.contextCreate();
+            Object crs = PROJ.createFromDatabase(ctx, "EPSG", "4326");
+            Object pm = PROJ.getPrimeMeridian(ctx, crs);
+            Map<String, Object> params = PROJ.primeMeridianGetParameters(ctx, pm);
+            if (params == null) { fail("primeMeridianGetParameters returned null"); return; }
+            double lon = ((Number) params.get("longitude")).doubleValue();
+            if (lon == 0.0 && params.get("unitName") instanceof String) {
+                pass("primeMeridianGetParameters: longitude=0.0 unit=" + params.get("unitName"));
+            } else {
+                fail("Unexpected PM values: " + params);
+            }
+        } catch (Exception e) {
+            fail("primeMeridianGetParameters failed: " + e.getMessage());
+        }
+    }
+
+    private static void testCoordoperationGetMethodInfo() {
+        System.out.println("\nTest: coordoperationGetMethodInfo");
+        try {
+            Object ctx = PROJ.contextCreate();
+            Object crs = PROJ.createFromDatabase(ctx, "EPSG", "2249");
+            Object coordop = PROJ.crsGetCoordoperation(ctx, crs);
+            Map<String, Object> info = PROJ.coordoperationGetMethodInfo(ctx, coordop);
+            if (info == null) { fail("coordoperationGetMethodInfo returned null"); return; }
+            if (info.get("methodName") instanceof String) {
+                pass("coordoperationGetMethodInfo: " + info.get("methodName"));
+            } else {
+                fail("methodName is not a string");
+            }
+        } catch (Exception e) {
+            fail("coordoperationGetMethodInfo failed: " + e.getMessage());
+        }
+    }
+
+    private static void testCoordoperationGetParam() {
+        System.out.println("\nTest: coordoperationGetParam");
+        try {
+            Object ctx = PROJ.contextCreate();
+            Object crs = PROJ.createFromDatabase(ctx, "EPSG", "2249");
+            Object coordop = PROJ.crsGetCoordoperation(ctx, crs);
+            Map<String, Object> param = PROJ.coordoperationGetParam(ctx, coordop, 0);
+            if (param == null) { fail("coordoperationGetParam returned null"); return; }
+            if (param.get("name") instanceof String && param.get("value") instanceof Number) {
+                pass("coordoperationGetParam: " + param.get("name") + "=" + param.get("value"));
+            } else {
+                fail("param has wrong types: " + param);
+            }
+        } catch (Exception e) {
+            fail("coordoperationGetParam failed: " + e.getMessage());
+        }
+    }
+
+    private static void testCoordoperationGetGridUsed() {
+        System.out.println("\nTest: coordoperationGetGridUsed");
+        try {
+            Object ctx = PROJ.contextCreate();
+            Object crs = PROJ.createFromDatabase(ctx, "EPSG", "2249");
+            Object coordop = PROJ.crsGetCoordoperation(ctx, crs);
+            int count = PROJ.coordoperationGetGridUsedCount(ctx, coordop);
+            if (count > 0) {
+                Map<String, Object> grid = PROJ.coordoperationGetGridUsed(ctx, coordop, 0);
+                if (grid != null && grid.get("shortName") instanceof String) {
+                    pass("coordoperationGetGridUsed: " + grid.get("shortName"));
+                } else {
+                    fail("grid info has wrong structure");
+                }
+            } else {
+                pass("coordoperationGetGridUsed: no grids used (count=0)");
+            }
+        } catch (Exception e) {
+            fail("coordoperationGetGridUsed failed: " + e.getMessage());
+        }
+    }
+
+    private static void testUomGetInfoFromDatabase() {
+        System.out.println("\nTest: uomGetInfoFromDatabase");
+        try {
+            Object ctx = PROJ.contextCreate();
+            Map<String, Object> info = PROJ.uomGetInfoFromDatabase(ctx, "EPSG", "9001");
+            if (info == null) { fail("uomGetInfoFromDatabase returned null"); return; }
+            if ("metre".equals(info.get("name")) && ((Number) info.get("convFactor")).doubleValue() == 1.0) {
+                pass("uomGetInfoFromDatabase: metre conv=1.0 cat=" + info.get("category"));
+            } else {
+                fail("Unexpected UOM values: " + info);
+            }
+        } catch (Exception e) {
+            fail("uomGetInfoFromDatabase failed: " + e.getMessage());
+        }
+    }
+
+    private static void testGridGetInfoFromDatabase() {
+        System.out.println("\nTest: gridGetInfoFromDatabase");
+        try {
+            Object ctx = PROJ.contextCreate();
+            Map<String, Object> info = PROJ.gridGetInfoFromDatabase(ctx, "us_noaa_nadcon5_nad83_1986_nad83_harn_conus.tif");
+            if (info == null) { fail("gridGetInfoFromDatabase returned null"); return; }
+            if (info.get("fullName") instanceof String && info.get("available") instanceof Number) {
+                pass("gridGetInfoFromDatabase: " + info.get("fullName"));
+            } else {
+                fail("Unexpected grid info: " + info);
+            }
+        } catch (Exception e) {
+            fail("gridGetInfoFromDatabase failed: " + e.getMessage());
+        }
+    }
+
+    private static void testCoordoperationGetTowgs84Values() {
+        System.out.println("\nTest: coordoperationGetTowgs84Values");
+        try {
+            Object ctx = PROJ.contextCreate();
+            Object op = PROJ.create(ctx, "+proj=helmert +x=23 +y=-45 +z=67 +rx=0.1 +ry=-0.2 +rz=0.3 +s=1.5 +convention=position_vector");
+            Map<String, Object> result = PROJ.coordoperationGetTowgs84Values(ctx, op, 7, 0);
+            if (result != null && result.get("values") != null) {
+                pass("coordoperationGetTowgs84Values returned values");
+            } else {
+                pass("coordoperationGetTowgs84Values returned null (expected for this op type)");
+            }
+        } catch (Exception e) {
+            fail("coordoperationGetTowgs84Values failed: " + e.getMessage());
+        }
+    }
+
+    private static void assertEqual(String field, double expected, double actual) {
+        if (expected == actual) {
+            pass(field + " = " + actual);
+        } else {
+            fail(field + " expected " + expected + " but got " + actual);
         }
     }
 

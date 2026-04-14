@@ -76,6 +76,25 @@ public class PROJ {
     private static IFn getCelestialBodyListFromDatabaseFn;
     private static IFn contextDestroyFn;
     private static IFn destroyFn;
+    private static IFn getNameFn;
+    private static IFn getEllipsoidFn;
+    private static IFn getPrimeMeridianFn;
+    private static IFn crsGetCoordinateSystemFn;
+    private static IFn csGetAxisCountFn;
+    private static IFn crsGetCoordoperationFn;
+    private static IFn getAreaOfUseFn;
+    private static IFn getAreaOfUseExFn;
+    private static IFn csGetAxisInfoFn;
+    private static IFn ellipsoidGetParametersFn;
+    private static IFn primeMeridianGetParametersFn;
+    private static IFn coordoperationGetMethodInfoFn;
+    private static IFn coordoperationGetParamFn;
+    private static IFn coordoperationGetParamCountFn;
+    private static IFn coordoperationGetGridUsedCountFn;
+    private static IFn coordoperationGetGridUsedFn;
+    private static IFn uomGetInfoFromDatabaseFn;
+    private static IFn gridGetInfoFromDatabaseFn;
+    private static IFn coordoperationGetTowgs84ValuesFn;
 
     private static synchronized void ensureLoaded() {
         if (!nsLoaded) {
@@ -668,6 +687,131 @@ public class PROJ {
         return getCelestialBodyListFromDatabase(context, null);
     }
 
+    // --- CRS Decomposition ---
+
+    public static String getName(Object obj) {
+        if (getNameFn == null) getNameFn = getVar("proj-get-name");
+        return (String) getNameFn.invoke(map(kw("obj"), obj));
+    }
+
+    public static Object getEllipsoid(Object context, Object obj) {
+        if (getEllipsoidFn == null) getEllipsoidFn = getVar("proj-get-ellipsoid");
+        return getEllipsoidFn.invoke(map(kw("ctx"), context, kw("obj"), obj));
+    }
+
+    public static Object getPrimeMeridian(Object context, Object obj) {
+        if (getPrimeMeridianFn == null) getPrimeMeridianFn = getVar("proj-get-prime-meridian");
+        return getPrimeMeridianFn.invoke(map(kw("ctx"), context, kw("obj"), obj));
+    }
+
+    public static Object crsGetCoordinateSystem(Object context, Object crs) {
+        if (crsGetCoordinateSystemFn == null) crsGetCoordinateSystemFn = getVar("proj-crs-get-coordinate-system");
+        return crsGetCoordinateSystemFn.invoke(map(kw("ctx"), context, kw("crs"), crs));
+    }
+
+    public static int csGetAxisCount(Object context, Object cs) {
+        if (csGetAxisCountFn == null) csGetAxisCountFn = getVar("proj-cs-get-axis-count");
+        Object result = csGetAxisCountFn.invoke(map(kw("ctx"), context, kw("cs"), cs));
+        return ((Number) result).intValue();
+    }
+
+    public static Object crsGetCoordoperation(Object context, Object crs) {
+        if (crsGetCoordoperationFn == null) crsGetCoordoperationFn = getVar("proj-crs-get-coordoperation");
+        return crsGetCoordoperationFn.invoke(map(kw("ctx"), context, kw("crs"), crs));
+    }
+
+    public static int coordoperationGetParamCount(Object context, Object coordoperation) {
+        if (coordoperationGetParamCountFn == null) coordoperationGetParamCountFn = getVar("proj-coordoperation-get-param-count");
+        Object result = coordoperationGetParamCountFn.invoke(map(kw("ctx"), context, kw("coordoperation"), coordoperation));
+        return ((Number) result).intValue();
+    }
+
+    public static int coordoperationGetGridUsedCount(Object context, Object coordoperation) {
+        if (coordoperationGetGridUsedCountFn == null) coordoperationGetGridUsedCountFn = getVar("proj-coordoperation-get-grid-used-count");
+        Object result = coordoperationGetGridUsedCountFn.invoke(map(kw("ctx"), context, kw("coordoperation"), coordoperation));
+        return ((Number) result).intValue();
+    }
+
+    // --- Out-param functions (return Maps with String keys) ---
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> getAreaOfUse(Object context, Object obj) {
+        if (getAreaOfUseFn == null) getAreaOfUseFn = getVar("proj-get-area-of-use");
+        Object result = getAreaOfUseFn.invoke(map(kw("context"), context, kw("obj"), obj));
+        return result != null ? convertKeywordMap((Map<Keyword, Object>) result) : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> getAreaOfUseEx(Object context, Object obj, int domainIdx) {
+        if (getAreaOfUseExFn == null) getAreaOfUseExFn = getVar("proj-get-area-of-use-ex");
+        Object result = getAreaOfUseExFn.invoke(map(kw("context"), context, kw("obj"), obj, kw("domainIdx"), domainIdx));
+        return result != null ? convertKeywordMap((Map<Keyword, Object>) result) : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> csGetAxisInfo(Object context, Object cs, int index) {
+        if (csGetAxisInfoFn == null) csGetAxisInfoFn = getVar("proj-cs-get-axis-info");
+        Object result = csGetAxisInfoFn.invoke(map(kw("ctx"), context, kw("cs"), cs, kw("index"), index));
+        return result != null ? convertKeywordMap((Map<Keyword, Object>) result) : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> ellipsoidGetParameters(Object context, Object ellipsoid) {
+        if (ellipsoidGetParametersFn == null) ellipsoidGetParametersFn = getVar("proj-ellipsoid-get-parameters");
+        Object result = ellipsoidGetParametersFn.invoke(map(kw("ctx"), context, kw("ellipsoid"), ellipsoid));
+        return result != null ? convertKeywordMap((Map<Keyword, Object>) result) : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> primeMeridianGetParameters(Object context, Object primeMeridian) {
+        if (primeMeridianGetParametersFn == null) primeMeridianGetParametersFn = getVar("proj-prime-meridian-get-parameters");
+        Object result = primeMeridianGetParametersFn.invoke(map(kw("ctx"), context, kw("prime-meridian"), primeMeridian));
+        return result != null ? convertKeywordMap((Map<Keyword, Object>) result) : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> coordoperationGetMethodInfo(Object context, Object coordoperation) {
+        if (coordoperationGetMethodInfoFn == null) coordoperationGetMethodInfoFn = getVar("proj-coordoperation-get-method-info");
+        Object result = coordoperationGetMethodInfoFn.invoke(map(kw("ctx"), context, kw("coordoperation"), coordoperation));
+        return result != null ? convertKeywordMap((Map<Keyword, Object>) result) : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> coordoperationGetParam(Object context, Object coordoperation, int index) {
+        if (coordoperationGetParamFn == null) coordoperationGetParamFn = getVar("proj-coordoperation-get-param");
+        Object result = coordoperationGetParamFn.invoke(map(kw("ctx"), context, kw("coordoperation"), coordoperation, kw("index"), index));
+        return result != null ? convertKeywordMap((Map<Keyword, Object>) result) : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> coordoperationGetGridUsed(Object context, Object coordoperation, int index) {
+        if (coordoperationGetGridUsedFn == null) coordoperationGetGridUsedFn = getVar("proj-coordoperation-get-grid-used");
+        Object result = coordoperationGetGridUsedFn.invoke(map(kw("ctx"), context, kw("coordoperation"), coordoperation, kw("index"), index));
+        return result != null ? convertKeywordMap((Map<Keyword, Object>) result) : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> uomGetInfoFromDatabase(Object context, String authName, String code) {
+        if (uomGetInfoFromDatabaseFn == null) uomGetInfoFromDatabaseFn = getVar("proj-uom-get-info-from-database");
+        Object result = uomGetInfoFromDatabaseFn.invoke(map(kw("context"), context, kw("auth-name"), authName, kw("code"), code));
+        return result != null ? convertKeywordMap((Map<Keyword, Object>) result) : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> gridGetInfoFromDatabase(Object context, String gridName) {
+        if (gridGetInfoFromDatabaseFn == null) gridGetInfoFromDatabaseFn = getVar("proj-grid-get-info-from-database");
+        Object result = gridGetInfoFromDatabaseFn.invoke(map(kw("context"), context, kw("grid-name"), gridName));
+        return result != null ? convertKeywordMap((Map<Keyword, Object>) result) : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> coordoperationGetTowgs84Values(Object context, Object coordoperation, int valueCount, int emitErrorIfIncompatible) {
+        if (coordoperationGetTowgs84ValuesFn == null) coordoperationGetTowgs84ValuesFn = getVar("proj-coordoperation-get-towgs84-values");
+        Object result = coordoperationGetTowgs84ValuesFn.invoke(map(kw("ctx"), context, kw("coordoperation"), coordoperation,
+            kw("value-count"), valueCount, kw("emit-error-if-incompatible"), emitErrorIfIncompatible));
+        return result != null ? convertKeywordMap((Map<Keyword, Object>) result) : null;
+    }
+
     // --- Cleanup (usually not needed due to automatic resource tracking) ---
 
     /**
@@ -722,13 +866,34 @@ public class PROJ {
         return result;
     }
 
+    private static String kebabToCamelCase(String kebab) {
+        String[] parts = kebab.split("-");
+        if (parts.length == 1) return kebab;
+        StringBuilder sb = new StringBuilder(parts[0]);
+        for (int i = 1; i < parts.length; i++) {
+            if (parts[i].length() > 0) {
+                sb.append(Character.toUpperCase(parts[i].charAt(0)));
+                sb.append(parts[i].substring(1));
+            }
+        }
+        return sb.toString();
+    }
+
+    private static Map<String, Object> convertKeywordMap(Map<Keyword, Object> cljMap) {
+        Map<String, Object> javaMap = new HashMap<>();
+        for (Map.Entry<Keyword, Object> e : cljMap.entrySet()) {
+            javaMap.put(kebabToCamelCase(e.getKey().getName()), e.getValue());
+        }
+        return javaMap;
+    }
+
     @SuppressWarnings("unchecked")
     private static List<Map<String, Object>> convertKeywordMaps(List<Map<Keyword, Object>> cljList) {
         List<Map<String, Object>> result = new ArrayList<>(cljList.size());
         for (Map<Keyword, Object> entry : cljList) {
             Map<String, Object> javaMap = new HashMap<>();
             for (Map.Entry<Keyword, Object> e : entry.entrySet()) {
-                javaMap.put(e.getKey().getName(), e.getValue());
+                javaMap.put(kebabToCamelCase(e.getKey().getName()), e.getValue());
             }
             result.add(javaMap);
         }

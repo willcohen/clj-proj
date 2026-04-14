@@ -387,6 +387,19 @@
                                 :structDestroyFn (:struct-destroy-fn fn-def)
                                 :structParamsCreate (:struct-params-create fn-def)
                                 :structParamsDestroy (:struct-params-destroy fn-def))
+                         (and (= proj-returns :out-params) fn-def)
+                         (assoc :outFields
+                                (clj->js (mapv (fn [field-spec]
+                                                 (let [field-name (first field-spec)
+                                                       field-type (second field-spec)]
+                                                   (cond-> {:key (.replace (name field-name) (js/RegExp. "-" "g") "_")
+                                                            :type (name field-type)}
+                                                     (= field-type :double-array)
+                                                     (assoc :countArgIdx
+                                                            (let [count-arg-name (nth field-spec 3)
+                                                                  arg-names (mapv #(name (first %)) (:argtypes fn-def))]
+                                                              (.indexOf arg-names (name count-arg-name)))))))
+                                               (:out-fields fn-def))))
                          (seq coord-arrays)
                          (assoc :coordArrays
                                 (clj->js (mapv (fn [ca]
@@ -712,15 +725,16 @@
                                                     args
                                                     proj-returns
                                                     force-worker-idx
-                                                    (when (= proj-returns :struct-list) fn-def))))]
+                                                    (when (#{:struct-list :out-params} proj-returns) fn-def))))]
     #?(:clj
        (case rettype
          :pointer (if (nil? result)
                     nil ; Handle nil result from exception handling
                     (address-as-trackable-pointer result))
-         :string (if (instance? org.graalvm.polyglot.Value result)
-                   (address-as-string result)
-                   result)
+         :string (let [s (if (instance? org.graalvm.polyglot.Value result)
+                           (address-as-string result)
+                           result)]
+                   (if (= "" s) nil s))
          :int32 (if (instance? org.graalvm.polyglot.Value result)
                   (address-as-int result)
                   result)

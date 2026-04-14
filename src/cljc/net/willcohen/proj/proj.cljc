@@ -611,11 +611,19 @@
                                  (#{'context 'ctx} (first first-arg)))))))))
 
 (defn call-ffi-fn
-  "Dispatch to FFI implementation"
+  "Dispatch to FFI implementation. PROJ C functions returning const char* may
+   return NULL (e.g. proj_as_proj_string on non-exportable types). dtype-next's
+   generated wrappers call c->string on the result, which throws
+   IllegalArgumentException on NULL. We catch that and return nil."
   [fn-key args]
   (let [native-fn (ns-resolve 'net.willcohen.proj.impl.native (symbol (name fn-key)))]
     (if native-fn
-      (apply native-fn args)
+      (try
+        (apply native-fn args)
+        (catch IllegalArgumentException e
+          (if (re-find #"PToPointer" (.getMessage e))
+            nil
+            (throw e))))
       (throw (ex-info "Native function not found" {:fn fn-key})))))
 
 (defn call-graal-fn
@@ -1133,9 +1141,175 @@
                                     (org.graalvm.polyglot.proxy.ProxyArray/fromArray (object-array [list-ptr]))])))
            [])))))
 
+(defn- out-param-arg?
+  "True if an argtype spec is an output parameter (name starts with out_)."
+  [[arg-name _arg-type]]
+  (let [s (str arg-name)]
+    (and (>= (count s) 4) (= "out_" (subs s 0 4)))))
+
+(defn- out-field-alloc-size
+  "Byte size needed for an out-field allocation.
+   pointer-size is 8 for native FFI (64-bit), 4 for WASM (32-bit)."
+  [field-spec args fn-def pointer-size]
+  (let [field-type (second field-spec)]
+    (case field-type
+      :double 8
+      :string pointer-size
+      :int 4
+      :double-array (let [count-arg-name (nth field-spec 3)
+                          count-arg-kw (keyword count-arg-name)
+                          input-argtypes (vec (remove out-param-arg? (:argtypes fn-def)))
+                          idx (.indexOf (mapv #(keyword (first %)) input-argtypes) count-arg-kw)]
+                      (* 8 (nth args idx))))))
+
+#?(:clj
+   (defn- dispatch-out-params-ffi
+     "Handle out-params dispatch for FFI platform.
+      args contains only user-provided (non-out) arguments from extract-args."
+     [fn-key fn-def args]
+     (let [ptr-size 8
+           out-fields (:out-fields fn-def)
+           allocs (mapv (fn [field-spec]
+                          (let [size (out-field-alloc-size field-spec args fn-def ptr-size)]
+                            (doto (com.sun.jna.Memory. size)
+                              (.clear))))
+                        out-fields)
+           input-idx (atom 0)
+           alloc-idx (atom 0)
+           full-args (mapv (fn [argtype]
+                             (if (out-param-arg? argtype)
+                               (let [i @alloc-idx]
+                                 (swap! alloc-idx inc)
+                                 (nth allocs i))
+                               (let [i @input-idx]
+                                 (swap! input-idx inc)
+                                 (nth args i))))
+                           (:argtypes fn-def))
+           result (call-ffi-fn fn-key full-args)]
+       (if (and (number? result) (zero? result))
+         nil
+         (persistent!
+          (reduce-kv
+           (fn [m i field-spec]
+             (let [[field-name field-type] field-spec
+                   ^com.sun.jna.Memory alloc (nth allocs i)]
+               (assoc! m field-name
+                       (case field-type
+                         :double (.getDouble alloc 0)
+                         :int (.getInt alloc 0)
+                         :string (let [p (.getPointer alloc 0)]
+                                   (when p (.getString p 0 "UTF-8")))
+                         :double-array (let [n (/ (.size alloc) 8)]
+                                         (mapv #(.getDouble alloc (* % 8)) (range n)))))))
+           (transient {})
+           out-fields))))))
+
+#?(:clj
+   (defn- dispatch-out-params-graal
+     "Handle out-params dispatch for GraalVM/WASM platform.
+      args contains only user-provided (non-out) arguments from extract-args."
+     [fn-key fn-def args]
+     (let [ptr-size 4
+           out-fields (:out-fields fn-def)
+           malloc-fn (.getMember @wasm/p "_malloc")
+           free-fn (.getMember @wasm/p "_free")
+           ccall-fn (.getMember @wasm/p "ccall")
+           get-value-fn (.getMember @wasm/p "getValue")
+           utf8-to-string-fn (.getMember @wasm/p "UTF8ToString")
+           allocs (mapv (fn [field-spec]
+                          (let [size (out-field-alloc-size field-spec args fn-def ptr-size)]
+                            (.asInt (.execute malloc-fn (object-array [size])))))
+                        out-fields)
+           input-argtypes (vec (remove out-param-arg? (:argtypes fn-def)))
+           graal-args (mapv (fn [[_arg-spec arg-type] arg-val]
+                              (cond
+                                (= arg-type :string) (or arg-val "")
+                                (nil? arg-val) 0
+                                (and (= arg-type :pointer) (is-context? arg-val))
+                                (wasm/address-as-int (context-ptr arg-val))
+                                (= arg-type :pointer) (wasm/address-as-int arg-val)
+                                :else arg-val))
+                            input-argtypes args)
+           input-idx (atom 0)
+           alloc-idx (atom 0)
+           full-graal-args (mapv (fn [argtype]
+                                   (if (out-param-arg? argtype)
+                                     (let [i @alloc-idx]
+                                       (swap! alloc-idx inc)
+                                       (nth allocs i))
+                                     (let [i @input-idx]
+                                       (swap! input-idx inc)
+                                       (nth graal-args i))))
+                                 (:argtypes fn-def))
+           arg-types (mapv (fn [[_ t]]
+                             (case t
+                               :pointer "number"
+                               :string "string"
+                               :int32 "number"
+                               :size-t "number"
+                               "number"))
+                           (:argtypes fn-def))
+           result (.asInt
+                   (.execute ccall-fn
+                             (into-array Object
+                                         [(string/replace (name fn-key) "-" "_")
+                                          "number"
+                                          (org.graalvm.polyglot.proxy.ProxyArray/fromArray
+                                           (object-array arg-types))
+                                          (org.graalvm.polyglot.proxy.ProxyArray/fromArray
+                                           (object-array full-graal-args))])))]
+       (let [result-map
+             (when (not= result 0)
+               (persistent!
+                (reduce-kv
+                 (fn [m i field-spec]
+                   (let [[field-name field-type] field-spec
+                         ptr (nth allocs i)]
+                     (assoc! m field-name
+                             (case field-type
+                               :double (.asDouble (.execute get-value-fn (object-array [ptr "double"])))
+                               :int (.asInt (.execute get-value-fn (object-array [ptr "i32"])))
+                               :string (let [str-ptr (.asInt (.execute get-value-fn (object-array [ptr "*"])))]
+                                         (when (not= str-ptr 0)
+                                           (.asString (.execute utf8-to-string-fn (object-array [str-ptr])))))
+                               :double-array (let [n (/ (out-field-alloc-size field-spec args fn-def ptr-size) 8)]
+                                               (mapv (fn [j]
+                                                       (.asDouble (.execute get-value-fn
+                                                                            (object-array [(+ ptr (* j 8)) "double"]))))
+                                                     (range n)))))))
+                 (transient {})
+                 out-fields)))]
+         (doseq [ptr allocs]
+           (.execute free-fn (object-array [ptr])))
+         result-map))))
+
+#?(:cljs
+   (defn- snake->camel [s]
+     (let [parts (.split s "_")]
+       (apply str (first parts)
+              (map (fn [p] (str (.toUpperCase (.substring p 0 1)) (.substring p 1)))
+                   (rest parts))))))
+
+#?(:cljs
+   (defn- convert-js-result-keys [result key-casing]
+     (if (not= key-casing :camel)
+       result
+       (if (array? result)
+         (.map result
+               (fn [obj]
+                 (let [out #js {}]
+                   (.forEach (.keys js/Object obj)
+                             (fn [k] (aset out (snake->camel k) (aget obj k))))
+                   out)))
+         (when result
+           (let [out #js {}]
+             (.forEach (.keys js/Object result)
+                       (fn [k] (aset out (snake->camel k) (aget result k))))
+             out))))))
+
 (defn ^:async dispatch-proj-fn
   "Central dispatcher for all PROJ functions"
-  [fn-key fn-def opts]
+  [fn-key fn-def opts & [key-casing]]
   (ensure-initialized!)
   (let [opts (if (needs-auto-context? fn-key fn-def opts)
                (let [ctx (or (context-from-pj-args fn-def opts)
@@ -1164,19 +1338,28 @@
                   :graal (dispatch-struct-list-graal fn-key fn-def args)))
          :cljs (let [args (extract-args fn-def opts)
                      result (js-await (dispatch-to-platform-with-args fn-key fn-def args))]
-                 result))
-      (if (should-use-context-dispatch? fn-key fn-def opts)
-        (let [context-atom (get-context-atom opts fn-def)
-              remaining-args (get-remaining-args opts fn-def)
-              result #?(:clj (dispatch-context-fn fn-key fn-def context-atom remaining-args)
-                        :cljs (js-await (dispatch-context-fn fn-key fn-def context-atom remaining-args)))
-              result (process-return-value-with-tracking result fn-def)]
-          (if ctx-for-result (attach-context-to-result result ctx-for-result) result))
-        (let [args (extract-args fn-def opts)
-              result #?(:clj (dispatch-to-platform-with-args fn-key fn-def args)
-                        :cljs (js-await (dispatch-to-platform-with-args fn-key fn-def args)))
-              result (process-return-value-with-tracking result fn-def)]
-          (if ctx-for-result (attach-context-to-result result ctx-for-result) result))))))
+                 (convert-js-result-keys result key-casing)))
+      (if (= :out-params (:proj-returns fn-def))
+        (let [input-fn-def (assoc fn-def :argtypes (vec (remove out-param-arg? (:argtypes fn-def))))
+              args (extract-args input-fn-def opts)]
+          #?(:clj (case @implementation
+                    :ffi (dispatch-out-params-ffi fn-key fn-def args)
+                    :graal (dispatch-out-params-graal fn-key fn-def args))
+             :cljs (convert-js-result-keys
+                    (js-await (dispatch-to-platform-with-args fn-key fn-def args))
+                    key-casing)))
+        (if (should-use-context-dispatch? fn-key fn-def opts)
+          (let [context-atom (get-context-atom opts fn-def)
+                remaining-args (get-remaining-args opts fn-def)
+                result #?(:clj (dispatch-context-fn fn-key fn-def context-atom remaining-args)
+                          :cljs (js-await (dispatch-context-fn fn-key fn-def context-atom remaining-args)))
+                result (process-return-value-with-tracking result fn-def)]
+            (if ctx-for-result (attach-context-to-result result ctx-for-result) result))
+          (let [args (extract-args fn-def opts)
+                result #?(:clj (dispatch-to-platform-with-args fn-key fn-def args)
+                          :cljs (js-await (dispatch-to-platform-with-args fn-key fn-def args)))
+                result (process-return-value-with-tracking result fn-def)]
+            (if ctx-for-result (attach-context-to-result result ctx-for-result) result)))))))
 
 #?(:clj
    ;; Generate all PROJ functions at runtime for ClojureScript

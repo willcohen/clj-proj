@@ -236,21 +236,32 @@
                                               ['options :string-array? :default nil]] ; NULL pointer
                                :proj-returns :pj}
    :proj_uom_get_info_from_database {:rettype :int32
+                                     :proj-returns :out-params
+                                     :out-fields [[:name :string]
+                                                  [:conv-factor :double]
+                                                  [:category :string]]
                                      :argtypes [['context :pointer]
                                                 ['auth_name :string]
                                                 ['code :string]
-                                                ['out_name :pointer] ; const char **out_name
-                                                ['out_conv_factor :pointer] ; double *out_conv_factor
-                                                ['out_category :pointer]]} ; const char **out_category
+                                                ['out_name :pointer]
+                                                ['out_conv_factor :pointer]
+                                                ['out_category :pointer]]}
    :proj_grid_get_info_from_database {:rettype :int32
+                                      :proj-returns :out-params
+                                      :out-fields [[:full-name :string]
+                                                   [:package-name :string]
+                                                   [:url :string]
+                                                   [:direct-download :int]
+                                                   [:open-license :int]
+                                                   [:available :int]]
                                       :argtypes [['context :pointer]
                                                  ['grid_name :string]
-                                                 ['out_full_name :pointer] ; const char **out_full_name
-                                                 ['out_package_name :pointer] ; const char **out_package_name
-                                                 ['out_url :pointer] ; const char **out_url
-                                                 ['out_direct_download :pointer] ; int *out_direct_download
-                                                 ['out_open_license :pointer] ; int *out_open_license
-                                                 ['out_available :pointer]]} ; int *out_available
+                                                 ['out_full_name :pointer]
+                                                 ['out_package_name :pointer]
+                                                 ['out_url :pointer]
+                                                 ['out_direct_download :pointer]
+                                                 ['out_open_license :pointer]
+                                                 ['out_available :pointer]]}
    :proj_log_level {:rettype :int32 ; PJ_LOG_LEVEL
                     :argtypes [['context :pointer]
                                ['level :int32]]} ; PJ_LOG_LEVEL
@@ -309,22 +320,34 @@
                        :argtypes [['obj :pointer] ; const PJ *obj
                                   ['domainIdx :int32]]}
    :proj_get_area_of_use {:rettype :int32
+                          :proj-returns :out-params
+                          :out-fields [[:west-lon-degree :double]
+                                       [:south-lat-degree :double]
+                                       [:east-lon-degree :double]
+                                       [:north-lat-degree :double]
+                                       [:area-name :string]]
                           :argtypes [['context :pointer]
-                                     ['obj :pointer] ; const PJ *obj
-                                     ['out_west_lon_degree :pointer] ; double *out_west_lon_degree
-                                     ['out_south_lat_degree :pointer] ; double *out_south_lat_degree
-                                     ['out_east_lon_degree :pointer] ; double *out_east_lon_degree
-                                     ['out_north_lat_degree :pointer] ; double *out_north_lat_degree
-                                     ['out_area_name :pointer]]} ; const char **out_area_name
+                                     ['obj :pointer]
+                                     ['out_west_lon_degree :pointer]
+                                     ['out_south_lat_degree :pointer]
+                                     ['out_east_lon_degree :pointer]
+                                     ['out_north_lat_degree :pointer]
+                                     ['out_area_name :pointer]]}
    :proj_get_area_of_use_ex {:rettype :int32
+                             :proj-returns :out-params
+                             :out-fields [[:west-lon-degree :double]
+                                          [:south-lat-degree :double]
+                                          [:east-lon-degree :double]
+                                          [:north-lat-degree :double]
+                                          [:area-name :string]]
                              :argtypes [['context :pointer]
-                                        ['obj :pointer] ; const PJ *obj
+                                        ['obj :pointer]
                                         ['domainIdx :int32]
-                                        ['out_west_lon_degree :pointer] ; double *out_west_lon_degree
-                                        ['out_south_lat_degree :pointer] ; double *out_south_lat_degree
-                                        ['out_east_lon_degree :pointer] ; double *out_east_lon_degree
-                                        ['out_north_lat_degree :pointer] ; double *out_north_lat_degree
-                                        ['out_area_name :pointer]]} ; const char **out_area_name
+                                        ['out_west_lon_degree :pointer]
+                                        ['out_south_lat_degree :pointer]
+                                        ['out_east_lon_degree :pointer]
+                                        ['out_north_lat_degree :pointer]
+                                        ['out_area_name :pointer]]}
    :proj_as_wkt {:rettype :string
                  :argtypes [['context :pointer]
                             ['pj :pointer] ; const PJ *obj
@@ -635,27 +658,40 @@
                             :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
                                        ['cs :pointer]]} ; const PJ *cs
    :proj_cs_get_axis_info {:rettype :int32
-                           :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                      ['cs :pointer] ; const PJ *cs
+                           :proj-returns :out-params
+                           :out-fields [[:name :string]
+                                        [:abbreviation :string]
+                                        [:direction :string]
+                                        [:unit-conv-factor :double]
+                                        [:unit-name :string]
+                                        [:unit-auth-name :string]
+                                        [:unit-code :string]]
+                           :argtypes [['ctx :pointer]
+                                      ['cs :pointer]
                                       ['index :int32]
-                                      ['out_name :pointer] ; const char **out_name
-                                      ['out_abbrev :pointer] ; const char **out_abbrev
-                                      ['out_direction :pointer] ; const char **out_direction
-                                      ['out_unit_conv_factor :pointer] ; double *out_unit_conv_factor
-                                      ['out_unit_name :pointer] ; const char **out_unit_name
-                                      ['out_unit_auth_name :pointer] ; const char **out_unit_auth_name
-                                      ['out_unit_code :pointer]]} ; const char **out_unit_code
+                                      ['out_name :pointer]
+                                      ['out_abbrev :pointer]
+                                      ['out_direction :pointer]
+                                      ['out_unit_conv_factor :pointer]
+                                      ['out_unit_name :pointer]
+                                      ['out_unit_auth_name :pointer]
+                                      ['out_unit_code :pointer]]}
    :proj_get_ellipsoid {:rettype :pointer ; PJ *
                         :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
                                    ['obj :pointer]] ; const PJ *obj
                         :proj-returns :pj}
    :proj_ellipsoid_get_parameters {:rettype :int32
-                                   :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                              ['ellipsoid :pointer] ; const PJ *ellipsoid
-                                              ['out_semi_major_metre :pointer] ; double *out_semi_major_metre
-                                              ['out_semi_minor_metre :pointer] ; double *out_semi_minor_metre
-                                              ['out_is_semi_minor_computed :pointer] ; int *out_is_semi_minor_computed
-                                              ['out_inv_flattening :pointer]]} ; double *out_inv_flattening
+                                   :proj-returns :out-params
+                                   :out-fields [[:semi-major-metre :double]
+                                                [:semi-minor-metre :double]
+                                                [:is-semi-minor-computed :int]
+                                                [:inv-flattening :double]]
+                                   :argtypes [['ctx :pointer]
+                                              ['ellipsoid :pointer]
+                                              ['out_semi_major_metre :pointer]
+                                              ['out_semi_minor_metre :pointer]
+                                              ['out_is_semi_minor_computed :pointer]
+                                              ['out_inv_flattening :pointer]]}
    :proj_get_celestial_body_name {:rettype :string
                                   :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
                                              ['obj :pointer]]} ; const PJ *obj
@@ -664,21 +700,29 @@
                                         ['obj :pointer]] ; const PJ *obj
                              :proj-returns :pj}
    :proj_prime_meridian_get_parameters {:rettype :int32
-                                        :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                   ['prime_meridian :pointer] ; const PJ *prime_meridian
-                                                   ['out_longitude :pointer] ; double *out_longitude
-                                                   ['out_unit_conv_factor :pointer] ; double *out_unit_conv_factor
-                                                   ['out_unit_name :pointer]]} ; const char **out_unit_name
+                                        :proj-returns :out-params
+                                        :out-fields [[:longitude :double]
+                                                     [:unit-conv-factor :double]
+                                                     [:unit-name :string]]
+                                        :argtypes [['ctx :pointer]
+                                                   ['prime_meridian :pointer]
+                                                   ['out_longitude :pointer]
+                                                   ['out_unit_conv_factor :pointer]
+                                                   ['out_unit_name :pointer]]}
    :proj_crs_get_coordoperation {:rettype :pointer ; PJ *
                                  :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
                                             ['crs :pointer]] ; const PJ *crs
                                  :proj-returns :pj}
    :proj_coordoperation_get_method_info {:rettype :int32
-                                         :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                    ['coordoperation :pointer] ; const PJ *coordoperation
-                                                    ['out_method_name :pointer] ; const char **out_method_name
-                                                    ['out_method_auth_name :pointer] ; const char **out_method_auth_name
-                                                    ['out_method_code :pointer]]} ; const char **out_method_code
+                                         :proj-returns :out-params
+                                         :out-fields [[:method-name :string]
+                                                      [:method-auth-name :string]
+                                                      [:method-code :string]]
+                                         :argtypes [['ctx :pointer]
+                                                    ['coordoperation :pointer]
+                                                    ['out_method_name :pointer]
+                                                    ['out_method_auth_name :pointer]
+                                                    ['out_method_code :pointer]]}
    :proj_coordoperation_is_instantiable {:rettype :int32
                                          :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
                                                     ['coordoperation :pointer]]} ; const PJ *coordoperation
@@ -696,40 +740,61 @@
                                                     ['coordoperation :pointer] ; const PJ *coordoperation
                                                     ['name :string]]}
    :proj_coordoperation_get_param {:rettype :int32
-                                   :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                              ['coordoperation :pointer] ; const PJ *coordoperation
+                                   :proj-returns :out-params
+                                   :out-fields [[:name :string]
+                                                [:auth-name :string]
+                                                [:code :string]
+                                                [:value :double]
+                                                [:value-string :string]
+                                                [:unit-conv-factor :double]
+                                                [:unit-name :string]
+                                                [:unit-auth-name :string]
+                                                [:unit-code :string]
+                                                [:unit-category :string]]
+                                   :argtypes [['ctx :pointer]
+                                              ['coordoperation :pointer]
                                               ['index :int32]
-                                              ['out_name :pointer] ; const char **out_name
-                                              ['out_auth_name :pointer] ; const char **out_auth_name
-                                              ['out_code :pointer] ; const char **out_code
-                                              ['out_value :pointer] ; double *out_value
-                                              ['out_value_string :pointer] ; const char **out_value_string
-                                              ['out_unit_conv_factor :pointer] ; double *out_unit_conv_factor
-                                              ['out_unit_name :pointer] ; const char **out_unit_name
-                                              ['out_unit_auth_name :pointer] ; const char **out_unit_auth_name
-                                              ['out_unit_code :pointer] ; const char **out_unit_code
-                                              ['out_unit_category :pointer]]} ; const char **out_unit_category
+                                              ['out_name :pointer]
+                                              ['out_auth_name :pointer]
+                                              ['out_code :pointer]
+                                              ['out_value :pointer]
+                                              ['out_value_string :pointer]
+                                              ['out_unit_conv_factor :pointer]
+                                              ['out_unit_name :pointer]
+                                              ['out_unit_auth_name :pointer]
+                                              ['out_unit_code :pointer]
+                                              ['out_unit_category :pointer]]}
    :proj_coordoperation_get_grid_used_count {:rettype :int32
                                              :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
                                                         ['coordoperation :pointer]]} ; const PJ *coordoperation
    :proj_coordoperation_get_grid_used {:rettype :int32
-                                       :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                  ['coordoperation :pointer] ; const PJ *coordoperation
+                                       :proj-returns :out-params
+                                       :out-fields [[:short-name :string]
+                                                    [:full-name :string]
+                                                    [:package-name :string]
+                                                    [:url :string]
+                                                    [:direct-download :int]
+                                                    [:open-license :int]
+                                                    [:available :int]]
+                                       :argtypes [['ctx :pointer]
+                                                  ['coordoperation :pointer]
                                                   ['index :int32]
-                                                  ['out_short_name :pointer] ; const char **out_short_name
-                                                  ['out_full_name :pointer] ; const char **out_full_name
-                                                  ['out_package_name :pointer] ; const char **out_package_name
-                                                  ['out_url :pointer] ; const char **out_url
-                                                  ['out_direct_download :pointer] ; int *out_direct_download
-                                                  ['out_open_license :pointer] ; int *out_open_license
-                                                  ['out_available :pointer]]} ; int *out_available
+                                                  ['out_short_name :pointer]
+                                                  ['out_full_name :pointer]
+                                                  ['out_package_name :pointer]
+                                                  ['out_url :pointer]
+                                                  ['out_direct_download :pointer]
+                                                  ['out_open_license :pointer]
+                                                  ['out_available :pointer]]}
    :proj_coordoperation_get_accuracy {:rettype :float64
                                       :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
                                                  ['obj :pointer]]} ; const PJ *obj
    :proj_coordoperation_get_towgs84_values {:rettype :int32
-                                            :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                       ['coordoperation :pointer] ; const PJ *coordoperation
-                                                       ['out_values :pointer] ; double *out_values
+                                            :proj-returns :out-params
+                                            :out-fields [[:values :double-array :count-arg :value_count]]
+                                            :argtypes [['ctx :pointer]
+                                                       ['coordoperation :pointer]
+                                                       ['out_values :pointer]
                                                        ['value_count :int32]
                                                        ['emit_error_if_incompatible :int32]]}
    :proj_coordoperation_create_inverse {:rettype :pointer ; PJ *

@@ -264,6 +264,41 @@ if (isNode) {
   onMessage = (handler) => { self.onmessage = (e) => handler(e.data); };
 }
 
+function readOutParams(module, outParamAllocs) {
+  const result = {};
+  for (const { ptr, size, field } of outParamAllocs) {
+    switch (field.type) {
+      case 'double':
+        result[field.key] = module.getValue(ptr, 'double');
+        break;
+      case 'int':
+        result[field.key] = module.getValue(ptr, 'i32');
+        break;
+      case 'string': {
+        const strPtr = module.getValue(ptr, '*');
+        result[field.key] = strPtr ? module.UTF8ToString(strPtr) : null;
+        break;
+      }
+      case 'double-array': {
+        const n = size / 8;
+        const values = [];
+        for (let j = 0; j < n; j++) {
+          values.push(module.getValue(ptr + j * 8, 'double'));
+        }
+        result[field.key] = values;
+        break;
+      }
+    }
+  }
+  return result;
+}
+
+function freeOutParams(module, outParamAllocs) {
+  for (const { ptr } of outParamAllocs) {
+    module._free(ptr);
+  }
+}
+
 function readStructList(module, listPtr, count, structFields) {
   const readStr = (ptr) => ptr ? module.UTF8ToString(ptr) : null;
   const entries = [];
@@ -406,6 +441,24 @@ onMessage(async (data) => {
           }
         }
 
+        // For out-params: allocate output pointers, append to args/argTypes
+        let outParamAllocs = null;
+        if (projReturns === 'out-params' && data.outFields) {
+          outParamAllocs = [];
+          for (const field of data.outFields) {
+            let size;
+            if (field.type === 'double-array') {
+              size = args[field.countArgIdx] * 8;
+            } else {
+              size = field.type === 'double' ? 8 : 4;
+            }
+            const ptr = module._malloc(size);
+            outParamAllocs.push({ ptr, size, field });
+            args.push(ptr);
+            argTypes.push('number');
+          }
+        }
+
         // For struct-list: allocate count pointer and optional params
         if (projReturns === 'struct-list') {
           const countPtr = module._malloc(4);
@@ -456,6 +509,14 @@ onMessage(async (data) => {
             }
             module._free(countPtr);
             result = { result: [], coordData };
+          } else if (projReturns === 'out-params' && outParamAllocs) {
+            if (rawResult === 0) {
+              freeOutParams(module, outParamAllocs);
+              result = { result: null, coordData };
+            } else {
+              result = { result: readOutParams(module, outParamAllocs), coordData };
+              freeOutParams(module, outParamAllocs);
+            }
           } else {
             result = { result: rawResult, coordData };
           }
@@ -486,6 +547,14 @@ onMessage(async (data) => {
             }
             module._free(countPtr);
             result = [];
+          } else if (projReturns === 'out-params' && outParamAllocs) {
+            if (rawResult === 0) {
+              freeOutParams(module, outParamAllocs);
+              result = null;
+            } else {
+              result = readOutParams(module, outParamAllocs);
+              freeOutParams(module, outParamAllocs);
+            }
           } else {
             result = rawResult;
           }

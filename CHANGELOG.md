@@ -8,19 +8,24 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - GitHub Actions CI: build native (linux-amd64, linux-aarch64, darwin-aarch64, windows-amd64 cross-compile), WASM, and run tests
 - `coord->coord-array` tests across FFI, GraalVM, Node.js, and Browser
 - Struct-aware return type system: C struct array functions auto-generated from `:struct-fields` metadata in fndefs
+- Out-param dispatch system: C functions with output parameters (`out_*`) automatically allocate, call, read, and free heap memory. Callers pass only input args and get back typed maps. 11 functions: `proj_get_area_of_use`, `proj_get_area_of_use_ex`, `proj_cs_get_axis_info`, `proj_ellipsoid_get_parameters`, `proj_prime_meridian_get_parameters`, `proj_coordoperation_get_method_info`, `proj_coordoperation_get_param`, `proj_coordoperation_get_grid_used`, `proj_uom_get_info_from_database`, `proj_grid_get_info_from_database`, `proj_coordoperation_get_towgs84_values`
+- Java API: CRS decomposition (`getEllipsoid`, `getPrimeMeridian`, `crsGetCoordinateSystem`, `crsGetCoordoperation`) and all out-param functions
 - `proj_get_units_from_database`
 - `proj_get_celestial_body_list_from_database`
 - `proj_create`: raw binding for PROJ strings, WKT, and pipeline definitions (e.g., `+proj=pipeline +step +proj=robin`)
-- Test coverage for object inspection, CRS decomposition, operation factory, `create-from-wkt`, `set-coord!`, `set-col!` across all platforms
+- Test coverage for object inspection, CRS decomposition, operation factory, `create-from-wkt`, `set-coord!`, `set-col!`, out-param functions across all platforms (CLJ FFI, GraalVM, Node.js, Playwright, Java)
 
 ### Changed
+- BREAKING: Return key casing is now idiomatic per platform. Clojure: kebab-case keywords (`:west-lon-degree`). Java: camelCase strings (`"westLonDegree"`). JS camelCase aliases: camelCase keys (`westLonDegree`). JS snake_case aliases: snake_case keys (`west_lon_degree`). Out-param keys like `:west_lon_degree` are now `:west-lon-degree`; Java keys like `"auth-name"` and `"semi_major_metre"` are now `"authName"` and `"semiMajorMetre"`.
 - BREAKING: `get-crs-info-list-from-database` renamed to `proj-get-crs-info-list-from-database` (Clojure) / `projGetCrsInfoListFromDatabase` (JS)
+- JS tests now use idiomatic camelCase (`projCreateCrsToCrs`) instead of snake_case (`proj_create_crs_to_crs`); both forms remain functional
 - Struct-list dispatch replaces hand-written CRS info list wrapper (~120 lines removed)
 - FFI struct field access via dtype-next struct system instead of hardcoded byte offsets
 - `string-array-to-polyglot-array` renamed to `string-list-to-native-array`, now cross-platform
 - PROJ 9.8.1 (was 9.8.0)
 
 ### Fixed
+- JVM: string-returning PROJ functions that return NULL (e.g. `proj_as_proj_string` on concatenated operations) now return nil instead of throwing (FFI) or returning `""` (GraalVM)
 - `coord->coord-array`: missing `:browser` case in CLJS dispatch
 - `coord->coord-array`: missing auto-initialization before dispatch
 - `set-coord!`: wrapped JVM-only (was incorrectly cross-platform)

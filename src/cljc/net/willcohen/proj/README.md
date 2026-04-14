@@ -98,6 +98,25 @@ camelCase aliases omit it.
 - `getWorkerMode()` - Returns `'pthreads'` or `'single-threaded'`
 - `getWorkerCount()` - Returns the number of workers in the pool
 
+### CRS Introspection
+
+Functions that inspect CRS structure return plain objects with typed fields. C output parameters are handled automatically -- no heap management needed. Return keys match the calling convention: camelCase aliases return camelCase keys, snake_case aliases return snake_case keys.
+
+- `projGetAreaOfUse(options)` / `proj_get_area_of_use(options)` - Get area of use for any PJ object
+  - Returns `{ westLonDegree, southLatDegree, eastLonDegree, northLatDegree, areaName }` (camelCase) or `{ west_lon_degree, south_lat_degree, east_lon_degree, north_lat_degree, area_name }` (snake_case), or `null`
+- `projEllipsoidGetParameters(options)` - Get ellipsoid parameters
+  - Returns `{ semiMajorMetre, semiMinorMetre, isSemiMinorComputed, invFlattening }` or `null`
+- `projCsGetAxisInfo(options)` - Get coordinate system axis info
+  - Returns `{ name, abbreviation, direction, unitConvFactor, unitName, unitAuthName, unitCode }` or `null`
+- `projPrimeMeridianGetParameters(options)` - Get prime meridian parameters
+  - Returns `{ longitude, unitConvFactor, unitName }` or `null`
+- `projCoordoperationGetMethodInfo(options)` - Get coordinate operation method
+  - Returns `{ methodName, methodAuthName, methodCode }` or `null`
+- `projUomGetInfoFromDatabase(options)` - Get unit of measure info
+  - Returns `{ name, convFactor, category }` or `null`
+- `projGridGetInfoFromDatabase(options)` - Get grid file info
+  - Returns `{ fullName, packageName, url, directDownload, openLicense, available }` or `null`
+
 ### Accessing Results
 
 After transformation, read coordinates with `getCoords`:
@@ -113,8 +132,6 @@ const result = await proj.getCoords(coords, 0);
 
 - `EPSG:4326` - WGS84 (GPS coordinates)
 - `EPSG:3857` - Web Mercator (used by Google Maps, OpenStreetMap)
-- `EPSG:2263` - NAD83 / New York Long Island (ft)
-- `EPSG:32633` - UTM Zone 33N
 
 ## License
 

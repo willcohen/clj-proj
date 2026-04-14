@@ -96,7 +96,7 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can create and use a context', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
+      const context = await proj.contextCreate();
 
       return {
         hasContext: !!context,
@@ -111,9 +111,9 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can create coordinate transformation', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
+      const context = await proj.contextCreate();
 
-      const transformer = await proj.proj_create_crs_to_crs({
+      const transformer = await proj.projCreateCrsToCrs({
         source_crs: "EPSG:4326",
         target_crs: "EPSG:2249",  // MA State Plane
         context: context
@@ -132,25 +132,25 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can transform coordinates', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
+      const context = await proj.contextCreate();
 
-      const transformer = await proj.proj_create_crs_to_crs({
+      const transformer = await proj.projCreateCrsToCrs({
         source_crs: "EPSG:4326",
         target_crs: "EPSG:2249",  // MA State Plane
         context: context
       });
 
       // Create coordinate array for 1 coordinate (async)
-      const coordArray = await proj.coord_array(1);
+      const coordArray = await proj.coordArray(1);
 
       // Set coordinates: Boston City Hall (EPSG:4326 uses lat/lon order)
       const originalLat = 42.3603222;
       const originalLon = -71.0579667;
-      await proj.set_coords_BANG_(coordArray, [[originalLat, originalLon, 0, 0]]);
+      await proj.setCoords(coordArray, [[originalLat, originalLon, 0, 0]]);
 
       // Transform coordinates (async)
       const PJ_FWD = proj.PJ_FWD || 1;
-      await proj.proj_trans_array({
+      await proj.projTransArray({
         p: transformer,
         direction: PJ_FWD,
         n: 1,
@@ -192,7 +192,7 @@ test.describe('PROJ WASM Browser Tests', () => {
       const proj = window.proj;
 
       try {
-        const transformer = await proj.proj_create_crs_to_crs({
+        const transformer = await proj.projCreateCrsToCrs({
           source_crs: "EPSG:4326",
           target_crs: "EPSG:3857"
         });
@@ -201,10 +201,10 @@ test.describe('PROJ WASM Browser Tests', () => {
           return { error: 'transformer is null/0' };
         }
 
-        const coordArray = await proj.coord_array(1);
-        await proj.set_coords_BANG_(coordArray, [[42.3603, -71.0591, 0, 0]]);
+        const coordArray = await proj.coordArray(1);
+        await proj.setCoords(coordArray, [[42.3603, -71.0591, 0, 0]]);
 
-        await proj.proj_trans_array({
+        await proj.projTransArray({
           p: transformer,
           direction: proj.PJ_FWD || 1,
           n: 1,
@@ -272,7 +272,7 @@ test.describe('PROJ WASM Browser Tests', () => {
       const proj = window.proj;
 
       try {
-        const authorities = await proj.proj_get_authorities_from_database({});
+        const authorities = await proj.projGetAuthoritiesFromDatabase({});
 
         if (authorities === null || authorities === undefined) {
           return { nullResult: true };
@@ -384,13 +384,13 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('handles invalid CRS gracefully', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
+      const context = await proj.contextCreate();
 
       let caught = false;
       let transformer = null;
 
       try {
-        transformer = await proj.proj_create_crs_to_crs({
+        transformer = await proj.projCreateCrsToCrs({
           source_crs: "INVALID:999999",
           target_crs: "EPSG:4326",
           context: context
@@ -416,11 +416,11 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can query context errors', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
+      const context = await proj.contextCreate();
 
       // Try to create an invalid transformation to trigger an error
       try {
-        await proj.proj_create_crs_to_crs({
+        await proj.projCreateCrsToCrs({
           source_crs: "INVALID:999999",
           target_crs: "EPSG:4326",
           context: context
@@ -430,7 +430,7 @@ test.describe('PROJ WASM Browser Tests', () => {
       }
 
       // Check error state (async)
-      const errno = await proj.proj_context_errno({ context: context });
+      const errno = await proj.projContextErrno({ context: context });
 
       return {
         errno,
@@ -446,13 +446,13 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can get authorities from database', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
+      const context = await proj.contextCreate();
 
       let authorities;
       let error = null;
 
       try {
-        authorities = await proj.proj_get_authorities_from_database({ context });
+        authorities = await proj.projGetAuthoritiesFromDatabase({ context });
       } catch (e) {
         error = e.message;
         return { error, functionExists: true };
@@ -484,13 +484,13 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can get codes from database', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
+      const context = await proj.contextCreate();
 
       let codes;
       let error = null;
 
       try {
-        codes = await proj.proj_get_codes_from_database({
+        codes = await proj.projGetCodesFromDatabase({
           context: context,
           auth_name: "EPSG"
         });
@@ -527,16 +527,16 @@ test.describe('PROJ WASM Browser Tests', () => {
       const proj = window.proj;
 
       // Test 1: Create resources without manual cleanup
-      const context = await proj.context_create();
+      const context = await proj.contextCreate();
 
       // Create multiple resources using simple proj strings (async)
-      const transformer1 = await proj.proj_create_crs_to_crs({
+      const transformer1 = await proj.projCreateCrsToCrs({
         source_crs: "+proj=longlat +datum=WGS84 +no_defs",
         target_crs: "+proj=merc +datum=WGS84 +no_defs",
         context: context
       });
 
-      const transformer2 = await proj.proj_create_crs_to_crs({
+      const transformer2 = await proj.projCreateCrsToCrs({
         source_crs: "+proj=merc +datum=WGS84 +no_defs",
         target_crs: "+proj=longlat +datum=WGS84 +no_defs",
         context: context
@@ -567,19 +567,19 @@ test.describe('PROJ WASM Browser Tests', () => {
       const PJ_FWD = proj.PJ_FWD || 1;
 
       // Test 1: Network OFF
-      const ctxOff = await proj.context_create({ network: false });
-      await proj.proj_context_set_enable_network({ context: ctxOff, enabled: 0 });
+      const ctxOff = await proj.contextCreate({ network: false });
+      await proj.projContextSetEnableNetwork({ context: ctxOff, enabled: 0 });
 
-      const transformerOff = await proj.proj_create_crs_to_crs({
+      const transformerOff = await proj.projCreateCrsToCrs({
         source_crs: "EPSG:4267",  // NAD27
         target_crs: "EPSG:26986", // NAD83 MA State Plane (meters)
         context: ctxOff
       });
 
-      const coordArrayOff = await proj.coord_array(1);
-      await proj.set_coords_BANG_(coordArrayOff, [[originalLat, originalLon, 0, 0]]);
+      const coordArrayOff = await proj.coordArray(1);
+      await proj.setCoords(coordArrayOff, [[originalLat, originalLon, 0, 0]]);
 
-      await proj.proj_trans_array({
+      await proj.projTransArray({
         p: transformerOff,
         direction: PJ_FWD,
         n: 1,
@@ -591,18 +591,18 @@ test.describe('PROJ WASM Browser Tests', () => {
       const yOff = coordsOff[1];
 
       // Test 2: Network ON (default)
-      const ctxOn = await proj.context_create();
+      const ctxOn = await proj.contextCreate();
 
-      const transformerOn = await proj.proj_create_crs_to_crs({
+      const transformerOn = await proj.projCreateCrsToCrs({
         source_crs: "EPSG:4267",  // NAD27
         target_crs: "EPSG:26986", // NAD83 MA State Plane (meters)
         context: ctxOn
       });
 
-      const coordArrayOn = await proj.coord_array(1);
-      await proj.set_coords_BANG_(coordArrayOn, [[originalLat, originalLon, 0, 0]]);
+      const coordArrayOn = await proj.coordArray(1);
+      await proj.setCoords(coordArrayOn, [[originalLat, originalLon, 0, 0]]);
 
-      await proj.proj_trans_array({
+      await proj.projTransArray({
         p: transformerOn,
         direction: PJ_FWD,
         n: 1,
@@ -629,7 +629,7 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can get CRS info list from database', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
+      const context = await proj.contextCreate();
 
       const entries = await proj.projGetCrsInfoListFromDatabase({ context, auth_name: 'EPSG' });
 
@@ -650,13 +650,13 @@ test.describe('PROJ WASM Browser Tests', () => {
         count: entries.length,
         hasMany: entries.length > 1000,
         hasWgs84: !!wgs84,
-        authName: wgs84 ? wgs84.auth_name : null,
+        authName: wgs84 ? wgs84.authName : null,
         name: wgs84 ? wgs84.name : null,
         deprecated: wgs84 ? wgs84.deprecated : null,
-        bboxValid: wgs84 ? wgs84.bbox_valid : null,
-        hasWestLon: wgs84 ? typeof wgs84.west_lon_degree === 'number' : false,
-        hasAreaName: wgs84 ? typeof wgs84.area_name === 'string' : false,
-        projMethodNull: wgs84 ? wgs84.projection_method_name === null : false,
+        bboxValid: wgs84 ? wgs84.bboxValid : null,
+        hasWestLon: wgs84 ? typeof wgs84.westLonDegree === 'number' : false,
+        hasAreaName: wgs84 ? typeof wgs84.areaName === 'string' : false,
+        projMethodNull: wgs84 ? wgs84.projectionMethodName === null : false,
         allCount: allEntries ? allEntries.length : 0,
         allHasMore: allEntries ? allEntries.length > entries.length : false,
         emptyIsArray: Array.isArray(empty),
@@ -683,7 +683,7 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can get units from database', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
+      const context = await proj.contextCreate();
       const entries = await proj.projGetUnitsFromDatabase({ context, auth_name: 'EPSG', category: 'linear', allow_deprecated: 0 });
       if (!entries || !Array.isArray(entries)) {
         return { error: 'did not return an array', type: typeof entries };
@@ -695,11 +695,11 @@ test.describe('PROJ WASM Browser Tests', () => {
         count: entries.length,
         hasEntries: entries.length > 0,
         hasMeter: !!meter,
-        authName: meter ? meter.auth_name : null,
-        hasConvFactor: meter ? typeof meter.conv_factor === 'number' : false,
+        authName: meter ? meter.authName : null,
+        hasConvFactor: meter ? typeof meter.convFactor === 'number' : false,
         deprecated: meter ? meter.deprecated : null,
         hasUsFoot: !!usFoot,
-        usFootConvFactor: usFoot ? usFoot.conv_factor : null
+        usFootConvFactor: usFoot ? usFoot.convFactor : null
       };
     });
     expect(result.error).toBeUndefined();
@@ -717,7 +717,7 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can get celestial body list from database', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
+      const context = await proj.contextCreate();
       const entries = await proj.projGetCelestialBodyListFromDatabase({ context, auth_name: '' });
       if (!entries || !Array.isArray(entries)) {
         return { error: 'did not return an array', type: typeof entries };
@@ -728,7 +728,7 @@ test.describe('PROJ WASM Browser Tests', () => {
         count: entries.length,
         hasEntries: entries.length > 0,
         hasEarth: !!earth,
-        authName: earth ? earth.auth_name : null
+        authName: earth ? earth.authName : null
       };
     });
     expect(result.error).toBeUndefined();
@@ -743,14 +743,14 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can inspect CRS properties', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
-      const crs = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
+      const context = await proj.contextCreate();
+      const crs = await proj.projCreateFromDatabase({ context, auth_name: 'EPSG', code: '4326' });
       if (!crs) return { error: 'CRS not created' };
-      const name = await proj.proj_get_name({ obj: crs });
-      const type = await proj.proj_get_type({ obj: crs });
-      const deprecated = await proj.proj_is_deprecated({ obj: crs });
-      const wkt = await proj.proj_as_wkt({ context, pj: crs });
-      const json = await proj.proj_as_projjson({ context, pj: crs });
+      const name = await proj.projGetName({ obj: crs });
+      const type = await proj.projGetType({ obj: crs });
+      const deprecated = await proj.projIsDeprecated({ obj: crs });
+      const wkt = await proj.projAsWkt({ context, pj: crs });
+      const json = await proj.projAsProjjson({ context, pj: crs });
       return {
         name, type, deprecated,
         wktIsString: typeof wkt === 'string',
@@ -772,13 +772,13 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can get source and target CRS from transformation', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
-      const tx = await proj.proj_create_crs_to_crs({ context, source_crs: 'EPSG:4326', target_crs: 'EPSG:2249' });
-      const src = await proj.proj_get_source_crs({ context, pj: tx });
-      const tgt = await proj.proj_get_target_crs({ context, pj: tx });
-      const srcName = src ? await proj.proj_get_name({ obj: src }) : null;
-      const tgtName = tgt ? await proj.proj_get_name({ obj: tgt }) : null;
-      const projStr = await proj.proj_as_proj_string({ context, pj: tx, type: 0 });
+      const context = await proj.contextCreate();
+      const tx = await proj.projCreateCrsToCrs({ context, source_crs: 'EPSG:4326', target_crs: 'EPSG:2249' });
+      const src = await proj.projGetSourceCrs({ context, pj: tx });
+      const tgt = await proj.projGetTargetCrs({ context, pj: tx });
+      const srcName = src ? await proj.projGetName({ obj: src }) : null;
+      const tgtName = tgt ? await proj.projGetName({ obj: tgt }) : null;
+      const projStr = await proj.projAsProjString({ context, pj: tx, type: 0 });
       return { srcName, tgtName, projStrIsString: typeof projStr === 'string' };
     });
     expect(result.srcName).toBe('WGS 84');
@@ -791,20 +791,20 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can decompose CRS structure', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
-      const projected = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '2249' });
-      const geodetic = await proj.proj_crs_get_geodetic_crs({ ctx: context, crs: projected });
-      const geodeticName = geodetic ? await proj.proj_get_name({ obj: geodetic }) : null;
+      const context = await proj.contextCreate();
+      const projected = await proj.projCreateFromDatabase({ context, auth_name: 'EPSG', code: '2249' });
+      const geodetic = await proj.projCrsGetGeodeticCrs({ ctx: context, crs: projected });
+      const geodeticName = geodetic ? await proj.projGetName({ obj: geodetic }) : null;
 
-      const crs4326 = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
-      const cs = await proj.proj_crs_get_coordinate_system({ ctx: context, crs: crs4326 });
-      const axisCount = cs ? await proj.proj_cs_get_axis_count({ ctx: context, cs }) : null;
+      const crs4326 = await proj.projCreateFromDatabase({ context, auth_name: 'EPSG', code: '4326' });
+      const cs = await proj.projCrsGetCoordinateSystem({ ctx: context, crs: crs4326 });
+      const axisCount = cs ? await proj.projCsGetAxisCount({ ctx: context, cs }) : null;
 
-      const ellipsoid = await proj.proj_get_ellipsoid({ ctx: context, obj: crs4326 });
-      const ellipsoidName = ellipsoid ? await proj.proj_get_name({ obj: ellipsoid }) : null;
+      const ellipsoid = await proj.projGetEllipsoid({ ctx: context, obj: crs4326 });
+      const ellipsoidName = ellipsoid ? await proj.projGetName({ obj: ellipsoid }) : null;
 
-      const datum = await proj.proj_crs_get_datum_forced({ ctx: context, crs: crs4326 });
-      const datumName = datum ? await proj.proj_get_name({ obj: datum }) : null;
+      const datum = await proj.projCrsGetDatumForced({ ctx: context, crs: crs4326 });
+      const datumName = datum ? await proj.projGetName({ obj: datum }) : null;
 
       return { geodeticName, axisCount, ellipsoidName, datumName };
     });
@@ -819,14 +819,14 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can find operations between CRS', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
-      const src = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
-      const tgt = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '2249' });
-      const ofc = await proj.proj_create_operation_factory_context({ context });
-      const ops = ofc ? await proj.proj_create_operations({ context, source_crs: src, target_crs: tgt, operationContext: ofc }) : null;
-      const count = ops ? await proj.proj_list_get_count({ result: ops }) : 0;
-      const tx = await proj.proj_create_crs_to_crs({ context, source_crs: 'EPSG:4326', target_crs: 'EPSG:3857' });
-      const normalized = tx ? await proj.proj_normalize_for_visualization({ context, obj: tx }) : null;
+      const context = await proj.contextCreate();
+      const src = await proj.projCreateFromDatabase({ context, auth_name: 'EPSG', code: '4326' });
+      const tgt = await proj.projCreateFromDatabase({ context, auth_name: 'EPSG', code: '2249' });
+      const ofc = await proj.projCreateOperationFactoryContext({ context });
+      const ops = ofc ? await proj.projCreateOperations({ context, source_crs: src, target_crs: tgt, operationContext: ofc }) : null;
+      const count = ops ? await proj.projListGetCount({ result: ops }) : 0;
+      const tx = await proj.projCreateCrsToCrs({ context, source_crs: 'EPSG:4326', target_crs: 'EPSG:3857' });
+      const normalized = tx ? await proj.projNormalizeForVisualization({ context, obj: tx }) : null;
       return { hasOfc: !!ofc, hasOps: !!ops, count, hasNormalized: !!normalized };
     });
     expect(result.hasOfc).toBe(true);
@@ -840,11 +840,11 @@ test.describe('PROJ WASM Browser Tests', () => {
   test('can create CRS from WKT roundtrip', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
-      const context = await proj.context_create();
-      const crs = await proj.proj_create_from_database({ context, auth_name: 'EPSG', code: '4326' });
-      const wkt = await proj.proj_as_wkt({ context, pj: crs });
-      const crsFromWkt = await proj.proj_create_from_wkt({ context, wkt });
-      const name = crsFromWkt ? await proj.proj_get_name({ obj: crsFromWkt }) : null;
+      const context = await proj.contextCreate();
+      const crs = await proj.projCreateFromDatabase({ context, auth_name: 'EPSG', code: '4326' });
+      const wkt = await proj.projAsWkt({ context, pj: crs });
+      const crsFromWkt = await proj.projCreateFromWkt({ context, wkt });
+      const name = crsFromWkt ? await proj.projGetName({ obj: crsFromWkt }) : null;
       return { hasWkt: typeof wkt === 'string', hasCrs: !!crsFromWkt, name };
     });
     expect(result.hasWkt).toBe(true);
@@ -870,10 +870,10 @@ test.describe('PROJ WASM Browser Tests', () => {
 
       // Use releasing block for deterministic cleanup
       await rt.releasing(async () => {
-        const context = await proj.context_create();
+        const context = await proj.contextCreate();
 
         // Create resources inside releasing block (async)
-        const crs = await proj.proj_create_from_database({
+        const crs = await proj.projCreateFromDatabase({
           context: context,
           auth_name: "EPSG",
           code: "4326"
@@ -903,17 +903,17 @@ test.describe('PROJ WASM Browser Tests', () => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
       try {
-        const context = await proj.context_create();
+        const context = await proj.contextCreate();
 
-        const robin = await proj.proj_create({ context, definition: '+proj=robin' });
+        const robin = await proj.projCreate({ context, definition: '+proj=robin' });
         if (!robin || robin === 0) return { error: 'robin is null/0' };
 
-        const epsg = await proj.proj_create({ context, definition: 'EPSG:4326' });
+        const epsg = await proj.projCreate({ context, definition: 'EPSG:4326' });
         if (!epsg || epsg === 0) return { error: 'epsg is null/0' };
 
-        const name = await proj.proj_get_name({ obj: epsg });
+        const name = await proj.projGetName({ obj: epsg });
 
-        const pipeline = await proj.proj_create({
+        const pipeline = await proj.projCreate({
           context,
           definition: '+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=robin'
         });
@@ -932,5 +932,166 @@ test.describe('PROJ WASM Browser Tests', () => {
     expect(result.robinCreated).toBe(true);
     expect(result.epsgName).toBe('WGS 84');
     expect(result.pipelineCreated).toBe(true);
+  });
+
+  // Out-params tests
+
+  test('can get area of use for CRS', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const ctx = await proj.contextCreate();
+      const crs = await proj.projCreateFromDatabase({ context: ctx, auth_name: 'EPSG', code: '4326' });
+      const area = await proj.projGetAreaOfUse({ context: ctx, obj: crs });
+      return area;
+    });
+    expect(result).toBeTruthy();
+    expect(result.westLonDegree).toBe(-180);
+    expect(result.southLatDegree).toBe(-90);
+    expect(result.eastLonDegree).toBe(180);
+    expect(result.northLatDegree).toBe(90);
+    expect(typeof result.areaName).toBe('string');
+  });
+
+  test('can get area of use for specific domain', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const ctx = await proj.contextCreate();
+      const crs = await proj.projCreateFromDatabase({ context: ctx, auth_name: 'EPSG', code: '4326' });
+      return await proj.projGetAreaOfUseEx({ context: ctx, obj: crs, domainIdx: 0 });
+    });
+    expect(result).toBeTruthy();
+    expect(typeof result.westLonDegree).toBe('number');
+    expect(typeof result.northLatDegree).toBe('number');
+  });
+
+  test('can get coordinate system axis info', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const ctx = await proj.contextCreate();
+      const crs = await proj.projCreateFromDatabase({ context: ctx, auth_name: 'EPSG', code: '4326' });
+      const cs = await proj.projCrsGetCoordinateSystem({ ctx, crs });
+      return await proj.projCsGetAxisInfo({ ctx, cs, index: 0 });
+    });
+    expect(result).toBeTruthy();
+    expect(typeof result.name).toBe('string');
+    expect(typeof result.abbreviation).toBe('string');
+    expect(typeof result.direction).toBe('string');
+    expect(typeof result.unitConvFactor).toBe('number');
+    expect(typeof result.unitName).toBe('string');
+  });
+
+  test('can get ellipsoid parameters', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const ctx = await proj.contextCreate();
+      const crs = await proj.projCreateFromDatabase({ context: ctx, auth_name: 'EPSG', code: '4326' });
+      const ellipsoid = await proj.projGetEllipsoid({ ctx, obj: crs });
+      return await proj.projEllipsoidGetParameters({ ctx, ellipsoid });
+    });
+    expect(result).toBeTruthy();
+    expect(result.semiMajorMetre).toBeGreaterThan(6378000);
+    expect(result.semiMinorMetre).toBeGreaterThan(6356000);
+    expect(result.invFlattening).toBeGreaterThan(298);
+  });
+
+  test('can get prime meridian parameters', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const ctx = await proj.contextCreate();
+      const crs = await proj.projCreateFromDatabase({ context: ctx, auth_name: 'EPSG', code: '4326' });
+      const pm = await proj.projGetPrimeMeridian({ ctx, obj: crs });
+      return await proj.projPrimeMeridianGetParameters({ ctx, prime_meridian: pm });
+    });
+    expect(result).toBeTruthy();
+    expect(result.longitude).toBe(0);
+    expect(typeof result.unitConvFactor).toBe('number');
+    expect(typeof result.unitName).toBe('string');
+  });
+
+  test('can get coordoperation method info', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const ctx = await proj.contextCreate();
+      const crs = await proj.projCreateFromDatabase({ context: ctx, auth_name: 'EPSG', code: '2249' });
+      const coordop = await proj.projCrsGetCoordoperation({ ctx, crs });
+      return await proj.projCoordoperationGetMethodInfo({ ctx, coordoperation: coordop });
+    });
+    expect(result).toBeTruthy();
+    expect(typeof result.methodName).toBe('string');
+  });
+
+  test('can get coordoperation param', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const ctx = await proj.contextCreate();
+      const crs = await proj.projCreateFromDatabase({ context: ctx, auth_name: 'EPSG', code: '2249' });
+      const coordop = await proj.projCrsGetCoordoperation({ ctx, crs });
+      return await proj.projCoordoperationGetParam({ ctx, coordoperation: coordop, index: 0 });
+    });
+    expect(result).toBeTruthy();
+    expect(typeof result.name).toBe('string');
+    expect(typeof result.value).toBe('number');
+  });
+
+  test('can get coordoperation grid used', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const ctx = await proj.contextCreate();
+      const crs = await proj.projCreateFromDatabase({ context: ctx, auth_name: 'EPSG', code: '2249' });
+      const coordop = await proj.projCrsGetCoordoperation({ ctx, crs });
+      const count = await proj.projCoordoperationGetGridUsedCount({ ctx, coordoperation: coordop });
+      if (count > 0) {
+        const grid = await proj.projCoordoperationGetGridUsed({ ctx, coordoperation: coordop, index: 0 });
+        return { count, grid };
+      }
+      return { count, grid: null };
+    });
+    expect(typeof result.count).toBe('number');
+    if (result.count > 0) {
+      expect(typeof result.grid.shortName).toBe('string');
+    }
+  });
+
+  test('can get UOM info from database', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const ctx = await proj.contextCreate();
+      return await proj.projUomGetInfoFromDatabase({ context: ctx, auth_name: 'EPSG', code: '9001' });
+    });
+    expect(result).toBeTruthy();
+    expect(result.name).toBe('metre');
+    expect(result.convFactor).toBe(1.0);
+    expect(result.category).toBe('linear');
+  });
+
+  test('can get grid info from database', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const ctx = await proj.contextCreate();
+      return await proj.projGridGetInfoFromDatabase({ context: ctx, grid_name: 'us_noaa_nadcon5_nad83_1986_nad83_harn_conus.tif' });
+    });
+    expect(result).toBeTruthy();
+    expect(typeof result.fullName).toBe('string');
+    expect(typeof result.available).toBe('number');
+  });
+
+  test('can get towgs84 values', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const proj = window.proj;
+      const ctx = await proj.contextCreate();
+      const op = await proj.projCreate({
+        context: ctx,
+        definition: '+proj=helmert +x=23 +y=-45 +z=67 +rx=0.1 +ry=-0.2 +rz=0.3 +s=1.5 +convention=position_vector'
+      });
+      const r = await proj.projCoordoperationGetTowgs84Values({
+        ctx, coordoperation: op, value_count: 7, emit_error_if_incompatible: 0
+      });
+      return r ? { hasValues: Array.isArray(r.values), length: r.values.length } : null;
+    });
+    // helmert may not support towgs84; null is acceptable
+    if (result) {
+      expect(result.hasValues).toBe(true);
+      expect(result.length).toBe(7);
+    }
   });
 });

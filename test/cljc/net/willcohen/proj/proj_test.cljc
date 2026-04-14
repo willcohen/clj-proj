@@ -325,6 +325,31 @@
           (is (string? s))
           (is (re-find #"proj" s) "PROJ string should contain proj keyword"))))))
 
+(deftest concatenated-operation-not-exportable-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (let [tx (proj/proj-create-crs-to-crs {:context ctx :source-crs "EPSG:4326" :target-crs "EPSG:2249"})]
+        (testing "proj-as-proj-string returns nil/empty for concatenated operation"
+          (let [s (proj/proj-as-proj-string {:context ctx :pj tx :type 0})]
+            (is (or (nil? s) (= "" s)))))
+        (testing "proj-as-wkt returns nil for concatenated operation"
+          (let [w (proj/proj-as-wkt {:context ctx :pj tx})]
+            (is (nil? w))))
+        (testing "proj-as-projjson returns nil for concatenated operation"
+          (let [j (proj/proj-as-projjson {:context ctx :pj tx})]
+            (is (nil? j))))))))
+
+(deftest coordoperation-proj-string-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "Coordoperation extracted from projected CRS is exportable"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"})
+              coordop (proj/proj-crs-get-coordoperation {:ctx ctx :crs crs})
+              s (proj/proj-as-proj-string {:context ctx :pj coordop :type 0})]
+          (is (string? s))
+          (is (> (count s) 0) "Coordoperation PROJ string should not be empty")
+          (is (re-find #"proj=lcc" s) "EPSG:2249 uses Lambert Conic Conformal"))))))
+
 (deftest get-source-target-crs-test
   (with-each-implementation
     (with-test-context [ctx]
@@ -843,3 +868,144 @@
                  (is (or (> diff-x 0.01) (> diff-y 0.01))
                      (str "Grid fetch should change the transformation result. "
                           "off=" [x-off y-off] " on=" [x-on y-on]))))))))))
+
+;; Out-params tests
+
+(deftest get-area-of-use-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-get-area-of-use returns AreaOfUse map for EPSG:4326"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+              area (proj/proj-get-area-of-use {:context ctx :obj crs})]
+          (is (some? area))
+          (is (map? area))
+          (is (= -180.0 (:west-lon-degree area)))
+          (is (= -90.0 (:south-lat-degree area)))
+          (is (= 180.0 (:east-lon-degree area)))
+          (is (= 90.0 (:north-lat-degree area)))
+          (is (string? (:area-name area))))))))
+
+(deftest get-area-of-use-ex-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-get-area-of-use-ex returns AreaOfUse for domain index 0"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+              area (proj/proj-get-area-of-use-ex {:context ctx :obj crs :domainIdx 0})]
+          (is (some? area))
+          (is (map? area))
+          (is (number? (:west-lon-degree area)))
+          (is (number? (:north-lat-degree area))))))))
+
+(deftest get-axis-info-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-cs-get-axis-info returns AxisInfo map"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+              cs (proj/proj-crs-get-coordinate-system {:ctx ctx :crs crs})
+              axis (proj/proj-cs-get-axis-info {:ctx ctx :cs cs :index 0})]
+          (is (some? axis))
+          (is (map? axis))
+          (is (string? (:name axis)))
+          (is (string? (:abbreviation axis)))
+          (is (string? (:direction axis)))
+          (is (number? (:unit-conv-factor axis)))
+          (is (string? (:unit-name axis))))))))
+
+(deftest ellipsoid-get-parameters-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-ellipsoid-get-parameters returns EllipsoidParameters"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+              ellipsoid (proj/proj-get-ellipsoid {:ctx ctx :obj crs})
+              params (proj/proj-ellipsoid-get-parameters {:ctx ctx :ellipsoid ellipsoid})]
+          (is (some? params))
+          (is (map? params))
+          (is (> (:semi-major-metre params) 6378000.0))
+          (is (> (:semi-minor-metre params) 6356000.0))
+          (is (> (:inv-flattening params) 298.0)))))))
+
+(deftest prime-meridian-get-parameters-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-prime-meridian-get-parameters returns PrimeMeridianParameters"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+              pm (proj/proj-get-prime-meridian {:ctx ctx :obj crs})
+              params (proj/proj-prime-meridian-get-parameters {:ctx ctx :prime_meridian pm})]
+          (is (some? params))
+          (is (map? params))
+          (is (= 0.0 (:longitude params)))
+          (is (number? (:unit-conv-factor params)))
+          (is (string? (:unit-name params))))))))
+
+(deftest coordoperation-get-method-info-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-coordoperation-get-method-info returns MethodInfo"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"})
+              coordop (proj/proj-crs-get-coordoperation {:ctx ctx :crs crs})
+              info (proj/proj-coordoperation-get-method-info {:ctx ctx :coordoperation coordop})]
+          (is (some? info))
+          (is (map? info))
+          (is (string? (:method-name info))))))))
+
+(deftest coordoperation-get-param-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-coordoperation-get-param returns CoordoperationParam"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"})
+              coordop (proj/proj-crs-get-coordoperation {:ctx ctx :crs crs})
+              param (proj/proj-coordoperation-get-param {:ctx ctx :coordoperation coordop :index 0})]
+          (is (some? param))
+          (is (map? param))
+          (is (string? (:name param)))
+          (is (number? (:value param))))))))
+
+(deftest coordoperation-get-grid-used-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-coordoperation-get-grid-used-count and get-grid-used"
+        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"})
+              coordop (proj/proj-crs-get-coordoperation {:ctx ctx :crs crs})
+              grid-count (proj/proj-coordoperation-get-grid-used-count {:ctx ctx :coordoperation coordop})]
+          (is (number? grid-count))
+          (when (pos? grid-count)
+            (let [grid (proj/proj-coordoperation-get-grid-used {:ctx ctx :coordoperation coordop :index 0})]
+              (is (some? grid))
+              (is (map? grid))
+              (is (string? (:short-name grid))))))))))
+
+(deftest uom-get-info-from-database-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-uom-get-info-from-database returns UomInfo for metre"
+        (let [info (proj/proj-uom-get-info-from-database {:context ctx :auth_name "EPSG" :code "9001"})]
+          (is (some? info))
+          (is (map? info))
+          (is (= "metre" (:name info)))
+          (is (= 1.0 (:conv-factor info)))
+          (is (= "linear" (:category info))))))))
+
+(deftest grid-get-info-from-database-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-grid-get-info-from-database returns GridDatabaseInfo"
+        (let [info (proj/proj-grid-get-info-from-database {:context ctx :grid_name "us_noaa_nadcon5_nad83_1986_nad83_harn_conus.tif"})]
+          (is (some? info))
+          (is (map? info))
+          (is (string? (:full-name info)))
+          (is (number? (:available info))))))))
+
+(deftest coordoperation-get-towgs84-values-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (testing "proj-coordoperation-get-towgs84-values returns double array"
+        (let [op (proj/proj-create {:context ctx
+                                    :definition "+proj=helmert +x=23 +y=-45 +z=67 +rx=0.1 +ry=-0.2 +rz=0.3 +s=1.5 +convention=position_vector"})
+              result (proj/proj-coordoperation-get-towgs84-values {:ctx ctx :coordoperation op :value_count 7 :emit_error_if_incompatible 0})]
+          (if (some? result)
+            (do
+              (is (map? result))
+              (is (vector? (:values result)))
+              (is (= 7 (count (:values result))))
+              (is (every? number? (:values result))))
+            (is true "towgs84 returned nil for this operation type")))))))

@@ -201,6 +201,12 @@ The library provides a developer-friendly API with several conveniences:
   (proj-get-authorities-from-database {:context my-ctx})
   ```
 
+- **Idiomatic return keys per platform**: Maps returned by out-param and struct-list functions use platform-native key casing:
+  - Clojure: kebab-case keywords (`:west-lon-degree`, `:semi-major-metre`)
+  - Java: camelCase strings (`"westLonDegree"`, `"semiMajorMetre"`)
+  - JS camelCase aliases: camelCase keys (`westLonDegree`, `semiMajorMetre`)
+  - JS snake_case aliases: snake_case keys (`west_lon_degree`, `semi_major_metre`)
+
 - **Consistent error handling**: All platforms handle errors uniformly
   - C++ exceptions from WASM are caught and converted
   - Native errors are wrapped in Clojure exceptions
@@ -350,6 +356,7 @@ The Java API mirrors the Clojure API and supports:
 - CRS transformations (`createCrsToCrs()`, `createCrsToCrsFromPj()`, `createFromDatabase()`)
 - Coordinate arrays (`coordArray()`, `setCoords()`, `transArray()`)
 - Database queries (`getAuthoritiesFromDatabase()`, `getCodesFromDatabase()`)
+- CRS introspection (`getAreaOfUse()`, `ellipsoidGetParameters()`, `csGetAxisInfo()`, `primeMeridianGetParameters()`, `coordoperationGetMethodInfo()`, etc.) -- C output parameters are handled automatically, returning Maps
 - Direction constants (`PJ_FWD`, `PJ_INV`, `PJ_IDENT`)
 
 ### JDK 21+ with GraalVM WebAssembly
