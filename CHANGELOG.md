@@ -4,9 +4,10 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.0-alpha8] - 2026-04-14
+
 ### Added
 - GitHub Actions CI: build native (linux-amd64, linux-aarch64, darwin-aarch64, windows-amd64 cross-compile), WASM, and run tests
-- `coord->coord-array` tests across FFI, GraalVM, Node.js, and Browser
 - Struct-aware return type system: C struct array functions auto-generated from `:struct-fields` metadata in fndefs
 - Out-param dispatch system: C functions with output parameters (`out_*`) automatically allocate, call, read, and free heap memory. Callers pass only input args and get back typed maps. 11 functions: `proj_get_area_of_use`, `proj_get_area_of_use_ex`, `proj_cs_get_axis_info`, `proj_ellipsoid_get_parameters`, `proj_prime_meridian_get_parameters`, `proj_coordoperation_get_method_info`, `proj_coordoperation_get_param`, `proj_coordoperation_get_grid_used`, `proj_uom_get_info_from_database`, `proj_grid_get_info_from_database`, `proj_coordoperation_get_towgs84_values`
 - Java API: CRS decomposition (`getEllipsoid`, `getPrimeMeridian`, `crsGetCoordinateSystem`, `crsGetCoordoperation`) and all out-param functions
@@ -14,6 +15,10 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - `proj_get_celestial_body_list_from_database`
 - `proj_create`: raw binding for PROJ strings, WKT, and pipeline definitions (e.g., `+proj=pipeline +step +proj=robin`)
 - Test coverage for object inspection, CRS decomposition, operation factory, `create-from-wkt`, `set-coord!`, `set-col!`, out-param functions across all platforms (CLJ FFI, GraalVM, Node.js, Playwright, Java)
+- `bb deploy` and `bb deploy:dry-run` tasks for release workflow
+
+### Removed
+- `download-grids` task (was WIP, never completed)
 
 ### Changed
 - BREAKING: Return key casing is now idiomatic per platform. Clojure: kebab-case keywords (`:west-lon-degree`). Java: camelCase strings (`"westLonDegree"`). JS camelCase aliases: camelCase keys (`westLonDegree`). JS snake_case aliases: snake_case keys (`west_lon_degree`). Out-param keys like `:west_lon_degree` are now `:west-lon-degree`; Java keys like `"auth-name"` and `"semi_major_metre"` are now `"authName"` and `"semiMajorMetre"`.
@@ -32,8 +37,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 - `toggle-graal!`: now resets `implementation` to nil like `force-graal!`/`force-ffi!`
 - JS: null C string pointers in struct results now return `null` (was `""`)
 - JS: null struct-list result now returns `[]` and frees allocated memory
-- Nil string args: FFI gets `""`, WASM gets NULL (was crashing or mismatched)
-- Nil pointer args default to 0 (null pointer) in `extract-args`
+- Nil string args now handled per-platform in `extract-args`: FFI gets `""` (dtype-next rejects nil), WASM gets 0 (NULL, required for "all/any" semantics)
+- Nil pointer args now default to 0 (null pointer) in `extract-args`
 - `proj_create_from_wkt`: pointer args changed to `:pointer?` (nullable)
 
 
@@ -195,7 +200,8 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - Initial proof-of-concept functionality, released to NPM and Clojars.
 
-[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha7...HEAD
+[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha8...HEAD
+[0.1.0-alpha8]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha7...0.1.0-alpha8
 [0.1.0-alpha7]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha6...0.1.0-alpha7
 [0.1.0-alpha6]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha5...0.1.0-alpha6
 [0.1.0-alpha5]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha4...0.1.0-alpha5

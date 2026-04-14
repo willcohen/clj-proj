@@ -71,65 +71,6 @@
                      (fs/delete-tree tmp-dir)
                      (println "not found")))))))}
 
-  download-grids
-  {:doc "Downloads PROJ grid files from the CDN (WIP - work in progress)"
-   :task
-   (if-not (fs/which "wget")
-     (do
-       (println "Error: `wget` command not found. Please install wget to use this task.")
-       (System/exit 1))
-     (let [cdn-url "https://cdn.proj.org/"
-           ;; Define project directories
-           download-dir (fs/path "target" "proj-cdn")
-           clj-resources-grids-dir (fs/path "resources" "grids")
-           js-src-grids-dir (fs/path "src" "js" "proj-emscripten" "src" "grids")]
-
-       (println "Ensuring grid directories exist...")
-       (fs/create-dirs download-dir)
-       (fs/create-dirs clj-resources-grids-dir)
-       (fs/create-dirs js-src-grids-dir)
-
-       ;; To ensure wget's --mirror properly checks for new files on the CDN,
-       ;; we must remove the top-level index.html file first. This forces wget
-       ;; to re-download and parse it for links, while still allowing it to use
-       ;; timestamping to avoid re-downloading the large grid files.
-       (fs/delete-if-exists (fs/path download-dir "index.html"))
-
-       ;; Download the grid files using wget mirror.
-       (println "Downloading PROJ grids from" cdn-url "using wget... (this may take a while)")
-       (let [result (tasks/shell {:continue true} ; Use :continue to inspect the result
-                                 "wget" "--mirror" "--no-parent" "--no-host-directories"
-                                 "--cut-dirs=0" "-P" (str download-dir) cdn-url)]
-         (let [exit-code (:exit result)]
-           (cond
-             (zero? exit-code)
-             (println "wget download completed successfully.")
-             ;; wget --mirror exits with 8 if files on server are not newer. This is not an error for us.
-             (= 8 exit-code)
-             (println "Info: wget exited with code 8 (server files not modified), which is expected. Continuing...")
-             :else
-             (do
-               (println "Error: wget failed with a critical exit code:" exit-code)
-               (println "wget stderr:" (:err result))
-               (System/exit 1)))))
-
-       ;; Instead of copying the whole tree (including index.html etc.), we'll
-       ;; selectively copy only the data files we need. This is more robust.
-       (println "Syncing downloaded grid files to resource directories...")
-       (let [source-dir download-dir
-             dest-dirs [clj-resources-grids-dir js-src-grids-dir]
-             ;; Find all data grids. The README.DATA content is in the .txt files.
-             data-files (fs/match source-dir "glob:*.{tif,json,pol,txt}")]
-         (println (str "Found " (count data-files) " data files to copy."))
-         (doseq [src-file data-files
-                 dest-dir dest-dirs]
-           (let [relative-path (fs/relativize source-dir src-file)
-                 dest-file (fs/path dest-dir relative-path)]
-             (fs/create-dirs (fs/parent dest-file))
-             (fs/copy src-file dest-file {:replace-existing true}))))
-
-       (println "Grid download and setup complete.")))}
-
   proj:clone
   {:doc "Clone OSGeo/PROJ repository for local development. Use --branch to specify branch, --update to pull latest."
    :spec {:branch {:desc "Branch to clone (default: master)"
@@ -486,7 +427,7 @@
                     (println "1. Testing FFI mode from JAR...")
                     (let [result (clojure.java.shell/sh
                                   clj-cmd "-J--enable-native-access=ALL-UNNAMED"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha7.jar"}}})
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha8.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -512,7 +453,7 @@
                     (let [result (clojure.java.shell/sh
                                   clj-cmd "-J--enable-native-access=ALL-UNNAMED"
                                   "-J-Dpolyglot.engine.WarnInterpreterOnly=false"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha7.jar"}}})
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha8.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -537,7 +478,7 @@
                     (println "3. Testing coordinate transformation from JAR...")
                     (let [result (clojure.java.shell/sh
                                   clj-cmd "-J--enable-native-access=ALL-UNNAMED"
-                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha7.jar"}}})
+                                  "-Sdeps" (pr-str {:deps {'net.willcohen/proj {:local/root "target/proj-0.1.0-alpha8.jar"}}})
                                   "-M" "-e"
                                   (pr-str '(do
                                              (require '[net.willcohen.proj.proj :as proj])
@@ -568,7 +509,7 @@
                     (println)
                     (println "4. Testing Java API from JAR...")
                     (let [test-dir "target/java-jar-test"
-                          jar-path "target/proj-0.1.0-alpha7.jar"
+                          jar-path "target/proj-0.1.0-alpha8.jar"
                           clj-cp (-> (tasks/shell {:out :string} clj-cmd "-Spath") :out str/trim)]
                       (fs/create-dirs test-dir)
                       (spit (str test-dir "/JavaJarTest.java")
@@ -1730,7 +1671,7 @@ public class JavaJarTest {
            (println "Building JAR file...")
            (tasks/shell clj-cmd "-T:build" "jar")
            (babashka.fs/copy "target/classes/META-INF/maven/net.willcohen/proj/pom.xml" "pom.xml" {:replace-existing true})
-           (println "JAR built: target/proj-0.1.0-alpha7.jar"))}
+           (println "JAR built: target/proj-0.1.0-alpha8.jar"))}
 
   clojars-deploy
   {:doc "Deploy JAR to Clojars"
@@ -1798,7 +1739,7 @@ public class JavaJarTest {
                 :task (do
                         (println "\nJAR contents:")
                         (println "=============")
-                        (tasks/shell "jar" "tf" "target/proj-0.1.0-alpha7.jar")
+                        (tasks/shell "jar" "tf" "target/proj-0.1.0-alpha8.jar")
                         (println))}
 
   npm-contents {:doc "List all files that would be in npm package"
@@ -1811,6 +1752,74 @@ public class JavaJarTest {
   pre-deploy {:doc "Run all tests and show package contents before deploy"
               :depends [test-run jar-contents npm-contents]
               :task (println "\nPre-deploy checks complete. Ready for deploy.")}
+
+  deploy:dry-run
+  {:doc "Show what deploy would do: version, git status, JAR contents, npm dry-run."
+   :depends [jar cherry]
+   :task (let [version (second (re-find (re-pattern "def version \"([^\"]+)\"") (slurp "build.clj")))]
+           (println (str "\n=== Deploy dry-run for " version " ===\n"))
+
+           (println "npm auth:")
+           (let [result (clojure.java.shell/sh "npm" "whoami")]
+             (if (zero? (:exit result))
+               (println (str "  Logged in as: " (str/trim (:out result))))
+               (do (println "  NOT LOGGED IN. Run: npm login")
+                   (System/exit 1))))
+           (println)
+
+           (println "Clojars auth:")
+           (if (or (System/getenv "CLOJARS_USERNAME")
+                   (.exists (java.io.File. (str (System/getProperty "user.home") "/.m2/settings.xml"))))
+             (println "  Credentials found")
+             (println "  WARNING: No CLOJARS_USERNAME env var or ~/.m2/settings.xml found"))
+           (println)
+
+           (println "Git status:")
+           (tasks/shell "git" "status" "--short")
+           (println)
+
+           (println "Git log (last 3):")
+           (tasks/shell {:extra-env {"GIT_PAGER" ""}} "git" "log" "--oneline" "-3")
+           (println)
+
+           (run 'jar-contents)
+           (run 'npm-contents)
+
+           (println "npm publish dry-run:")
+           (tasks/shell {:dir "src/cljc/net/willcohen/proj"} "npm" "publish" "--dry-run" "--tag" "alpha")
+           (println)
+
+           (println (str "Ready to deploy " version ". Run: bb deploy")))}
+
+  deploy {:doc "Tag, push, and deploy to Clojars + npm. Run after committing release changes."
+          :task (let [version (second (re-find (re-pattern "def version \"([^\"]+)\"") (slurp "build.clj")))
+                      npm-pkg "proj-wasm"
+                      tag version]
+                  (println (str "Deploying " version "..."))
+                  (println)
+
+                  (let [status (:out (clojure.java.shell/sh "git" "status" "--porcelain"))]
+                    (when (seq (str/trim status))
+                      (println "ERROR: Uncommitted changes. Commit first.")
+                      (System/exit 1)))
+
+                  (println (str "Tagging " tag "..."))
+                  (tasks/shell "git" "tag" tag)
+
+                  (println "Pushing to origin...")
+                  (tasks/shell "git" "push" "origin" "main" "--tags")
+
+                  (println "Deploying to Clojars...")
+                  (run 'clojars-deploy)
+
+                  (println "Publishing to npm...")
+                  (run 'npm-publish)
+
+                  (println (str "Setting npm latest tag to " version "..."))
+                  (tasks/shell "npm" "dist-tag" "add" (str npm-pkg "@" version) "latest")
+
+                  (println)
+                  (println (str "Deployed " version " to Clojars and npm.")))}
 
   version-bump {:doc "Bump version across all files. Usage: bb version-bump <new-version>"
                 :task (let [new-version (first *command-line-args*)]

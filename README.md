@@ -848,14 +848,7 @@ Generate API documentation (work in progress):
 bb quickdoc  # Generates docs from source
 ```
 
-### 5. Other Utilities
-
-```bash
-# Download PROJ grid files from CDN (work in progress)
-bb download-grids
-```
-
-### 6. Task Reference
+### 5. Task Reference
 
 Run `bb tasks` for complete list. Key commands:
 
@@ -878,8 +871,8 @@ Run `bb tasks` for complete list. Key commands:
 - `bb demo` - Browser demo (localhost:8080)
 
 **Deployment:**
-- `bb clojars-deploy` - Deploy JAR to Clojars
-- `bb npm-publish` - Publish npm package
+- `bb deploy:dry-run` - Check auth, show JAR/npm contents, npm publish dry-run
+- `bb deploy` - Tag, push, deploy to Clojars + npm
 - `bb version-bump <version>` - Bump version across all files
 
 **CI:**

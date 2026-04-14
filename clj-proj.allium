@@ -1,0 +1,2464 @@
+-- allium: 3
+-- clj-proj.allium
+
+-- Scope: Cross-platform PROJ bindings library (JVM + JavaScript)
+-- Includes: Initialization, context management, CRS operations, coordinate
+--           transformation, database queries, resource lifecycle, network grid
+--           fetching, worker pool management
+-- Excludes:
+--   - Build system (Nix, Babashka, Emscripten compilation)
+--   - Native library packaging / cross-compilation
+--   - PROJ C internals (PROJ is an external dependency)
+--   - Cherry/esbuild transpilation pipeline
+--   - CI/CD configuration
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value Coordinate {
+    x: Decimal
+    y: Decimal
+    z: Decimal?
+    t: Decimal?
+}
+
+value AreaOfUse {
+    west_lon_degree: Decimal
+    south_lat_degree: Decimal
+    east_lon_degree: Decimal
+    north_lat_degree: Decimal
+    area_name: String?
+}
+
+value AxisInfo {
+    name: String
+    abbreviation: String
+    direction: String
+    unit_conv_factor: Decimal
+    unit_name: String
+    unit_auth_name: String
+    unit_code: String
+}
+
+value EllipsoidParameters {
+    semi_major_metre: Decimal
+    semi_minor_metre: Decimal
+    is_semi_minor_computed: Integer
+    inv_flattening: Decimal
+}
+
+value PrimeMeridianParameters {
+    longitude: Decimal
+    unit_conv_factor: Decimal
+    unit_name: String
+}
+
+value MethodInfo {
+    method_name: String
+    method_auth_name: String
+    method_code: String
+}
+
+value CoordoperationParam {
+    name: String
+    auth_name: String
+    code: String
+    value: Decimal
+    value_string: String
+    unit_conv_factor: Decimal
+    unit_name: String
+    unit_auth_name: String
+    unit_code: String
+    unit_category: String
+}
+
+value GridUsedInfo {
+    short_name: String
+    full_name: String
+    package_name: String
+    url: String
+    direct_download: Integer
+    open_license: Integer
+    available: Integer
+}
+
+value UomInfo {
+    name: String
+    conv_factor: Decimal
+    category: String
+}
+
+value GridDatabaseInfo {
+    full_name: String
+    package_name: String
+    url: String
+    direct_download: Integer
+    open_license: Integer
+    available: Integer
+}
+
+value CrsInfoEntry {
+    auth_name: String
+    code: String
+    name: String
+    type: PjType
+    deprecated: Boolean
+    bbox_valid: Boolean
+    west_lon_degree: Decimal
+    south_lat_degree: Decimal
+    east_lon_degree: Decimal
+    north_lat_degree: Decimal
+    area_name: String
+    projection_method_name: String?
+    celestial_body_name: String?
+}
+
+value UnitInfoEntry {
+    auth_name: String
+    code: String
+    name: String
+    category: String
+    conv_factor: Decimal
+    proj_short_name: String?
+    deprecated: Boolean
+}
+
+value CelestialBodyInfoEntry {
+    auth_name: String
+    name: String
+}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract GeneratedProjFunction {
+    -- The shared behavioral contract obeyed by every function generated from
+    -- fndefs.cljc. ~100 PROJ C API functions are generated via macros from a
+    -- single data definition. Each generated function follows this contract.
+
+    dispatch: (fn_key: String, fn_def: Any, opts: Any) -> Any
+
+    @invariant AutoInit
+        -- Calls ensure_initialized! before dispatch. On JVM, this triggers
+        -- library initialization on first use. On JS, warns if not initialized.
+
+    @invariant ContextResolution
+        -- If the function requires a context argument:
+        --   1. Use the provided context if given
+        --   2. Else inherit context from any ProjObject argument
+        --   3. Else auto-create a fresh context
+        -- Context accepts both :ctx and :context parameter names.
+
+    @invariant ArgumentExtraction
+        -- Arguments are extracted from an opts map using the function's
+        -- :argtypes definition. Both underscore and hyphenated key names
+        -- are accepted. Defaults from :argsemantics are applied for missing
+        -- optional arguments.
+        --
+        -- Nullable argument handling:
+        --   :pointer? - dtype-next nullable pointer type. Accepts nil/0 without
+        --     throwing "Pointer value is zero!" (unlike :pointer which rejects
+        --     null pointers). Used for C API parameters where NULL is valid
+        --     (e.g. out_warnings, options, area).
+        --   :pointer with nil value - extract-args converts nil to 0 (null
+        --     pointer) for all platforms.
+        --   :string with nil value - platform-divergent handling because PROJ's
+        --     C API treats NULL and "" differently on WASM:
+        --       FFI: nil becomes "" (dtype-next's string->c rejects nil)
+        --       GraalVM: nil becomes 0 (NULL, Emscripten treats as "all/any")
+        --       CLJS: nil becomes 0 (NULL, same as GraalVM)
+        --     On FFI, PROJ treats "" the same as NULL for most parameters.
+        --     On WASM (Emscripten), "" is a valid allocated C string that
+        --     PROJ matches literally -- it does NOT mean "all". NULL (0) is
+        --     required for "all/any" semantics on WASM.
+        --     Callers should omit optional string args (let them default to nil)
+        --     rather than passing "". The dispatch layer handles the rest.
+
+    @invariant PlatformDispatch
+        -- The call is routed to the active implementation:
+        --   FFI: resolved via ns-resolve to native.clj function
+        --   GraalVM: routed through wasm.cljc ccall
+        --   CLJS: posted to the appropriate worker via worker-call
+
+    @invariant ReturnProcessing
+        -- Return values are processed based on :proj-returns metadata:
+        --   :pj -> tracked for auto-destroy via proj_destroy
+        --   :pj-list -> tracked for auto-destroy via proj_list_destroy
+        --   :string-list -> dereferenced to vector of strings, C memory freed
+        --   :struct-list -> parsed to vector of maps using :struct-fields metadata
+        --     (see StructAwareReturnType below)
+        --   :out-params -> allocates out-pointers, calls C function, reads back
+        --     typed fields, frees allocations (see OutParamDispatch below)
+        --   :pj-context -> tracked for auto-destroy via proj_context_destroy
+        --   :pj-insert-session -> tracked, type-specific destroy
+        --   :pj-operation-factory-context -> tracked, type-specific destroy
+        --   (no metadata) -> returned as-is
+        -- Null/zero pointers produce nil; no exception is thrown.
+
+    @invariant StructAwareReturnType
+        -- Functions returning C struct arrays use :proj-returns :struct-list
+        -- with additional metadata in fndefs:
+        --   :struct-def - keyword referencing a dtype-next struct definition
+        --     registered via ffi-clang/defstruct-from-layout in struct.clj
+        --     (e.g. :proj-crs-info, :proj-unit-info, :proj-celestial-body-info)
+        --   :struct-fields - vector of [keyword type wasm-offset] for
+        --     WASM-side parsing where type is :string, :int, :double, or :boolean.
+        --     FFI reads fields by name from the dtype-next struct definition.
+        --   :struct-destroy-fn - C function name to destroy the result list
+        --   :struct-params-create - optional C function to create params object
+        --   :struct-params-destroy - optional C function to destroy params object
+        --   :count-arg-name - name of the out_result_count parameter
+        --
+        -- Platform-specific struct reading:
+        --   FFI: Uses dtype-next's struct system (tech.v3.datatype.struct)
+        --     with LLVM record layout strings parsed by ffi-clang. The struct
+        --     definitions in struct.clj handle alignment and field access by
+        --     name, eliminating hardcoded byte offsets.
+        --   GraalVM/CLJS: Uses :struct-fields wasm-offsets (32-bit pointers,
+        --     4-byte ints, 8-byte doubles) to read from WASM linear memory.
+        --
+        -- The dispatch system:
+        --   1. Allocates count output pointer (4 bytes, platform-specific)
+        --   2. Optionally creates params object via :struct-params-create
+        --   3. Calls the C function
+        --   4. Reads count from count pointer
+        --   5. Iterates count-many structs, reading typed fields per platform
+        --   6. Destroys the result list via :struct-destroy-fn
+        --   7. Optionally destroys the params object
+        --   8. Frees the count pointer
+        --   9. Returns a vector of maps with keyword keys
+        --
+        -- Three functions use this system:
+        --   proj_get_crs_info_list_from_database -> List<CrsInfoEntry>
+        --   proj_get_units_from_database -> List<UnitInfoEntry>
+        --   proj_get_celestial_body_list_from_database -> List<CelestialBodyInfoEntry>
+        --
+        -- Nil string args in struct-list functions follow the same nullable
+        -- argument handling described in ArgumentExtraction above.
+
+    @invariant OutParamDispatch
+        -- Functions returning data through C output parameters (out_*) use
+        -- :proj-returns :out-params with additional metadata in fndefs:
+        --   :out-fields - vector of [keyword type] pairs describing output
+        --     parameters. Types: :double, :string, :int, :double-array.
+        --   :argtypes retains the full C signature including out_* pointer
+        --     args (required for FFI binding generation via dtype-next and
+        --     WASM ccall arg-type lists). The dispatch system identifies
+        --     output args by the out_ prefix on the arg name and filters
+        --     them from extract-args so callers never provide them.
+        --
+        -- For :double-array, the field spec includes :count-arg referencing
+        -- a real argument (as keyword) that supplies the array length:
+        --   [:values :double-array :count-arg :value_count]
+        --
+        -- Platform-specific allocation and reading:
+        --   FFI: JNA Memory objects (pointer-size 8 on 64-bit native).
+        --     getDouble(0), getInt(0), getPointer(0).getString(0, "UTF-8").
+        --   GraalVM: _malloc / getValue / UTF8ToString / _free on WASM heap
+        --     (pointer-size 4, 32-bit WASM address space).
+        --   CLJS: Worker handles malloc/read/free internally (like struct-list).
+        --     outFields metadata is passed in the ccall command; the worker
+        --     allocates, appends to args/argTypes, reads results, and frees.
+        --
+        -- The dispatch system:
+        --   1. Builds input-fn-def with out_ args filtered from argtypes
+        --   2. Extracts non-out args via extract-args using input-fn-def
+        --   3. Allocates heap space for each :out-fields entry
+        --   4. Builds full C arg list: input args interleaved with out-pointers
+        --      at their original positions in :argtypes
+        --   5. Calls the C function with the full arg list
+        --   6. If return is 0 (failure): frees all allocations, returns nil
+        --   7. If return is nonzero: reads each field by type into a map
+        --   8. Frees all allocations
+        --   9. Returns map with keyword keys matching :out-fields names
+        --
+        -- Ten functions use scalar out-params:
+        --   proj_get_area_of_use -> AreaOfUse
+        --   proj_get_area_of_use_ex -> AreaOfUse
+        --   proj_cs_get_axis_info -> AxisInfo
+        --   proj_ellipsoid_get_parameters -> EllipsoidParameters
+        --   proj_prime_meridian_get_parameters -> PrimeMeridianParameters
+        --   proj_coordoperation_get_method_info -> MethodInfo
+        --   proj_coordoperation_get_param -> CoordoperationParam
+        --   proj_coordoperation_get_grid_used -> GridUsedInfo
+        --   proj_uom_get_info_from_database -> UomInfo
+        --   proj_grid_get_info_from_database -> GridDatabaseInfo
+        --
+        -- One function uses :double-array out-param:
+        --   proj_coordoperation_get_towgs84_values -> {:values [Decimal...]}
+
+    @invariant ContextAttachment
+        -- ProjObject results have the originating context attached, so
+        -- subsequent calls can inherit it for worker affinity (JS) and
+        -- thread safety (JVM).
+
+    @guidance
+        -- The full catalog of generated functions is defined in
+        -- src/cljc/net/willcohen/proj/fndefs.cljc as the fndefs-raw map.
+        -- Each function is individually specified as a rule in this spec.
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum Implementation { ffi | graal | node | browser | unknown }
+
+enum PjDirection { forward | identity | inverse }
+
+enum PjType {
+    unknown | ellipsoid | prime_meridian
+    | geodetic_reference_frame | dynamic_geodetic_reference_frame
+    | vertical_reference_frame | dynamic_vertical_reference_frame
+    | datum_ensemble
+    | crs | geodetic_crs | geocentric_crs
+    | geographic_crs | geographic_2d_crs | geographic_3d_crs
+    | vertical_crs | projected_crs | compound_crs
+    | temporal_crs | engineering_crs | bound_crs | other_crs
+    | conversion | transformation
+    | concatenated_operation | other_coordinate_operation
+    | temporal_datum | engineering_datum | parametric_datum
+    | derived_projected_crs | coordinate_metadata
+}
+
+enum WktType {
+    wkt2_2015 | wkt2_2015_simplified
+    | wkt2_2019 | wkt2_2019_simplified
+    | wkt1_gdal | wkt1_esri
+}
+
+enum WorkerMode { pthreads | single_threaded }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity Library {
+    -- The singleton library instance managing global state.
+    implementation: Implementation?
+    force_graal: Boolean
+
+    -- Derived
+    is_initialized: implementation != null
+}
+
+entity Context {
+    -- A PROJ threading context. Wraps a native pointer with operation tracking.
+    -- JVM: atom holding {:ptr, :op, :result}
+    -- JS: plain object with ptr, ctx_id, worker_idx
+    pointer: Integer
+    operation_count: Integer
+    network_enabled: Boolean
+    database_path: String?
+    worker_idx: Integer?
+}
+
+entity ProjObject {
+    -- An opaque handle to a PROJ object (CRS, transformation, coordinate
+    -- system, datum, ellipsoid, etc.). Platform representation varies:
+    -- FFI: tech.v3.datatype.ffi.Pointer
+    -- GraalVM: org.graalvm.polyglot.Value
+    -- CLJS: integer (Emscripten pointer)
+    context: Context?
+
+    -- Derived from PROJ queries
+    name: String?
+    type: PjType?
+    is_deprecated: Boolean?
+    is_crs: Boolean?
+}
+
+entity CoordArray {
+    -- A buffer of 4D coordinates (x, y, z, t) for batch transformation.
+    -- FFI: dtype-next tensor
+    -- GraalVM: WASM heap allocation
+    -- CLJS: JS-side Float64Array (transferred to worker on demand)
+    num_coords: Integer
+    dimensions: Integer
+}
+
+entity WorkerPool {
+    -- JS-only: pool of Web Workers running the WASM module.
+    mode: WorkerMode
+    worker_count: Integer
+}
+
+entity OperationFactoryContext {
+    -- Controls how PROJ searches for coordinate operations.
+    authority: String?
+    desired_accuracy: Decimal?
+    area_of_interest: AreaOfUse?
+    grid_availability_use: Integer?
+    allow_ballpark: Boolean?
+    discard_superseded: Boolean?
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    default_wkt_type: WktType = wkt2_2019
+    -- Network CDN URL (https://cdn.proj.org) is managed by PROJ's C library
+    -- internally, not configurable from the Clojure/JS layer.
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+--
+-- Rule naming convention: rules use short, readable PascalCase names that
+-- may abbreviate the C API name. The mapping to fndefs keys is:
+--   Rule name         fndefs key (C API)
+--   CreateContext      proj_context_create
+--   SetDatabasePath    proj_context_set_database_path
+--   EnableNetwork      proj_context_set_enable_network
+--   TransformArray     proj_trans_array
+--   GetAuthorities     proj_get_authorities_from_database
+--   GetCodes           proj_get_codes_from_database
+--   GetCrsInfoList     proj_get_crs_info_list_from_database
+--   GetCelestialBodyList  proj_get_celestial_body_list_from_database
+--   GetCoordinateSystem   proj_crs_get_coordinate_system
+--   GetGeodeticCrs     proj_crs_get_geodetic_crs
+--   GetDatum           proj_crs_get_datum
+--   GetAxisCount       proj_cs_get_axis_count
+--   GetAxisInfo        proj_cs_get_axis_info
+--   AsProjJson         proj_as_projjson
+--   PromoteTo3D        proj_crs_promote_to_3d
+--   DemoteTo2D         proj_crs_demote_to_2d
+-- All other rules map by mechanical PascalCase conversion (e.g.
+-- GetEllipsoid -> proj_get_ellipsoid).
+--
+-- Internal destroy/lifecycle functions in fndefs have no corresponding rules.
+-- They are managed by the ResourceTracking system-wide property:
+--   proj_destroy, proj_context_destroy, proj_list_destroy,
+--   proj_string_destroy, proj_crs_info_list_destroy,
+--   proj_unit_list_destroy, proj_celestial_body_list_destroy,
+--   proj_insert_object_session_destroy, proj_operation_factory_context_destroy,
+--   proj_int_list_destroy, proj_get_crs_list_parameters_create,
+--   proj_get_crs_list_parameters_destroy
+--
+-- Non-fndefs rules (manually implemented, not generated from C API):
+--   Initialize, ForceGraal, ForceFfi, ToggleGraal, Shutdown,
+--   QueryImplementation, CoordToCoordArray, SetCoord, SetColumn,
+--   AllocateCoordArray, SetCoords, GetCoords
+
+-- Initialization Flow
+
+rule Initialize {
+    -- Initialize the PROJ library, selecting the best available backend.
+    -- JVM: tries FFI first, falls back to GraalVM WASM.
+    -- JS: initializes worker pool, returns a Promise.
+    when: Initialize(log_level?, opts?)
+
+    requires: Library.implementation = null
+
+    ensures:
+        if Platform = jvm:
+            if Library.force_graal = false:
+                -- Try native FFI first
+                if NativeAvailable:
+                    Library.implementation = ffi
+                else:
+                    Library.implementation = graal
+            else:
+                Library.implementation = graal
+        if Platform = js:
+            WorkerPool.created(mode: detected_mode, worker_count: detected_count)
+            Library.implementation = detected_runtime
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- after init, implementation is non-nil
+}
+
+rule ForceGraal {
+    -- Force GraalVM implementation on next initialization (JVM only).
+    when: ForceGraal()
+    ensures:
+        Library.force_graal = true
+        Library.implementation = null
+
+    @guidance
+        -- @test CLJ[x] JS[-] PW[-] Java[x]
+        -- after force-graal!, next init uses GraalVM
+}
+
+rule ForceFfi {
+    -- Force native FFI implementation on next initialization (JVM only).
+    when: ForceFfi()
+    ensures:
+        Library.force_graal = false
+        Library.implementation = null
+
+    @guidance
+        -- @test CLJ[x] JS[-] PW[-] Java[x]
+        -- after force-ffi!, next init uses native FFI
+}
+
+rule ToggleGraal {
+    -- Toggle the force_graal flag (JVM only). Resets implementation to null,
+    -- triggering re-initialization on next API call.
+    when: ToggleGraal()
+    ensures:
+        Library.force_graal = not Library.force_graal
+        Library.implementation = null
+
+    @guidance
+        -- @test CLJ[ ] JS[-] PW[-] Java[ ]
+        -- toggles force_graal state
+}
+
+rule Shutdown {
+    -- JS only: terminate all workers so the process can exit.
+    when: Shutdown()
+    ensures: WorkerPool.worker_count = 0
+
+    @guidance
+        -- @test CLJ[-] JS[x] PW[-] Java[ ]
+        -- after shutdown(), process exits cleanly
+}
+
+-- Implementation Query Flow
+
+rule QueryImplementation {
+    -- Check which backend is active. ffi?, graal?, node? are public predicates.
+    when: QueryImplementation()
+    ensures: Library.implementation != null
+
+    @guidance
+        -- @test CLJ[x] JS[-] PW[-] Java[x]
+        -- (ffi?) or (graal?) returns true
+}
+
+-- Coordinate Helper Flow
+
+rule CoordToCoordArray {
+    -- Convert a single coordinate (vector or tensor) into a fresh 1-element
+    -- CoordArray. Cross-platform (JVM + JS). Auto-initializes the library
+    -- if not yet initialized.
+    when: CoordToCoordArray(coord)
+
+    requires: Library.is_initialized = true
+
+    ensures: CoordArray.created(num_coords: 1)
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- [42.36, -71.06, 100.0, 0.0] -> 1-element array, roundtrips within 0.0001
+}
+
+rule SetCoord {
+    -- JVM only: set a single coordinate at a given index in a coord array.
+    -- Writes coord into coord_array at the given index.
+    when: SetCoord(coord_array, index, coord)
+    requires: coord_array != null
+    requires: index >= 0
+    requires: index < coord_array.num_coords
+    ensures: coord_array.num_coords > 0
+
+    @guidance
+        -- @test CLJ[x] JS[-] PW[-] Java[ ]
+        -- set-coord!(ca, 1, [10 20 30 40]) -> get-coords(ca, 1) roundtrips
+}
+
+rule SetColumn {
+    -- JVM only: set all values for a specific coordinate dimension at once.
+    -- set-col!(ca, 0, xs) sets all X values; set-xcol!/set-ycol!/set-zcol!/
+    -- set-tcol! are convenience wrappers for columns 0/1/2/3.
+    when: SetColumn(coord_array, column_index, values)
+    requires: coord_array != null
+    requires: column_index >= 0
+    requires: column_index <= 3
+    ensures: coord_array.num_coords > 0
+
+    @guidance
+        -- @test CLJ[x] JS[-] PW[-] Java[ ]
+        -- set-xcol!/set-ycol! -> per-column values roundtrip via get-coords
+}
+
+-- Context Management Flow
+
+rule CreateContext {
+    -- Create a new PROJ context with database path and optional network.
+    when: CreateContext(opts?)
+
+    requires: Library.is_initialized = true
+
+    ensures: Context.created(
+        network_enabled: opts.network ?? true,
+        database_path: resolved_db_path
+    )
+
+    ensures:
+        if Library.implementation = ffi:
+            -- Logging callback registered via JNA
+            -- Network callbacks registered via proj_context_set_network_callbacks
+            LoggingConfigured(context)
+            if opts.network ?? true:
+                NetworkCallbacksRegistered(context)
+
+        if Library.implementation = graal:
+            -- Network callbacks registered via C stubs before network enabled
+            if opts.network ?? true:
+                NetworkCallbacksRegistered(context)
+
+        -- JS: worker handles context setup internally
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- context-create -> non-nil context with :ptr key
+}
+
+rule SetDatabasePath {
+    -- Set the path to proj.db on a context.
+    when: SetDatabasePath(context, db_path?)
+
+    ensures:
+        context.database_path = db_path ?? default_for_platform
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- context + path -> does not throw
+}
+
+rule EnableNetwork {
+    -- Enable or disable network grid fetching on a context.
+    when: EnableNetwork(context, enabled)
+
+    ensures: context.network_enabled = enabled
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[ ] Java[ ]
+        -- context + enabled=1 -> is_network_enabled returns 1
+}
+
+-- CRS and Object Creation Flow
+
+rule CreateCrsToCrs {
+    -- Create a coordinate transformation between two CRS specified by code.
+    -- Context is optional: if not provided, one is auto-created.
+    -- The resulting PJ may be a concatenated_operation internally (e.g. when
+    -- a datum shift is required between source and target). Concatenated
+    -- operations work for transformation (projTransArray) but cannot be
+    -- serialized via AsProjString/AsProjjson/AsWkt. To extract a serializable
+    -- projection definition, use GetTargetCrs -> CrsGetCoordoperation on the
+    -- target CRS instead.
+    when: CreateCrsToCrs(source_crs, target_crs, context?, area?)
+
+    ensures: ProjObject.created(context: context ?? auto_created_context)
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- "EPSG:4326" + "EPSG:2249" -> non-nil transformer
+        --
+        -- source_crs and target_crs are authority:code strings (e.g. "EPSG:4326").
+        -- Parameters accept both underscore and hyphen naming conventions.
+        -- Result type varies: simple reprojections (e.g. 4326->3857) produce
+        -- a directly exportable operation; datum-shifting pairs (e.g. 4326->2249)
+        -- produce a concatenated_operation.
+}
+
+rule CreateCrsToCrsFromPj {
+    -- Create a coordinate transformation between two ProjObject CRS instances.
+    when: CreateCrsToCrsFromPj(source_crs, target_crs, context?, area?, options?)
+
+    requires: source_crs != null
+    requires: target_crs != null
+
+    ensures: ProjObject.created(context: context ?? auto_created_context)
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- EPSG:4326 PJ + EPSG:2249 PJ -> non-nil transformer
+        --
+        -- In JS with workers, if source_crs and target_crs live on different
+        -- workers, the library transparently reconciles them by recreating
+        -- mismatched objects on the target worker via PROJJSON roundtrip.
+        -- A console.warn is emitted when this happens.
+}
+
+rule CreateFromDatabase {
+    -- Look up a PROJ object by authority, code, and category.
+    when: CreateFromDatabase(auth_name, code, context?, category?, use_proj_alternative_grid_names?, options?)
+
+    ensures: ProjObject.created(context: context ?? auto_created_context)
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- "EPSG" + "4326" -> non-nil CRS object
+}
+
+rule Create {
+    -- Create a PROJ object from any definition string: PROJ string, WKT,
+    -- or pipeline definition. This is the low-level entry point that
+    -- enables raw pipeline strings like "+proj=pipeline +step +proj=robin".
+    when: Create(definition, context?)
+
+    ensures: ProjObject.created(context: context ?? auto_created_context)
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- "+proj=robin" -> non-nil ProjObject
+        -- "+proj=pipeline +step +proj=utm +zone=32" -> non-nil ProjObject
+        -- "EPSG:4326" -> non-nil CRS (shorthand for create_from_database)
+}
+
+rule CreateFromWkt {
+    -- Create a PROJ object from a WKT string.
+    when: CreateFromWkt(wkt, context?, options?)
+
+    ensures: ProjObject.created(context: context ?? auto_created_context)
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- WKT of EPSG:4326 -> CRS with name "WGS 84"
+}
+
+-- Coordinate Transformation Flow
+
+rule AllocateCoordArray {
+    -- Create a coordinate buffer for n coordinates.
+    when: AllocateCoordArray(n, dims?)
+
+    requires: Library.is_initialized = true
+
+    ensures: CoordArray.created(
+        num_coords: n,
+        dimensions: dims ?? 4
+    )
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- coord-array(1) -> non-nil array
+        --
+        -- FFI: allocates dtype-next tensor on native heap with auto resource tracking.
+        -- GraalVM: allocates on WASM heap.
+        -- JS: creates JS-side Float64Array; data transferred to worker on demand.
+}
+
+rule SetCoords {
+    -- Write coordinate values into a CoordArray.
+    when: SetCoords(coord_array, coordinates)
+
+    requires: coord_array != null
+
+    ensures: coord_array.num_coords > 0
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- set-coords!(ca, [[42.36, -71.06, 0, 0]]) -> does not throw
+}
+
+rule GetCoords {
+    -- Read coordinate values from a CoordArray at an index.
+    when: GetCoords(coord_array, index)
+
+    requires: coord_array != null
+    requires: index >= 0
+    requires: index < coord_array.num_coords
+
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- get-coords(ca, 0) -> [x, y, z, t] matching set values
+}
+
+rule TransformArray {
+    -- Batch-transform coordinates in place.
+    when: TransformArray(p, direction: PjDirection, n, coord)
+
+    requires: p != null
+    requires: coord != null
+    requires: n <= coord.num_coords
+
+    ensures: coord.num_coords > 0
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- 4326->2249 + Boston [42.36, -71.06] -> ~[775200, 2956400] feet
+        --
+        -- Coordinates are transformed in-place.
+        -- FFI: direct native memory access.
+        -- GraalVM: WASM memory operations.
+        -- JS: data is transferred to the correct worker, transformed, and
+        --     results written back to the JS-side Float64Array.
+}
+
+-- Database Query Flow
+
+rule GetAuthorities {
+    -- List all authority names in the PROJ database.
+    when: GetAuthorities(context?)
+
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- -> non-empty list containing "EPSG"
+}
+
+rule GetCodes {
+    -- List all codes for a given authority and type.
+    when: GetCodes(auth_name, context?, type?, allow_deprecated?)
+
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- "EPSG" -> list containing "4326"
+}
+
+rule GetCrsInfoList {
+    -- Return detailed CRS information from the database.
+    -- Uses the struct-aware return type system (StructAwareReturnType invariant).
+    -- FFI reads fields via dtype-next struct definition :proj-crs-info.
+    -- WASM reads fields at 32-bit offsets from :struct-fields metadata.
+    when: GetCrsInfoList(context?, auth_name?)
+
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- "EPSG" -> >1000 entries, includes 4326 "WGS 84"
+        --
+        -- EPSG alone has >1000 entries.
+        -- Omitting auth_name returns entries from all authorities.
+        -- CRS info list requires a params object (proj_get_crs_list_parameters_create/destroy).
+        -- The params object is optional in the metadata and auto-created/destroyed.
+}
+
+rule GetUnitsFromDatabase {
+    -- Return unit information from the database.
+    -- Uses the struct-aware return type system (StructAwareReturnType invariant).
+    when: GetUnitsFromDatabase(context?, auth_name?, category?, allow_deprecated?)
+
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- "EPSG" + "linear" -> includes 9001 (metre), 9003 (US survey foot)
+        --
+        -- category filters by unit type (e.g. "linear", "angular").
+        -- Omitting category returns all unit types.
+        -- No params object needed (unlike CRS info list).
+}
+
+rule GetCelestialBodyList {
+    -- Return celestial body information from the database.
+    -- Uses the struct-aware return type system (StructAwareReturnType invariant).
+    when: GetCelestialBodyList(context?, auth_name?)
+
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- -> non-empty list containing "Earth"
+        --
+        -- Returns all celestial bodies known to PROJ (Earth, Moon, Mars, etc.).
+        -- No params object needed (unlike CRS info list).
+}
+
+-- Object Inspection Flow
+
+rule GetName {
+    when: GetName(obj)
+    requires: obj != null
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- EPSG:4326 -> "WGS 84"
+}
+
+rule AsWkt {
+    -- Serialize a PROJ object to WKT.
+    -- See AsProjString for exportability limitations on concatenated operations.
+    when: AsWkt(pj, context?, type?, options?)
+    requires: pj != null
+    ensures:
+        if pj.type in {concatenated_operation}:
+            result = null -- PROJ C limitation: not exportable
+        else:
+            result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- EPSG:4326 -> WKT string containing "WGS 84"
+        -- 4326->2249 CRS-to-CRS PJ -> null (concatenated operation, not exportable)
+}
+
+rule AsProjJson {
+    -- Serialize a PROJ object to PROJJSON.
+    -- See AsProjString for exportability limitations on concatenated operations.
+    when: AsProjJson(pj, context?, options?)
+    requires: pj != null
+    ensures:
+        if pj.type in {concatenated_operation}:
+            result = null -- PROJ C limitation: not exportable
+        else:
+            result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- EPSG:4326 -> JSON string containing "GeographicCRS"
+        -- 4326->2249 CRS-to-CRS PJ -> null (concatenated operation, not exportable)
+}
+
+rule AsProjString {
+    -- Serialize a PROJ object to a PROJ string.
+    -- Not all PROJ object types are exportable. CRS-to-CRS transformations
+    -- (from projCreateCrsToCrs) that produce concatenated operations internally
+    -- cannot be exported -- PROJ C returns NULL / "". Same limitation applies
+    -- to AsProjjson and AsWkt on these objects.
+    -- To get a PROJ string for a projected CRS's map projection, extract the
+    -- conversion via: projGetTargetCrs -> projCrsGetCoordoperation ->
+    -- AsProjString on the coordoperation.
+    when: AsProjString(pj, context?, type?, options?)
+    requires: pj != null
+    ensures:
+        if pj.type in {concatenated_operation}:
+            result in {null, ""} -- PROJ C limitation: not exportable
+            -- JVM: nil (PROJ returns NULL, dispatch converts to nil)
+            -- JS: "" (worker returns empty string)
+        else:
+            result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- 4326->3857 transformation -> string containing "proj"
+        -- 4326->2249 CRS-to-CRS PJ -> nil/"" (concatenated operation, not exportable)
+        -- EPSG:2249 coordoperation -> string containing "+proj=lcc"
+}
+
+rule GetSourceCrs {
+    when: GetSourceCrs(pj, context?)
+    requires: pj != null
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- 4326->2249 transformer -> source name "WGS 84"
+}
+
+rule GetTargetCrs {
+    when: GetTargetCrs(pj, context?)
+    requires: pj != null
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- 4326->2249 transformer -> target name contains "Massachusetts"
+}
+
+rule GetType {
+    when: GetType(obj)
+    requires: obj != null
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- EPSG:4326 -> 12 (PJ_TYPE_GEOGRAPHIC_2D_CRS)
+}
+
+rule IsDeprecated {
+    when: IsDeprecated(obj)
+    requires: obj != null
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- EPSG:4326 -> 0 (not deprecated)
+}
+
+rule GetAreaOfUse {
+    when: GetAreaOfUse(obj, context?)
+    requires: obj != null
+    ensures: result: AreaOfUse
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- EPSG:4326 -> AreaOfUse with west=-180, east=180, area_name="World"
+}
+
+rule GetAreaOfUseEx {
+    when: GetAreaOfUseEx(obj, domainIdx, context?)
+    requires: obj != null
+    ensures: result: AreaOfUse
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- EPSG:4326 + domainIdx=0 -> AreaOfUse
+}
+
+-- CRS Decomposition Flow
+
+rule GetGeodeticCrs {
+    when: GetGeodeticCrs(crs, context?)
+    requires: crs != null
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- EPSG:2249 (projected) -> geodetic CRS name contains "NAD83"
+}
+
+rule GetCoordinateSystem {
+    when: GetCoordinateSystem(crs, context?)
+    requires: crs != null
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- EPSG:4326 -> non-nil coordinate system object
+}
+
+rule GetAxisCount {
+    when: GetAxisCount(cs, context?)
+    requires: cs != null
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- CS of EPSG:4326 -> 2
+}
+
+rule GetAxisInfo {
+    when: GetAxisInfo(cs, index, context?)
+    requires: cs != null
+    ensures: result: AxisInfo
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- CS of EPSG:4326 + index=0 -> AxisInfo with name="Geodetic latitude"
+}
+
+rule GetEllipsoid {
+    -- Extract the ellipsoid from a CRS or GeodeticReferenceFrame.
+    -- Fails with "Object is not a CRS or GeodeticReferenceFrame" for other
+    -- PJ types (e.g. concatenated operations from CreateCrsToCrs).
+    when: GetEllipsoid(obj, context?)
+    requires: obj != null
+    ensures:
+        if obj.is_crs or obj.type in {geodetic_reference_frame, dynamic_geodetic_reference_frame}:
+            result != null
+        else:
+            result = null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- EPSG:4326 -> ellipsoid named "WGS 84"
+        -- EPSG:2249 (projected CRS) -> ellipsoid (traverses to geodetic CRS)
+        -- concatenated_operation PJ -> null (not a CRS)
+}
+
+rule GetDatum {
+    when: GetDatum(crs, context?)
+    requires: crs != null
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- EPSG:4326 -> datum object
+}
+
+rule PromoteTo3D {
+    when: PromoteTo3D(crs_2D, crs_3D_name?, context?)
+    requires: crs_2D != null
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- EPSG:4326 (2D) -> 3D CRS with 3 axes
+}
+
+rule DemoteTo2D {
+    when: DemoteTo2D(crs_3D, crs_2D_name?, context?)
+    requires: crs_3D != null
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[ ] PW[ ] Java[ ]
+        -- 3D CRS -> 2D CRS with 2 axes
+}
+
+-- CRS Construction Flow
+
+rule CreateGeographicCrs {
+    when: CreateGeographicCrs(crs_name, datum_name, ellps_name, semi_major_metre, inv_flattening, prime_meridian_name, prime_meridian_offset, pm_angular_units, pm_units_conv, ellipsoidal_cs, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- custom params -> non-nil geographic CRS
+}
+
+rule CreateGeographicCrsFromDatum {
+    when: CreateGeographicCrsFromDatum(crs_name, datum_or_datum_ensemble, ellipsoidal_cs, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- datum + CS -> non-nil geographic CRS
+}
+
+rule CreateGeocentricCrs {
+    when: CreateGeocentricCrs(crs_name, datum_name, ellps_name, semi_major_metre, inv_flattening, prime_meridian_name, prime_meridian_offset, angular_units, angular_units_conv, linear_units, linear_units_conv, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- custom params -> non-nil geocentric CRS
+}
+
+rule CreateGeocentricCrsFromDatum {
+    when: CreateGeocentricCrsFromDatum(crs_name, datum_or_datum_ensemble, linear_units, linear_units_conv, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- datum + units -> non-nil geocentric CRS
+}
+
+rule CreateDerivedGeographicCrs {
+    when: CreateDerivedGeographicCrs(crs_name, base_geographic_crs, conversion, ellipsoidal_cs, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[-]
+        -- base CRS + conversion -> non-nil derived geographic CRS
+}
+
+rule CreateProjectedCrs {
+    when: CreateProjectedCrs(crs_name, geodetic_crs, conversion, coordinate_system, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- geodetic CRS + conversion + CS -> non-nil projected CRS
+}
+
+rule CreateVerticalCrs {
+    when: CreateVerticalCrs(crs_name, datum_name, linear_units, linear_units_conv, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- datum + units -> non-nil vertical CRS
+}
+
+rule CreateVerticalCrsEx {
+    when: CreateVerticalCrsEx(crs_name, datum_name, datum_auth_name, datum_code, linear_units, linear_units_conv, geoid_model_name, geoid_model_auth_name, geoid_model_code, geoid_geog_crs, options, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[-]
+        -- extended params with geoid model -> non-nil vertical CRS
+}
+
+rule CreateCompoundCrs {
+    when: CreateCompoundCrs(crs_name, horiz_crs, vert_crs, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- horiz CRS + vert CRS -> non-nil compound CRS
+}
+
+rule CreateEngineeringCrs {
+    when: CreateEngineeringCrs(crsName, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- crsName -> non-nil engineering CRS
+}
+
+rule CreateCartesian2DCs {
+    when: CreateCartesian2DCs(type, unit_name, unit_conv_factor, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- type + unit params -> non-nil Cartesian 2D CS
+}
+
+rule CreateEllipsoidal2DCs {
+    when: CreateEllipsoidal2DCs(type, unit_name, unit_conv_factor, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- type + unit params -> non-nil ellipsoidal 2D CS
+}
+
+rule CreateEllipsoidal3DCs {
+    when: CreateEllipsoidal3DCs(type, horizontal_angular_unit_name, horizontal_angular_unit_conv_factor, vertical_linear_unit_name, vertical_linear_unit_conv_factor, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- angular + linear unit params -> non-nil ellipsoidal 3D CS
+}
+
+rule CreateCs {
+    when: CreateCs(type, axis_count, axis, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[-]
+        -- type + axes -> non-nil coordinate system
+}
+
+-- CRS Alteration Flow
+
+rule AlterName {
+    when: AlterName(obj, name, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- CRS + "New Name" -> renamed CRS object
+}
+
+rule AlterId {
+    when: AlterId(obj, auth_name, code, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- CRS + auth + code -> CRS with new id
+}
+
+rule CrsAlterGeodeticCrs {
+    when: CrsAlterGeodeticCrs(obj, new_geod_crs, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- projected CRS + new geodetic CRS -> altered CRS
+}
+
+rule CrsAlterCsAngularUnit {
+    when: CrsAlterCsAngularUnit(obj, angular_units, angular_units_conv, unit_auth_name, unit_code, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- CRS + angular unit params -> CRS with altered units
+}
+
+rule CrsAlterCsLinearUnit {
+    when: CrsAlterCsLinearUnit(obj, linear_units, linear_units_conv, unit_auth_name, unit_code, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- CRS + linear unit params -> CRS with altered units
+}
+
+rule CrsAlterParametersLinearUnit {
+    when: CrsAlterParametersLinearUnit(obj, linear_units, linear_units_conv, unit_auth_name, unit_code, convert_to_new_unit, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[-]
+        -- CRS + linear unit params + convert flag -> CRS with altered parameters
+}
+
+-- Bound CRS Creation Flow
+
+rule CrsCreateBoundCrs {
+    when: CrsCreateBoundCrs(base_crs, hub_crs, transformation, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- base CRS + hub CRS + transformation -> non-nil bound CRS
+}
+
+rule CrsCreateBoundCrsToWgs84 {
+    when: CrsCreateBoundCrsToWgs84(crs, options, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- CRS + options -> bound CRS to WGS84
+}
+
+rule CrsCreateBoundVerticalCrs {
+    when: CrsCreateBoundVerticalCrs(vert_crs, hub_geographic_3D_crs, grid_name, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[-]
+        -- vert CRS + hub 3D CRS + grid -> bound vertical CRS
+}
+
+-- CRS Dimension Manipulation Flow
+
+rule CrsCreateProjected3DCrsFrom2D {
+    when: CrsCreateProjected3DCrsFrom2D(crs_name, projected_2D_crs, geog_3D_crs, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- 2D projected CRS + 3D geog CRS -> 3D projected CRS
+}
+
+-- Conversion/Transformation Construction Flow
+
+rule CreateConversion {
+    when: CreateConversion(name, auth_name, code, method_name, method_auth_name, method_code, param_count, params, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[-]
+        -- method + params -> non-nil conversion object
+}
+
+rule CreateTransformation {
+    when: CreateTransformation(name, auth_name, code, source_crs, target_crs, interpolation_crs, method_name, method_auth_name, method_code, param_count, params, accuracy, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[-]
+        -- source + target + method + params -> non-nil transformation
+}
+
+rule ConvertConversionToOtherMethod {
+    when: ConvertConversionToOtherMethod(conversion, new_method_epsg_code, new_method_name, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[-]
+        -- conversion + new method -> converted conversion object
+}
+
+-- Object Comparison Flow
+
+rule IsEquivalentTo {
+    when: IsEquivalentTo(obj, other, criterion)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- same CRS twice + criterion -> equivalence result
+}
+
+rule IsEquivalentToWithCtx {
+    when: IsEquivalentToWithCtx(obj, other, criterion, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- same CRS twice + criterion + ctx -> equivalence result
+}
+
+rule IsCrs {
+    when: IsCrs(obj)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- EPSG:4326 -> true; transformation -> false
+}
+
+-- Coordinate Operation Inspection Flow
+
+rule CoordoperationGetMethodInfo {
+    when: CoordoperationGetMethodInfo(coordoperation, ctx?)
+    ensures: result: MethodInfo
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- coord operation -> MethodInfo with method_name, method_auth_name, method_code
+}
+
+rule CoordoperationIsInstantiable {
+    when: CoordoperationIsInstantiable(coordoperation, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- coord operation -> 0 or 1
+}
+
+rule CoordoperationHasBallparkTransformation {
+    when: CoordoperationHasBallparkTransformation(coordoperation, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- coord operation -> 0 or 1
+}
+
+rule CoordoperationRequiresPerCoordinateInputTime {
+    when: CoordoperationRequiresPerCoordinateInputTime(coordoperation, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- coord operation -> 0 or 1
+}
+
+rule CoordoperationGetParamCount {
+    when: CoordoperationGetParamCount(coordoperation, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- coord operation -> integer param count
+}
+
+rule CoordoperationGetParamIndex {
+    when: CoordoperationGetParamIndex(coordoperation, name, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- coord operation + param name -> integer index
+}
+
+rule CoordoperationGetParam {
+    when: CoordoperationGetParam(coordoperation, index, ctx?)
+    ensures: result: CoordoperationParam
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- coord operation + index -> CoordoperationParam with name, value, unit fields
+}
+
+rule CoordoperationGetGridUsedCount {
+    when: CoordoperationGetGridUsedCount(coordoperation, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- coord operation -> integer grid count
+}
+
+rule CoordoperationGetGridUsed {
+    when: CoordoperationGetGridUsed(coordoperation, index, ctx?)
+    ensures: result: GridUsedInfo
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- coord operation + index -> GridUsedInfo with short_name, url, availability
+}
+
+rule CoordoperationGetAccuracy {
+    when: CoordoperationGetAccuracy(obj, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- coord operation -> decimal accuracy value
+}
+
+rule CoordoperationGetTowgs84Values {
+    when: CoordoperationGetTowgs84Values(coordoperation, value_count, emit_error_if_incompatible, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- coord operation + count=7 -> {:values [dx dy dz rx ry rz ds]}
+}
+
+rule CoordoperationCreateInverse {
+    when: CoordoperationCreateInverse(obj, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- coord operation -> inverse operation object
+}
+
+-- Concatenated Operation Flow
+
+rule ConcatoperationGetStepCount {
+    when: ConcatoperationGetStepCount(concatoperation, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- concatenated operation -> integer step count
+}
+
+rule ConcatoperationGetStep {
+    when: ConcatoperationGetStep(concatoperation, i_step, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- concatenated operation + step index -> operation object
+}
+
+-- Datum Inspection Flow
+
+rule CrsGetHorizontalDatum {
+    when: CrsGetHorizontalDatum(crs, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- EPSG:4326 -> horizontal datum object
+}
+
+rule CrsGetDatumEnsemble {
+    when: CrsGetDatumEnsemble(crs, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- CRS with datum ensemble -> datum ensemble object
+}
+
+rule CrsGetDatumForced {
+    when: CrsGetDatumForced(crs, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- EPSG:4326 -> datum named "World Geodetic System 1984"
+}
+
+rule DatumEnsembleGetMemberCount {
+    when: DatumEnsembleGetMemberCount(datum_ensemble, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- datum ensemble -> integer member count
+}
+
+rule DatumEnsembleGetAccuracy {
+    when: DatumEnsembleGetAccuracy(datum_ensemble, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- datum ensemble -> decimal accuracy
+}
+
+rule DatumEnsembleGetMember {
+    when: DatumEnsembleGetMember(datum_ensemble, member_index, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- datum ensemble + index -> member datum object
+}
+
+rule DynamicDatumGetFrameReferenceEpoch {
+    when: DynamicDatumGetFrameReferenceEpoch(datum, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- dynamic datum -> reference epoch decimal
+}
+
+-- Ellipsoid/Prime Meridian Flow
+
+rule EllipsoidGetParameters {
+    when: EllipsoidGetParameters(ellipsoid, ctx?)
+    ensures: result: EllipsoidParameters
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- WGS 84 ellipsoid -> semi_major_metre ~= 6378137.0, inv_flattening ~= 298.257
+}
+
+rule GetPrimeMeridian {
+    when: GetPrimeMeridian(obj, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- EPSG:4326 -> prime meridian object (Greenwich)
+}
+
+rule PrimeMeridianGetParameters {
+    when: PrimeMeridianGetParameters(prime_meridian, ctx?)
+    ensures: result: PrimeMeridianParameters
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- Greenwich PM -> longitude=0.0, unit_name="Degree"
+}
+
+rule GetCelestialBodyName {
+    when: GetCelestialBodyName(obj, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- EPSG:4326 -> "Earth"
+}
+
+-- Metadata Flow
+
+rule GetIdAuthName {
+    when: GetIdAuthName(obj, index)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- EPSG:4326 + index=0 -> "EPSG"
+}
+
+rule GetIdCode {
+    when: GetIdCode(obj, index)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- EPSG:4326 + index=0 -> "4326"
+}
+
+rule GetRemarks {
+    when: GetRemarks(obj)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- EPSG:4326 -> remarks string (may be empty)
+}
+
+rule GetDomainCount {
+    when: GetDomainCount(obj)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- EPSG:4326 -> integer domain count
+}
+
+rule GetScope {
+    when: GetScope(obj)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- EPSG:4326 -> scope string
+}
+
+rule GetScopeEx {
+    when: GetScopeEx(obj, domainIdx)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- EPSG:4326 + domainIdx=0 -> scope string
+}
+
+-- Database Utilities Flow
+
+rule ContextGetDatabasePath {
+    when: ContextGetDatabasePath(context?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- context -> path string ending in "proj.db"
+}
+
+rule ContextGetDatabaseMetadata {
+    when: ContextGetDatabaseMetadata(key, context?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- "PROJ.VERSION" -> version string
+}
+
+rule ContextGetDatabaseStructure {
+    when: ContextGetDatabaseStructure(context?, options?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- context -> SQL structure list
+}
+
+rule ContextGuessWktDialect {
+    when: ContextGuessWktDialect(wkt, context?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- WKT2 string -> WKT dialect integer
+}
+
+rule UomGetInfoFromDatabase {
+    when: UomGetInfoFromDatabase(auth_name, code, context?)
+    ensures: result: UomInfo
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- "EPSG" + "9001" -> UomInfo with name="metre", category="linear"
+}
+
+rule GridGetInfoFromDatabase {
+    when: GridGetInfoFromDatabase(grid_name, context?)
+    ensures: result: GridDatabaseInfo
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- grid name -> GridDatabaseInfo with full_name, url, availability
+}
+
+rule GetGeoidModelsFromDatabase {
+    when: GetGeoidModelsFromDatabase(auth_name, code, options, context?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- auth + code -> geoid model list
+}
+
+rule SuggestsCodeFor {
+    when: SuggestsCodeFor(object, authority, numeric_code, options, context?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- object + authority -> suggested code string
+}
+
+-- Operation Factory Configuration Flow
+
+rule OperationFactoryContextSetDesiredAccuracy {
+    when: OperationFactoryContextSetDesiredAccuracy(factory_ctx, accuracy, ctx?)
+    ensures: true
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- factory_ctx + accuracy=0.5 -> does not throw
+}
+
+rule OperationFactoryContextSetAreaOfInterest {
+    when: OperationFactoryContextSetAreaOfInterest(factory_ctx, west_lon_degree, south_lat_degree, east_lon_degree, north_lat_degree, ctx?)
+    ensures: true
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- factory_ctx + bbox -> does not throw
+}
+
+rule OperationFactoryContextSetAreaOfInterestName {
+    when: OperationFactoryContextSetAreaOfInterestName(factory_ctx, area_name, ctx?)
+    ensures: true
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- factory_ctx + area name -> does not throw
+}
+
+rule OperationFactoryContextSetCrsExtentUse {
+    when: OperationFactoryContextSetCrsExtentUse(factory_ctx, use, ctx?)
+    ensures: true
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- factory_ctx + use flag -> does not throw
+}
+
+rule OperationFactoryContextSetSpatialCriterion {
+    when: OperationFactoryContextSetSpatialCriterion(factory_ctx, criterion, ctx?)
+    ensures: true
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- factory_ctx + criterion -> does not throw
+}
+
+rule OperationFactoryContextSetGridAvailabilityUse {
+    when: OperationFactoryContextSetGridAvailabilityUse(factory_ctx, use, ctx?)
+    ensures: true
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- factory_ctx + use flag -> does not throw
+}
+
+rule OperationFactoryContextSetUseProjAlternativeGridNames {
+    when: OperationFactoryContextSetUseProjAlternativeGridNames(factory_ctx, usePROJNames, ctx?)
+    ensures: true
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- factory_ctx + flag -> does not throw
+}
+
+rule OperationFactoryContextSetAllowUseIntermediateCrs {
+    when: OperationFactoryContextSetAllowUseIntermediateCrs(factory_ctx, use, ctx?)
+    ensures: true
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- factory_ctx + use flag -> does not throw
+}
+
+rule OperationFactoryContextSetAllowedIntermediateCrs {
+    when: OperationFactoryContextSetAllowedIntermediateCrs(factory_ctx, list_of_auth_name_codes, ctx?)
+    ensures: true
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- factory_ctx + auth:code list -> does not throw
+}
+
+rule OperationFactoryContextSetAllowBallparkTransformations {
+    when: OperationFactoryContextSetAllowBallparkTransformations(factory_ctx, allow, ctx?)
+    ensures: true
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- factory_ctx + allow flag -> does not throw
+}
+
+rule OperationFactoryContextSetDiscardSuperseded {
+    when: OperationFactoryContextSetDiscardSuperseded(factory_ctx, discard, ctx?)
+    ensures: true
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- factory_ctx + discard flag -> does not throw
+}
+
+-- Context Configuration Flow
+
+rule ContextSetAutocloseDatabase {
+    when: ContextSetAutocloseDatabase(context?, autoclose)
+    ensures: true
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- context + autoclose flag -> does not throw
+}
+
+rule ContextIsNetworkEnabled {
+    when: ContextIsNetworkEnabled(context?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[x] PW[ ] Java[ ]
+        -- context -> 0 or 1
+}
+
+rule ContextSetNetworkCallbacks {
+    when: ContextSetNetworkCallbacks(context?, open_cbk, close_cbk, get_header_cbk, read_range_cbk, user_data)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[-] JS[-] PW[-] Java[-]
+        -- Internal: requires native callback pointers, not user-callable
+}
+
+-- Error Introspection Flow
+
+rule ContextErrno {
+    when: ContextErrno(context?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- context after invalid CRS -> non-negative integer
+}
+
+rule ContextErrnoString {
+    when: ContextErrnoString(err)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[x]
+        -- error code -> human-readable string
+        -- JVM: PROJ.errorCodeToString used in transformation tests
+}
+
+-- Coordinate Utilities Flow
+
+rule XyDist {
+    when: XyDist(a, b)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[-]
+        -- two coords -> Euclidean distance
+}
+
+rule Coord {
+    when: Coord(x, y, z, t)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[-]
+        -- (x, y, z, t) -> coordinate struct
+}
+
+-- List Traversal Flow
+
+rule ListGetCount {
+    when: ListGetCount(result)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- operations list -> positive integer count
+}
+
+rule ListGet {
+    when: ListGet(result, index, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- operations list + index -> operation object
+}
+
+-- Database Insert Flow
+
+rule InsertObjectSessionCreate {
+    when: InsertObjectSessionCreate(context?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[-]
+        -- context -> insert session object
+}
+
+rule GetInsertStatements {
+    when: GetInsertStatements(session, object, authority, code, numeric_codes, allowed_authorities, options, context?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[-]
+        -- session + object + authority -> SQL insert statements
+}
+
+-- Coordinate System Inspection Flow
+
+rule CsGetType {
+    when: CsGetType(cs, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- CS of EPSG:4326 -> CS type integer
+}
+
+-- Miscellaneous Flow
+
+rule Clone {
+    when: Clone(p, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- CRS object -> cloned CRS object
+}
+
+rule CreateFromName {
+    when: CreateFromName(auth_name, searchedName, types, typesCount, approximateMatch, limitResultCount, options, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- "WGS 84" -> list of matching objects
+}
+
+rule Identify {
+    when: Identify(obj, auth_name, options, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- CRS object + "EPSG" -> identification result list
+}
+
+rule GetNonDeprecated {
+    when: GetNonDeprecated(obj, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- deprecated CRS -> list of non-deprecated replacements
+}
+
+rule GetSuggestedOperation {
+    when: GetSuggestedOperation(operations, direction, coord, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- operations list + direction + coord -> suggested operation index
+}
+
+rule CoordinateMetadataCreate {
+    when: CoordinateMetadataCreate(crs, epoch, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[x] PW[ ] Java[ ]
+        -- ITRF2014 CRS + epoch=2024.0 -> coordinate metadata object
+}
+
+rule CoordinateMetadataGetEpoch {
+    when: CoordinateMetadataGetEpoch(obj, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[x] PW[ ] Java[ ]
+        -- coordinate metadata -> 2024.0
+}
+
+rule QueryGeodeticCrsFromDatum {
+    when: QueryGeodeticCrsFromDatum(crs_auth_name, datum_auth_name, datum_code, crs_type, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- datum auth + code + type -> matching CRS list
+}
+
+rule CrsHasPointMotionOperation {
+    when: CrsHasPointMotionOperation(crs, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- CRS -> 0 or 1
+}
+
+rule IsDerivedCrs {
+    when: IsDerivedCrs(crs, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- EPSG:4326 -> 0; derived CRS -> 1
+}
+
+rule CrsIsDerived {
+    when: CrsIsDerived(crs, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- EPSG:4326 -> 0; derived CRS -> 1
+}
+
+rule CrsGetSubCrs {
+    when: CrsGetSubCrs(crs, index, ctx?)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- compound CRS + index -> sub-CRS object
+}
+
+rule CrsGetCoordoperation {
+    -- Extract the map projection conversion from a projected CRS.
+    -- This is the key entry point for getting a serializable projection
+    -- definition from a projected CRS: the resulting conversion PJ can be
+    -- passed to AsProjString/AsProjjson/AsWkt (unlike the concatenated
+    -- operation from CreateCrsToCrs).
+    when: CrsGetCoordoperation(crs, ctx?)
+    requires: crs.type = projected_crs
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[x]
+        -- EPSG:2249 -> conversion with method "Lambert Conic Conformal (2SP)"
+        -- Result is serializable: AsProjString yields "+proj=lcc ..."
+}
+
+rule LogLevel {
+    when: LogLevel(context?, level)
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[ ] JS[ ] PW[ ] Java[ ]
+        -- context + level -> does not throw
+}
+
+rule LogFunc {
+    when: LogFunc(context?, app_data, logf)
+    ensures: true
+
+    @guidance
+        -- @test CLJ[-] JS[-] PW[-] Java[-]
+        -- Internal: requires native callback pointer, not user-callable
+}
+
+-- Operation Factory Flow
+
+rule CreateOperationFactoryContext {
+    when: CreateOperationFactoryContext(authority?, context?)
+    ensures: OperationFactoryContext.created(authority: authority)
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- context -> non-nil operation factory context
+}
+
+rule CreateOperations {
+    -- Find all possible operations between two CRS.
+    when: CreateOperations(source_crs, target_crs, operationContext, context?)
+    requires: source_crs != null
+    requires: target_crs != null
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- EPSG:4326 + EPSG:2249 + factory ctx -> non-empty operations list
+}
+
+rule NormalizeForVisualization {
+    when: NormalizeForVisualization(obj, context?)
+    requires: obj != null
+    ensures: result != null
+
+    @guidance
+        -- @test CLJ[x] JS[x] PW[x] Java[ ]
+        -- 4326->3857 transformer -> normalized transformation object
+}
+
+------------------------------------------------------------
+-- System-Wide Properties
+------------------------------------------------------------
+--
+-- These describe cross-cutting properties of the library that do not scope
+-- to a single contract or surface. Per-function dispatch properties are
+-- specified as @invariant entries in GeneratedProjFunction above.
+--
+-- ResourceTracking: All PROJ objects (ProjObject, Context, CoordArray) are
+--   automatically tracked for cleanup. JVM: via tech.v3.resource with :auto
+--   tracking (GC-based). JS: via resource-tracker library with both automatic
+--   GC tracking and explicit deterministic cleanup via releasing() blocks.
+--   Users never need to call proj_destroy manually.
+--
+-- CrossWorkerReconciliation: JS only -- when ProjObject arguments to a
+--   function live on different workers, they are transparently recreated on
+--   the target worker via PROJJSON export and reimport, producing ISO-19111
+--   compatible objects. A console.warn is emitted suggesting explicit contexts
+--   for better performance.
+--
+-- PlatformDispatchConsistency: The same public API produces equivalent results
+--   across all implementations (FFI, GraalVM, Node.js, Browser) for the same
+--   inputs. Coordinate transformations produce identical numeric results within
+--   floating-point tolerance.
+--
+-- ContextThreadSafety: JVM -- context operations are atomic via Clojure atom
+--   swap!. JS -- contexts are pinned to specific workers; no cross-thread
+--   access.
+--
+-- NetworkGridFetching: When network is enabled on a context, PROJ can fetch
+--   transformation grids (NADCON, NTv2, etc.) from cdn.proj.org for
+--   higher-accuracy results. This produces measurably different (more accurate)
+--   transformation results compared to network-off.
+--
+-- SingleSourceFunctionDefinitions: All PROJ C API function signatures are
+--   defined once in fndefs.cljc as data. Four systems read fndefs at
+--   build time:
+--     1. define-all-proj-public-fns macro (bb cherry) -- generates the
+--        Clojure/JS wrapper functions for each entry
+--     2. WASM link step (bb build --wasm) -- reads fndefs keys to build
+--        the Emscripten EXPORTED_FUNCTIONS list. If a function isn't in
+--        fndefs, the linker strips it from the .wasm binary.
+--     3. FFI binding (JVM init) -- resolves native symbols at runtime
+--     4. macros.cljs -- a derived copy of fndefs for CLJS macro expansion.
+--        After editing fndefs.cljc, run `bb update-macro-fn-keys` to sync.
+--   Adding a new PROJ function requires an entry in fndefs plus both
+--   bb build --wasm (to export the symbol) and bb cherry (to generate
+--   the wrapper). The dispatch system, argument extraction, and return
+--   processing are automatic.
+--
+-- FfiToGraalFallback: On JVM, initialization always tries native FFI first.
+--   If FFI fails (e.g. native library unavailable for the platform), the
+--   library falls back to GraalVM WASM.
+--
+-- InternallyBundledArtifacts: The PROJ native libraries, WASM binary, proj.db,
+--   and proj.ini are all internally bundled. There is no possibility of version
+--   mismatch between components: they are built together from the same PROJ
+--   source version.
+--
+-- GraalWasmNominalTyping: GraalVM's WASM engine uses nominal type checking for
+--   indirect calls, unlike browser engines which use structural type checking.
+--   Emscripten's addFunction creates mini wrapper modules with different type
+--   indices, causing RuntimeError on indirect call in GraalVM. The library
+--   works around this by compiling C callback stubs directly into the PROJ WASM
+--   binary (proj_network_stubs.c). addFunction is never used on the GraalVM
+--   path.
+
+------------------------------------------------------------
+-- Actor Declarations
+------------------------------------------------------------
+
+actor JavaApplication {}
+actor ClojureApplication {}
+actor JavaScriptApplication {}
+actor ProjCLibrary {}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface JavaApi {
+    -- Java-friendly static wrapper (PROJ.java) over the Clojure API.
+    -- Uses opaque Object handles for contexts, transformers, and coord arrays.
+    -- All methods are static on the PROJ class. Lazily loads the Clojure
+    -- namespace on first call.
+    facing consumer: JavaApplication
+
+    exposes:
+        init() -> void
+        forceGraal() -> void
+        forceFfi() -> void
+        toggleGraal() -> void
+        isFfi() -> Boolean
+        isGraal() -> Boolean
+        isNode() -> Boolean
+        contextCreate() -> Object
+        contextPtr(context) -> Object
+        contextDatabasePath(context) -> String
+        isContext(obj) -> Boolean
+        contextSetDatabasePath(context, path?) -> void
+        coordArray(n, dims?) -> Object
+        coordToCoordArray(coord) -> Object
+        setCoords(coord_array, coords) -> void
+        setCoord(coord_array, index, coord) -> void
+        setCol(coord_array, col_index, values) -> void
+        setXcol(coord_array, values) -> void
+        setYcol(coord_array, values) -> void
+        setZcol(coord_array, values) -> void
+        setTcol(coord_array, values) -> void
+        getCoords(coord_array, index) -> List<Decimal>
+        errorCodeToString(error_code) -> String
+        createCrsToCrs(context?, source_crs, target_crs) -> Any
+        createCrsToCrsFromPj(context?, source_crs, target_crs) -> Any
+        createFromDatabase(context?, auth_name, code) -> Any
+        transArray(transformation, coord_array, n, direction?) -> Integer
+        getAuthoritiesFromDatabase(context?) -> List<String>
+        getCodesFromDatabase(context?, auth_name) -> List<String>
+        getCrsInfoListFromDatabase(context, auth_name?) -> List<CrsInfoEntry>
+        getUnitsFromDatabase(context, auth_name?, category?, allow_deprecated?) -> List<UnitInfoEntry>
+        getCelestialBodyListFromDatabase(context, auth_name?) -> List<CelestialBodyInfoEntry>
+        contextDestroy(context) -> void
+        destroy(pj) -> void
+        -- Explicit Java wrappers with Java-friendly signatures:
+        getName(obj) -> String
+        -- CRS Decomposition:
+        getEllipsoid(context, obj) -> Any
+        getPrimeMeridian(context, obj) -> Any
+        crsGetCoordinateSystem(context, crs) -> Any
+        csGetAxisCount(context, cs) -> Integer
+        crsGetCoordoperation(context, crs) -> Any
+        coordoperationGetParamCount(context, coordoperation) -> Integer
+        coordoperationGetGridUsedCount(context, coordoperation) -> Integer
+        -- Out-param functions (return typed maps with camelCase String keys):
+        getAreaOfUse(context, obj) -> AreaOfUse?
+        getAreaOfUseEx(context, obj, domainIdx) -> AreaOfUse?
+        csGetAxisInfo(context, cs, index) -> AxisInfo?
+        ellipsoidGetParameters(context, ellipsoid) -> EllipsoidParameters?
+        primeMeridianGetParameters(context, pm) -> PrimeMeridianParameters?
+        coordoperationGetMethodInfo(context, coordoperation) -> MethodInfo?
+        coordoperationGetParam(context, coordoperation, index) -> CoordoperationParam?
+        coordoperationGetGridUsed(context, coordoperation, index) -> GridUsedInfo?
+        uomGetInfoFromDatabase(context, auth_name, code) -> UomInfo?
+        gridGetInfoFromDatabase(context, grid_name) -> GridDatabaseInfo?
+        coordoperationGetTowgs84Values(context, coordoperation, value_count, emit_error_if_incompatible) -> Map?
+        -- TODO: remaining fndefs functions (getType, isDeprecated, asWkt,
+        -- asProjString, asProjJson, getSourceCrs, getTargetCrs, etc.) are
+        -- accessible through the Clojure API but do not yet have explicit
+        -- Java static method wrappers in PROJ.java.
+
+    @guarantee LazyNamespaceLoading
+        -- The Clojure namespace is loaded on first API call, not at class load time.
+
+    @guarantee CoordinatePadding
+        -- setCoords and setCoord automatically pad input arrays to 4 dimensions
+        -- (x, y, z, t) with zeros.
+
+    @guarantee ColumnAccess
+        -- setXcol/setYcol/setZcol/setTcol provide column-oriented coordinate
+        -- writes for batch workflows.
+
+    @guarantee KeywordConversion
+        -- Struct-list functions (getCrsInfoListFromDatabase, getUnitsFromDatabase,
+        -- getCelestialBodyListFromDatabase) convert Clojure keyword keys to
+        -- Java String keys in the returned maps.
+
+    @guarantee OutParamConversion
+        -- Functions with C output parameters (out_*) allocate, read, and free
+        -- heap memory automatically. Callers never handle pointers. The dispatch
+        -- system returns typed maps matching the value types defined above:
+        --   getAreaOfUse -> AreaOfUse (or null on failure)
+        --   csGetAxisInfo -> AxisInfo (or null on failure)
+        --   ellipsoidGetParameters -> EllipsoidParameters (or null on failure)
+        --   primeMeridianGetParameters -> PrimeMeridianParameters (or null on failure)
+        --   coordoperationGetMethodInfo -> MethodInfo (or null on failure)
+        --   coordoperationGetParam -> CoordoperationParam (or null on failure)
+        --   coordoperationGetGridUsed -> GridUsedInfo (or null on failure)
+        --   uomGetInfoFromDatabase -> UomInfo (or null on failure)
+        --   gridGetInfoFromDatabase -> GridDatabaseInfo (or null on failure)
+        --   coordoperationGetTowgs84Values -> {:values [Decimal...]} (or null)
+        -- Map key casing follows ReturnKeyNaming (see JavaScriptApi surface).
+}
+
+surface ClojureApi {
+    -- The primary public API surface for JVM consumers (Clojure/Java).
+    facing consumer: ClojureApplication
+
+    exposes:
+        init(log_level?, opts?) -> nil
+        force_graal() -> nil
+        force_ffi() -> nil
+        context_create(opts?) -> Context
+        coord_array(n, dims?) -> CoordArray
+        set_coords(coord_array, coordinates) -> CoordArray
+        get_coords(coord_array, index) -> Coordinate
+        -- All fndefs-generated functions exposed as proj-{name} with
+        -- automatic dispatch, argument extraction, and return processing.
+        -- Examples:
+        proj_create(opts) -> ProjObject
+        proj_create_crs_to_crs(opts) -> ProjObject
+        proj_create_from_database(opts) -> ProjObject
+        proj_trans_array(opts) -> Integer
+        proj_as_wkt(opts) -> String
+        proj_get_authorities_from_database(opts?) -> List<String>
+        proj_get_codes_from_database(opts) -> List<String>
+        proj_get_crs_info_list_from_database(opts) -> List<CrsInfoEntry>
+        proj_get_units_from_database(opts) -> List<UnitInfoEntry>
+        proj_get_celestial_body_list_from_database(opts) -> List<CelestialBodyInfoEntry>
+
+    @guarantee AutoInit
+        -- Functions auto-initialize the library on first call.
+
+    @guarantee ParameterFlexibility
+        -- All opts maps accept both :underscore_keys and :hyphen-keys.
+}
+
+surface JavaScriptApi {
+    -- The public API surface for JS consumers (Node.js and Browser).
+    facing consumer: JavaScriptApplication
+
+    exposes:
+        -- All functions are exported in both camelCase (idiomatic JS) and
+        -- snake_case (mirrors C API). Both are fully functional.
+        init(opts?) -> Promise
+        shutdown() -> Promise
+        contextCreate(opts?) -> Promise<Context>
+        coordArray(n) -> Promise<CoordArray>
+        setCoords(coord_array, coordinates) -> Promise
+        getCoords(coord_array, index) -> Promise<Coordinate>
+        getWorkerMode() -> WorkerMode
+        getWorkerCount() -> Integer
+        -- All fndefs-generated functions exposed as camelCase (primary)
+        -- with snake_case aliases. All return Promises.
+        -- Examples:
+        --   projCreateCrsToCrs(opts) (alias: proj_create_crs_to_crs)
+        --   projTransArray(opts) (alias: proj_trans_array)
+        -- Struct-list functions:
+        projGetCrsInfoListFromDatabase(opts) -> Promise<Array<Object>>
+        projGetUnitsFromDatabase(opts) -> Promise<Array<Object>>
+        projGetCelestialBodyListFromDatabase(opts) -> Promise<Array<Object>>
+
+    @guarantee ExplicitInit
+        -- init() must be awaited before any other API call.
+
+    @guarantee DualNaming
+        -- Every function is exported in both camelCase and snake_case.
+        -- camelCase is idiomatic for JavaScript consumers; snake_case
+        -- mirrors the C API naming. Both are fully functional.
+
+    @guarantee WorkerIsolation
+        -- WASM execution happens in Web Workers, never on the main thread.
+
+    @guarantee ReturnKeyNaming
+        -- Returned map/object keys are idiomatic per platform:
+        --   Clojure: kebab-case keywords (:west-lon-degree, :semi-major-metre)
+        --   JavaScript: key casing determined by calling convention -- camelCase
+        --     keys (westLonDegree) via camelCase alias, snake_case keys
+        --     (west_lon_degree) via snake_case alias.
+        --   Java: camelCase String keys ("westLonDegree", "semiMajorMetre")
+        -- Applies to both struct-list and out-param results.
+}
+
+surface NetworkCallbackInterface {
+    -- The boundary between clj-proj and PROJ's C network callback API.
+    -- Four callbacks implement HTTP range request fetching from cdn.proj.org.
+    facing proj_library: ProjCLibrary
+
+    exposes:
+        open(url, offset, size_to_read) -> handle
+        close(handle) -> nil
+        get_header(handle, header_name) -> String
+        read_range(handle, offset, size_to_read, buffer) -> Integer
+
+    @guarantee HttpRangeRequests
+        -- All network operations use HTTP Range requests for efficient
+        -- partial grid file downloads.
+}
+
+------------------------------------------------------------
+-- Lifecycle Functions (called automatically by resource tracking)
+------------------------------------------------------------
+
+-- These functions are not modeled as rules because they are never called
+-- directly by users. The resource tracking system (tech.v3.resource on JVM,
+-- resource-tracker on JS) calls them automatically during cleanup.
+--
+--   proj_context_create, proj_context_destroy,
+--   proj_destroy, proj_list_destroy,
+--   proj_string_list_destroy, proj_celestial_body_list_destroy,
+--   proj_crs_info_list_destroy, proj_unit_list_destroy,
+--   proj_get_crs_list_parameters_create, proj_get_crs_list_parameters_destroy,
+--   proj_insert_object_session_destroy,
+--   proj_operation_factory_context_destroy,
+--   proj_int_list_destroy, proj_string_destroy
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+-- (No open questions at this time.)
+
+------------------------------------------------------------
+-- Resolved Design Decisions
+------------------------------------------------------------
+
+-- 1. GraalVM addFunction: RESOLVED. GraalVM's nominal type checking breaks
+--    Emscripten addFunction. Fixed architecturally with C stubs compiled into
+--    the WASM binary (proj_network_stubs.c). addFunction is never called on
+--    GraalVM. See invariant GraalWasmNominalTyping.
+--
+-- 2. Version mismatches: NOT APPLICABLE. All artifacts (native libs, WASM,
+--    proj.db) are internally bundled and built from the same PROJ source.
+--    See invariant InternallyBundledArtifacts.
+--
+-- 3. JS resource cleanup: SUPPORTED. Both automatic GC-based tracking and
+--    explicit deterministic cleanup via resource-tracker's releasing() blocks.
+--    See invariant ResourceTracking.
+--
+-- 4. Platform degradation: RESOLVED. FFI -> GraalVM fallback is the definitive
+--    strategy. If native FFI is unavailable, the library always degrades to
+--    GraalVM WASM. See invariant FfiToGraalFallback.
+--
+-- 5. Struct-aware return types: RESOLVED. Functions returning C struct arrays
+--    use :proj-returns :struct-list with :struct-def, :struct-fields, and
+--    :struct-destroy-fn metadata in fndefs. FFI reads fields via dtype-next's
+--    struct system (ffi-clang/defstruct-from-layout in struct.clj). WASM reads
+--    at explicit 32-bit offsets from :struct-fields. The hand-written
+--    get-crs-info-list-from-database wrapper is replaced by the generated
+--    proj-get-crs-info-list-from-database. See invariant StructAwareReturnType.
+--
+-- 6. Naming inconsistency: RESOLVED. get-crs-info-list-from-database renamed
+--    to proj-get-crs-info-list-from-database (Clojure) /
+--    projGetCrsInfoListFromDatabase (JS) to match the convention. Old name
+--    removed entirely (still in alpha, no backwards compatibility needed).
