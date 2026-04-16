@@ -4,6 +4,11 @@ log follows the conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- Internal refactoring of `proj.cljc` and `wasm.cljc` dispatch system: decomposed `extract-args`, `dispatch-proj-fn`, and `string-array-pointer->strs` into smaller focused helpers; extracted shared `argtype->ccall-type` and `first-arg-kw`; simplified `cs`, `proj-emscripten-helper`, and `heapf64`
+- Removed dead code: old JS string-building helpers, unused FS/array/type-check fns, vestigial stubs, passthrough wrappers, stale forward declarations
+- Removed unused `:exclude` parameter from `define-all-proj-public-fns` macro
+
 ## [0.1.0-alpha8] - 2026-04-14
 
 ### Added

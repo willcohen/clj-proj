@@ -25,8 +25,6 @@
 
 (def ^:dynamic *runtime-log-level* nil)
 
-  ;; Helper function used by macros
-
 #?(:clj
    (def ^:dynamic *load-grids*
      "Whether to load PROJ grid files during GraalVM initialization.
@@ -296,133 +294,134 @@
         @init-promise))))
 
 (defn- ensure-proj-initialized! []
-  (if (nil? @p)
+  (when (nil? @p)
     (init-proj)))
 
-(defn valid-ccall-type?
-  "Checks if a keyword represents a valid ccall type."
+(defn argtype->ccall-type
+  "Map a fndefs arg/return type keyword to the ccall type keyword.
+   Use (name (argtype->ccall-type t)) when a string is needed."
   [t]
-  (#{:number :array :string} t))
-
-(declare arg->js-literal arg-array->js-array-string keyword->js-string keyword-array->js-string)
+  (case t
+    (:pointer :pointer? :string-array :string-array? :int32 :float64 :size-t :void) :number
+    :string :string
+    :number))
 
 (defn ^:async proj-emscripten-helper
   [f return-type arg-types args & [proj-returns force-worker-idx fn-def]]
-  (let [proj-returns (or proj-returns nil)]
-    (ensure-proj-initialized!)
-    #?(:clj
-       ;; GraalVM implementation with exception handling
-       (let [p-instance @p
-             ccall-fn (.getMember p-instance "ccall")
+  (ensure-proj-initialized!)
+  #?(:clj
+     ;; GraalVM implementation with exception handling
+     (let [p-instance @p
+           ccall-fn (.getMember p-instance "ccall")
             ;; Convert args - pointers to integers, nil to 0
             ;; TrackablePointer is a record with :address key
             ;; Context atoms contain {:ptr TrackablePointer ...}
-             convert-arg (fn [arg]
-                           (cond
+           convert-arg (fn [arg]
+                         (cond
                             ;; TrackablePointer record -> extract address
-                             (and (record? arg) (contains? arg :address)) (:address arg)
+                           (and (record? arg) (contains? arg :address)) (:address arg)
                             ;; Context atom -> extract :ptr's :address
-                             (and (instance? clojure.lang.IDeref arg)
-                                  (map? @arg)
-                                  (contains? @arg :ptr))
-                             (let [ptr (:ptr @arg)]
-                               (if (and (record? ptr) (contains? ptr :address))
-                                 (:address ptr)
-                                 ptr))
-                             (nil? arg) 0
-                             :else arg))
-             converted-args (mapv convert-arg args)]
-         (when *runtime-log-level* (log/log *runtime-log-level* (str "Graal ccall: " f " " return-type " " arg-types " " converted-args)))
-         (try
-           (tsgcd
-            (.execute ccall-fn (into-array Object [f
-                                                   (name return-type)
-                                                   (ProxyArray/fromArray (object-array (map name arg-types)))
-                                                   (ProxyArray/fromArray (object-array converted-args))])))
-           (catch Exception e
-             (log/warn (str "Graal ccall exception for " f ": " (.getMessage e)))
-             (case return-type
-               (:pointer :number) nil
-               :string nil
-               :int32 0
-               :float64 0.0
-               :size-t 0
-               :void nil
-               nil))))
-       :cljs
+                           (and (instance? clojure.lang.IDeref arg)
+                                (map? @arg)
+                                (contains? @arg :ptr))
+                           (let [ptr (:ptr @arg)]
+                             (if (and (record? ptr) (contains? ptr :address))
+                               (:address ptr)
+                               ptr))
+                           (nil? arg) 0
+                           :else arg))
+           converted-args (mapv convert-arg args)]
+       (when *runtime-log-level* (log/log *runtime-log-level* (str "Graal ccall: " f " " return-type " " arg-types " " converted-args)))
+       (try
+         (tsgcd
+          (.execute ccall-fn (into-array Object [f
+                                                 (name return-type)
+                                                 (ProxyArray/fromArray (object-array (map name arg-types)))
+                                                 (ProxyArray/fromArray (object-array converted-args))])))
+         (catch Exception e
+           (log/warn (str "Graal ccall exception for " f ": " (.getMessage e)))
+           (case return-type
+             (:pointer :number) nil
+             :string nil
+             :int32 0
+             :float64 0.0
+             :size-t 0
+             :void nil
+             nil))))
+     :cljs
        ;; ClojureScript implementation - proxy through worker
        ;; Coord arrays (JS-side Float64Arrays) are detected, their data is sent
        ;; alongside the ccall, and the worker handles temp malloc/free.
-       (let [worker-idx (if (some? force-worker-idx) force-worker-idx (worker-idx-from-args args))
-             coord-arrays (into []
-                                (keep-indexed
-                                 (fn [idx arg]
-                                   (when (and (object? arg)
-                                              (= (.-type arg) "coord-array"))
-                                     {:argIdx idx
-                                      :data (.-buffer arg)
-                                      :numFloats (.-floatsNeeded arg)}))
-                                 args))
-             convert-arg (fn [arg]
-                           (cond
-                             (and (object? arg) (= (.-type arg) "coord-array")) 0
-                             (and (map? arg) (:ptr arg)) (:ptr arg)
-                             (and (object? arg) (.-ptr arg)) (.-ptr arg)
-                             (nil? arg) 0
-                             :else arg))
-             converted-args (mapv convert-arg args)
-             ccall-cmd (cond-> {:cmd "ccall"
-                                :fn f
-                                :returnType (name return-type)
-                                :argTypes (clj->js (mapv name arg-types))
-                                :args (clj->js converted-args)}
-                         proj-returns (assoc :projReturns (name proj-returns))
-                         (and (= proj-returns :struct-list) fn-def)
-                         (assoc :structFields
-                                (clj->js (mapv (fn [[kw ftype wasm-offset]]
-                                                 #js {:key (.replace (name kw) (js/RegExp. "-" "g") "_")
-                                                      :type (name ftype)
-                                                      :offset wasm-offset})
-                                               (:struct-fields fn-def)))
-                                :structDestroyFn (:struct-destroy-fn fn-def)
-                                :structParamsCreate (:struct-params-create fn-def)
-                                :structParamsDestroy (:struct-params-destroy fn-def))
-                         (and (= proj-returns :out-params) fn-def)
-                         (assoc :outFields
-                                (clj->js (mapv (fn [field-spec]
-                                                 (let [field-name (first field-spec)
-                                                       field-type (second field-spec)]
-                                                   (cond-> {:key (.replace (name field-name) (js/RegExp. "-" "g") "_")
-                                                            :type (name field-type)}
-                                                     (= field-type :double-array)
-                                                     (assoc :countArgIdx
-                                                            (let [count-arg-name (nth field-spec 3)
-                                                                  arg-names (mapv #(name (first %)) (:argtypes fn-def))]
-                                                              (.indexOf arg-names (name count-arg-name)))))))
-                                               (:out-fields fn-def))))
-                         (seq coord-arrays)
-                         (assoc :coordArrays
-                                (clj->js (mapv (fn [ca]
-                                                 {:argIdx (:argIdx ca)
-                                                  :data (js/Array.from (:data ca))
-                                                  :numFloats (:numFloats ca)})
-                                               coord-arrays))))
-             result (do
-                      (when *runtime-log-level*
-                        (js/console.log "CLJS worker-ccall:" f return-type arg-types
-                                        (clj->js converted-args) "worker:" worker-idx
-                                        "coordArrays:" (count coord-arrays)))
-                      (js-await (worker-call worker-idx ccall-cmd)))]
-         (when (seq coord-arrays)
-           (let [returned-data (.-coordData result)]
-             (dotimes [i (count coord-arrays)]
-               (let [ca-info (nth coord-arrays i)
-                     original-arg (nth args (:argIdx ca-info))
-                     new-data (aget returned-data i)]
-                 (.set (.-buffer original-arg) (js/Float64Array.from new-data))))))
-         (if (seq coord-arrays)
-           (.-result result)
-           result)))))
+     (let [worker-idx (if (some? force-worker-idx) force-worker-idx (worker-idx-from-args args))
+           coord-arrays (into []
+                              (keep-indexed
+                               (fn [idx arg]
+                                 (when (and (object? arg)
+                                            (= (.-type arg) "coord-array"))
+                                   {:argIdx idx
+                                    :data (.-buffer arg)
+                                    :numFloats (.-floatsNeeded arg)}))
+                               args))
+           convert-arg (fn [arg]
+                         (cond
+                           (and (object? arg) (= (.-type arg) "coord-array")) 0
+                           (and (map? arg) (:ptr arg)) (:ptr arg)
+                           (and (object? arg) (.-ptr arg)) (.-ptr arg)
+                           (nil? arg) 0
+                           :else arg))
+           converted-args (mapv convert-arg args)
+           ccall-cmd (cond-> {:cmd "ccall"
+                              :fn f
+                              :returnType (name return-type)
+                              :argTypes (clj->js (mapv name arg-types))
+                              :args (clj->js converted-args)}
+                       proj-returns (assoc :projReturns (name proj-returns))
+                       (and (= proj-returns :struct-list) fn-def)
+                       (assoc :structFields
+                              (clj->js (mapv (fn [[kw ftype wasm-offset]]
+                                               #js {:key (.replace (name kw) (js/RegExp. "-" "g") "_")
+                                                    :type (name ftype)
+                                                    :offset wasm-offset})
+                                             (:struct-fields fn-def)))
+                              :structDestroyFn (:struct-destroy-fn fn-def)
+                              :structParamsCreate (:struct-params-create fn-def)
+                              :structParamsDestroy (:struct-params-destroy fn-def))
+                       (and (= proj-returns :out-params) fn-def)
+                       (assoc :outFields
+                              (clj->js (mapv (fn [field-spec]
+                                               (let [field-name (first field-spec)
+                                                     field-type (second field-spec)]
+                                                 (cond-> {:key (.replace (name field-name) (js/RegExp. "-" "g") "_")
+                                                          :type (name field-type)}
+                                                   (= field-type :double-array)
+                                                   (assoc :countArgIdx
+                                                          (let [count-arg-name (nth field-spec 3)
+                                                                arg-names (mapv #(name (first %)) (:argtypes fn-def))]
+                                                            (.indexOf arg-names (name count-arg-name)))))))
+                                             (:out-fields fn-def))))
+                       (seq coord-arrays)
+                       (assoc :coordArrays
+                              (clj->js (mapv (fn [ca]
+                                               {:argIdx (:argIdx ca)
+                                                :data (js/Array.from (:data ca))
+                                                :numFloats (:numFloats ca)})
+                                             coord-arrays))))
+           result (do
+                    (when *runtime-log-level*
+                      (js/console.log "CLJS worker-ccall:" f return-type arg-types
+                                      (clj->js converted-args) "worker:" worker-idx
+                                      "coordArrays:" (count coord-arrays)))
+                    (js-await (worker-call worker-idx ccall-cmd)))]
+       (when (seq coord-arrays)
+         (let [returned-data (.-coordData result)]
+           (dotimes [i (count coord-arrays)]
+             (let [ca-info (nth coord-arrays i)
+                   original-arg (nth args (:argIdx ca-info))
+                   new-data (aget returned-data i)]
+               (.set (.-buffer original-arg) (js/Float64Array.from new-data))))))
+       (if (seq coord-arrays)
+         (.-result result)
+         result))))
 
 #?(:clj
    (defprotocol Pointerlike
@@ -444,37 +443,6 @@
      (get-value [this type] (get-value (:address this) type))
      (pointer->string [this] (pointer->string (:address this)))
      (string-array-pointer->strs [this] (string-array-pointer->strs (:address this)))))
-
-#?(:clj
-   (defn- arg->js-literal [arg]
-     (cond
-       (string? arg) (pr-str arg) ; Clojure's pr-str handles quoting and escaping
-       (number? arg) (str arg)
-
-        ;; Handle TrackablePointer first, as it's a common, specific type in our code.
-        ;; Using instance? is the correct way to check for a record type.
-       (instance? TrackablePointer arg)
-       (str (address-as-int arg))
-
-        ;; Handle polyglot.Value. This check is more robust against classloading issues.
-       (if-let [c org.graalvm.polyglot.Value] (instance? c arg) false)
-       (if (.isNumber arg)
-         (str (.asLong arg))
-         (pr-str (.asString arg))) ; Fallback to string representation if not a number
-
-       :else (pr-str arg)))) ; Fallback for other types, pr-str is generally safe
-
-#?(:clj
-   (defn- arg-array->js-array-string [arr]
-     (str "[" (string/join ", " (map arg->js-literal arr)) "]")))
-
-#?(:clj
-   (defn- keyword->js-string [k]
-     (str "\"" (name k) "\"")))
-
-#?(:clj
-   (defn- keyword-array->js-string [arr]
-     (str "[" (string/join ", " (map keyword->js-string arr)) "]")))
 
 #?(:clj
    (extend-protocol Pointerlike
@@ -540,20 +508,6 @@
      (pointer->string [this] (pointer->string (address-as-polyglot-value this)))
      (string-array-pointer->strs [this] (string-array-pointer->strs (address-as-polyglot-value this)))))
 
-;;;; GraalVM Utility Functions
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;; TODO: Can these utility functions be simplified using a few HOFs (NOT macros)?
-;; TODO: Lots of duplication, so I feel like yes.
-
-#?(:clj
-   (defn polyglot-array->jvm-array
-     [a]
-     (tsgcd
-      (do (assert (.hasArrayElements a))
-          (let [length (.getArraySize a)]
-            (into-array Object (map #(.asDouble (.getArrayElement a %)) (range length))))))))
-
 (defn malloc
   [b]
   (ensure-proj-initialized!)
@@ -564,36 +518,13 @@
        (._malloc p-instance b))))
 
 (defn heapf64
-  [o n]
+  [offset n]
   (ensure-proj-initialized!)
-  (let [offset o]
-    #?(:clj
-       (tsgcd (.execute (.getMember (.getMember @p "HEAPF64") "subarray")
-                        (into-array Object [offset (+ offset n)])))
-       :cljs
-       (let [p-instance @p]
-         (.subarray (.-HEAPF64 p-instance) offset (+ offset n))))))
-
-#?(:clj
-   (defn fs-open
-     [path flags _]
-     (ensure-proj-initialized!)
-     (tsgcd (.execute (.getMember (.getMember @p "FS") "open")
-                      (into-array Object [path flags nil])))))
-
-#?(:clj
-   (defn fs-write
-     [stream buffer offset length position _]
-     (ensure-proj-initialized!)
-     (tsgcd (.execute (.getMember (.getMember @p "FS") "write")
-                      (into-array Object [stream buffer offset length position _])))))
-
-#?(:clj
-   (defn fs-close
-     [stream]
-     (ensure-proj-initialized!)
-     (tsgcd (.execute (.getMember (.getMember @p "FS") "close")
-                      (into-array Object [stream])))))
+  #?(:clj
+     (tsgcd (.execute (.getMember (.getMember @p "HEAPF64") "subarray")
+                      (into-array Object [offset (+ offset n)])))
+     :cljs
+     (.subarray (.-HEAPF64 @p) offset (+ offset n))))
 
 (defn alloc-coord-array
   [num-coords _dims]
@@ -611,7 +542,6 @@
   (ensure-proj-initialized!)
   #?(:clj
      (tsgcd (do (let [flattened (flatten coord-array) js-array (eval-js "new Array();")]
-                  (ensure-proj-initialized!)
                   (doall (map #(tsgcd (.setArrayElement js-array % (nth flattened %))) (range (count flattened))))
                   (tsgcd (.execute (.getMember (:array allocated) "set")
                                    (into-array Object [js-array 0]))))
@@ -634,10 +564,6 @@
          (double (.asDouble (.getArrayElement array (+ offset 1))))
          (double (.asDouble (.getArrayElement array (+ offset 2))))
          (double (.asDouble (.getArrayElement array (+ offset 3))))]))))
-
-(defn new-coord-array
-  [coord-array num-coords]
-  (set-coord-array coord-array (alloc-coord-array num-coords 4)))
 
 #?(:clj
    (defn allocate-string-on-heap
@@ -693,23 +619,10 @@
         argtypes (:argtypes fn-def)
         proj-returns (:proj-returns fn-def)
 
-        ccall-return-type (case rettype
-                            :pointer :number
-                            :string :string
-                            :void :number
-                            :int32 :number
-                            :float64 :number
-                            :size-t :number
-                            :number)
+        ccall-return-type (argtype->ccall-type rettype)
 
         ccall-arg-types (mapv (fn [[_c-arg-name c-arg-type]]
-                                (case c-arg-type
-                                  (:pointer :pointer? :string-array :string-array?) :number
-                                  :string :string
-                                  :int32 :number
-                                  :float64 :number
-                                  :size-t :number
-                                  :number))
+                                (argtype->ccall-type c-arg-type))
                               argtypes)
 
         result #?(:clj

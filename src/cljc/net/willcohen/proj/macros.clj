@@ -23,17 +23,13 @@
             (throw (ex-info "Function definition not found"
                             {:fn-key ~fn-key :fn-name '~fn-name}))))))))
 
-;; TODO: Remove this silly exclude thing, we're not doing that anymore.
-
-(defmacro define-all-proj-public-fns [macro-log-level & {:keys [exclude]
-                                                         :or {exclude #{}}}]
+(defmacro define-all-proj-public-fns [macro-log-level]
   (require 'net.willcohen.proj.fndefs)
   (let [fndefs-var (resolve 'net.willcohen.proj.fndefs/fndefs)
         fndefs (when fndefs-var @fndefs-var)]
     (if fndefs
       `(do
-         ~@(for [[fn-key _] fndefs
-                 :when (not (contains? exclude fn-key))]
+         ~@(for [[fn-key _] fndefs]
              `(define-proj-public-fn ~fn-key))
          nil)
       `(throw (ex-info "Could not resolve fndefs" {})))))

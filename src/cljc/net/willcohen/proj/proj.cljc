@@ -41,12 +41,6 @@
 (def p #?(:clj nil
           :cljs wasm/p))
 
-(defn valid-ccall-type?
-  [t]
-  (if (not (nil? (#{:number :array :string} t)))
-    true
-    false))
-
 #?(:cljs
    (defn get-value
      [ptr type]
@@ -213,8 +207,6 @@
      :cljs
      (get-coord-array ca idx)))
 
- ;; to-emscripten-type moved to proj_macros.cljc 
-
 (defn cs
   "The primary mechanism for attempting to ensure atomicity with contexts.
    In ClojureScript, skips counter updates to avoid SharedArrayBuffer mutations."
@@ -224,18 +216,13 @@
      (:result
       (swap!
        context (fn [a]
-                 (let [old a
-                       ptr (:ptr old)]
+                 (let [ptr (:ptr a)]
                    (when-not ptr (throw (ex-info (str "Pointer in context is nil for fn " f) {:f f :context-val a})))
-                   (assoc old
+                   (assoc a
                           :ptr ptr
-                          :op (inc (:op old))
+                          :op (inc (:op a))
                           :result (case @implementation
-                                    :ffi (try
-                                           (let [result (apply f (cons ptr args))]
-                                             result)
-                                           (catch Exception e
-                                             (throw e)))
+                                    :ffi (apply f (cons ptr args))
                                     :graal (tsgcd (apply f (cons ptr args)))))))))
      :cljs
      ;; ClojureScript: Skip counters entirely - just call the function
@@ -255,76 +242,56 @@
            ;; Just re-throw with function name for context
            (throw (js/Error. (str "PROJ operation failed in " (.-name f) ": " (.-message e)))))))))
 
-;;TODO: fn is too big. Need to simplify and/or extract into helper fns.
+#?(:clj
+   (defn- string-array-pointer->strs-ffi
+     [ptr runtime-log-level]
+     (let [jna-ptr (-> ptr dt-ptr/ptr-value com.sun.jna.Pointer.)
+           ptrs-array (.getPointerArray jna-ptr 0)
+           ptrs (vec ptrs-array)]
+       (when runtime-log-level
+         (log/log runtime-log-level (str "FFI: string-array-pointer->strs - Input JNA Pointer: " jna-ptr))
+         (log/log runtime-log-level (str "FFI: string-array-pointer->strs - Raw pointers array from JNA: " (pr-str ptrs))))
+       (loop [remaining-ptrs (seq ptrs)
+              result-vec []]
+         (if-let [p (first remaining-ptrs)]
+           (let [s (try (.getString p 0 "UTF-8")
+                        (catch Exception e
+                          (log/error e (str "FFI: Failed to read string from pointer " p))
+                          nil))]
+             (when (and runtime-log-level s)
+               (log/log runtime-log-level (str "FFI: string-array-pointer->strs - Read string: \"" s "\" from JNA Pointer: " p)))
+             (recur (rest remaining-ptrs) (if s (conj result-vec s) result-vec)))
+           result-vec)))))
+
+#?(:cljs
+   (defn- string-array-pointer->strs-cljs
+     [ptr]
+     (if (and @p ptr (not (zero? ptr)))
+       (let [result (loop [result []
+                           idx 0]
+                      (let [str-ptr-addr (+ ptr (* idx 4))
+                            str-ptr (get-value str-ptr-addr "*")]
+                        (if (or (nil? str-ptr) (zero? str-ptr))
+                          result
+                          (let [str-val ((.-UTF8ToString @p) str-ptr)]
+                            (recur (conj result str-val) (inc idx))))))]
+         (to-array result))
+       (to-array []))))
+
 (defn string-array-pointer->strs
   "Converts a pointer to a NULL-terminated array of string pointers into a Clojure vector of strings."
   [ptr runtime-log-level]
   #?(:clj
      (case @implementation
-       :ffi
-       (let [jna-ptr (-> ptr dt-ptr/ptr-value com.sun.jna.Pointer.)
-             ptrs-array (.getPointerArray jna-ptr 0)
-             ptrs (vec ptrs-array)]
-         (when runtime-log-level
-           (log/log runtime-log-level (str "FFI: string-array-pointer->strs - Input JNA Pointer: " jna-ptr))
-           (log/log runtime-log-level (str "FFI: string-array-pointer->strs - Raw pointers array from JNA: " (pr-str ptrs))))
-         (loop [remaining-ptrs (seq ptrs)
-                result-vec []]
-           (if-let [p (first remaining-ptrs)]
-             (let [s (try (.getString p 0 "UTF-8")
-                          (catch Exception e
-                            (log/error e (str "FFI: Failed to read string from pointer " p))
-                            nil))]
-               (when (and runtime-log-level s)
-                 (log/log runtime-log-level (str "FFI: string-array-pointer->strs - Read string: \"" s "\" from JNA Pointer: " p)))
-               (recur (rest remaining-ptrs) (if s (conj result-vec s) result-vec)))
-             result-vec)))
-        ;; For Graal, `ptr` is a TrackablePointer. `wasm/string-array-pointer->strs` expects an integer address.
+       :ffi (string-array-pointer->strs-ffi ptr runtime-log-level)
        :graal (if (nil? ptr)
-                []  ; Return empty vector for nil pointer
+                []
                 (wasm/string-array-pointer->strs (wasm/address-as-int ptr))))
-     :cljs
-     (case @implementation
-       (:node :browser)
-       (if (and @p ptr (not (zero? ptr)))
-         (try
-           (let [result (loop [result []
-                               idx 0]
-                          (let [str-ptr-addr (+ ptr (* idx 4))
-                                str-ptr (get-value str-ptr-addr "*")]
-                            (if (or (nil? str-ptr) (zero? str-ptr))
-                              result
-                              (let [str-val ((.-UTF8ToString @p) str-ptr)]
-                                (recur (conj result str-val) (inc idx))))))]
-             ;; Convert Clojure vector to JavaScript array for JS-native feel
-             (to-array result))
-           (catch js/Error e
-             (throw e)))
-         ;; Return empty JavaScript array for null/zero pointers
-         (to-array []))
-       (throw (js/Error. (str "Unsupported implementation: " @implementation))))))
+     :cljs (string-array-pointer->strs-cljs ptr)))
 
-(declare proj-context-errno proj-string-list-destroy
-         proj-destroy proj-list-destroy
-         proj-celestial-body-list-destroy
-         proj-get-crs-list-parameters-destroy
-         proj-crs-info-list-destroy
-         proj-unit-list-destroy
-         proj-insert-object-session-destroy
-         proj-operation-factory-context-destroy
-         proj-context-destroy
-         proj-errno proj-errno-string
-         proj-log-func proj-log-level
-         proj-get-crs-info-list-from-database
-         proj-get-units-from-database
-         proj-get-celestial-body-list-from-database
-         context-create context-set-database-path context-set-enable-network
+(declare context-set-database-path context-set-enable-network
          proj-context-create proj-context-set-database-path
          proj-context-set-enable-network)
-
-(def ^:private pj-return-types-set
-  #{:pj :pj-list :pj-crs-list-parameters :pj-insert-session
-    :pj-operation-factory-context})
 
 (def proj-type->destroy-fn
   "Mapping of PROJ return types to their corresponding destroy functions."
@@ -372,8 +339,6 @@
   "Convert PROJ error code to human-readable string"
   [code]
   (get proj-error-codes code (str "Unknown error code: " code)))
-
- ;; Macro invocation moved to end of file to avoid forward references
 
 (defn ^:async context-create
   "Creates a new PROJ context with grid network fetching configured per platform.
@@ -424,7 +389,6 @@
                             :type "proj-context"}]
            ctx-obj)))))
 
- ;; Helper functions for cross-platform context access
 (defn context-ptr
   "Extract PROJ pointer from any context type. Works with both JVM atoms and 
    ClojureScript plain objects."
@@ -448,7 +412,6 @@
                 (.-ptr x)
                 (= (.-type x) "proj-context"))))
 
-;; TODO: too big. need to simplify and/or extract to helper fns.
 (defn context-set-database-path
   "High-level wrapper for setting the database path.
    Simplified to always use /proj/proj.db for ClojureScript (standard Emscripten FS)."
@@ -586,9 +549,6 @@
      [ca vals]
      (set-col! ca 3 vals)))
 
-;; Generate all PROJ public functions
- ;; Runtime dispatch system
-
 (defn is-c-context-fn?
   "Determines if a function is context-aware based on its definition."
   [fn-key fn-def]
@@ -641,7 +601,7 @@
    (defn call-cljs-fn
      "Dispatch to ClojureScript implementation"
      [fn-key fn-def args]
-     (def-proj-fn-runtime fn-key fn-def args)))
+     (wasm/def-wasm-fn-runtime fn-key fn-def args)))
 
 (defn ensure-initialized!
   "Ensure PROJ is initialized before dispatching"
@@ -658,7 +618,80 @@
        ;; Don't throw - just log warning. The test calls init! before using
        (js/console.warn "PROJ may not be initialized - ensure proj/init! was called"))))
 
-;; TODO: This fn is too long, need to extract it into helpers.
+(defn- lookup-arg-val
+  "Look up an argument value from opts, trying underscore, hyphenated, and
+   context-alias key forms. Handles both Clojure maps and JS objects."
+  [opts arg-name]
+  (let [arg-kw-underscore (keyword arg-name)
+        arg-kw-hyphenated (keyword
+                           #?(:clj (clojure.string/replace (name arg-name) #"_" "-")
+                              :cljs (-> (name arg-name)
+                                        (.replace (js/RegExp. "_" "g") "-"))))
+        context-alias (case arg-name ctx "context" context "ctx" nil)]
+    #?(:clj (or (get opts arg-kw-underscore)
+                (get opts arg-kw-hyphenated)
+                (when context-alias
+                  (get opts (keyword context-alias))))
+       :cljs (if (object? opts)
+               (or (aget opts (name arg-name))
+                   (aget opts (-> (name arg-name)
+                                  (.replace (js/RegExp. "_" "g") "-")))
+                   (when context-alias
+                     (aget opts context-alias)))
+               (or (get opts arg-kw-underscore)
+                   (get opts arg-kw-hyphenated)
+                   (when context-alias
+                     (get opts (keyword context-alias))))))))
+
+(defn- resolve-default
+  "Resolve a default value: dereference symbol refs, convert booleans for int32."
+  [default-val arg-type]
+  (cond
+    (symbol? default-val)
+    #?(:clj (if-let [resolved (ns-resolve 'net.willcohen.proj.fndefs default-val)]
+              @resolved
+              default-val)
+       :cljs default-val)
+    (and (= arg-type :int32) (boolean? default-val))
+    (if default-val 1 0)
+    :else default-val))
+
+(defn- coerce-arg
+  "Coerce a single extracted argument value for the target platform."
+  [provided-val arg-type semantics-for-arg]
+  (cond
+    ;; JS-side coord arrays (CLJS) -- pass through for worker data transfer
+    (and (= arg-type :pointer)
+         #?(:cljs (and (object? provided-val)
+                       (= (.-type provided-val) "coord-array"))
+            :clj false))
+    provided-val
+
+    ;; coord-array maps (GraalVM/WASM) -- extract the malloc pointer
+    (and (= arg-type :pointer)
+         (map? provided-val)
+         (contains? provided-val :malloc))
+    (:malloc provided-val)
+
+    ;; string-array? semantic -- convert vector of strings to char**
+    (and (some? provided-val)
+         (sequential? provided-val)
+         (= :string-array? (:semantic-type semantics-for-arg)))
+    #?(:clj (if (graal?)
+              (wasm/string-list-to-native-array provided-val)
+              (StringArray. (into-array String provided-val)))
+       :cljs (wasm/string-list-to-native-array provided-val))
+
+    ;; Nil pointer args become 0 (null pointer)
+    (and (nil? provided-val) (#{:pointer :pointer?} arg-type)) 0
+
+    ;; Nil string args: "" on FFI (string->c needs a string), 0 on WASM (NULL)
+    (and (nil? provided-val) (= arg-type :string))
+    #?(:clj (if (ffi?) "" 0)
+       :cljs 0)
+
+    :else provided-val))
+
 (defn extract-args
   "Extract arguments from opts map based on function definition, applying defaults.
    Supports both underscore and hyphenated parameter names for better usability.
@@ -667,8 +700,6 @@
   (let [argtypes (if skip-first?
                    (rest (:argtypes fn-def))
                    (:argtypes fn-def))
-        ;; Build a map of arg-name -> semantics from :argsemantics
-        ;; Format is [['arg-name :type :default val] ...] - preserve type in :semantic-type
         argsemantics-map (into {}
                                (map (fn [[arg-name semantic-type & rest-semantics]]
                                       [(symbol (name arg-name))
@@ -680,40 +711,14 @@
     (mapv (fn [arg-spec]
             (let [[arg-name arg-type & rest-spec] arg-spec
                   arg-map (when (seq rest-spec) (apply hash-map rest-spec))
-                  ;; Check both argtypes inline default and argsemantics default
                   semantics-for-arg (get argsemantics-map arg-name)
                   default-val (or (get arg-map :default)
                                   (get semantics-for-arg :default))
                   has-default? (or (contains? arg-map :default)
                                    (contains? semantics-for-arg :default))
-                  ;; Try both underscore and hyphenated versions of the parameter name
-                  arg-kw-underscore (keyword arg-name)
-                  ;; Use JavaScript String.replace for ClojureScript, clojure.string/replace for Clojure
-                  arg-kw-hyphenated (keyword
-                                     #?(:clj (clojure.string/replace (name arg-name) #"_" "-")
-                                        :cljs (-> (name arg-name)
-                                                  (.replace (js/RegExp. "_" "g") "-"))))
-                  ;; ctx and context are aliases for the context parameter
                   is-context-arg (contains? #{'ctx 'context} arg-name)
-                  context-alias (case arg-name ctx "context" context "ctx" nil)
-                  ;; In CLJS, opts might be a JS object - use aget for JS objects
-                  provided-val #?(:clj (or (get opts arg-kw-underscore)
-                                           (get opts arg-kw-hyphenated)
-                                           (when context-alias
-                                             (get opts (keyword context-alias))))
-                                  :cljs (if (object? opts)
-                                          (or (aget opts (name arg-name))
-                                              (aget opts (-> (name arg-name)
-                                                             (.replace (js/RegExp. "_" "g") "-")))
-                                              (when context-alias
-                                                (aget opts context-alias)))
-                                          (or (get opts arg-kw-underscore)
-                                              (get opts arg-kw-hyphenated)
-                                              (when context-alias
-                                                (get opts (keyword context-alias))))))]
-              ;; Special handling for context arguments
+                  provided-val (lookup-arg-val opts arg-name)]
               (cond
-                ;; If context is provided as an atom, extract the pointer for FFI
                 (and is-context-arg
                      (some? provided-val)
                      (is-context? provided-val))
@@ -722,60 +727,16 @@
                           (context-ptr provided-val))
                    :cljs provided-val)
 
-                ;; Context required but not provided — should not happen,
-                ;; dispatch-proj-fn auto-creates context before we get here.
-                ;; Defensive fallback: return 0 (NULL) rather than crashing.
                 (and is-context-arg
                      (nil? provided-val)
                      (not has-default?))
                 0
 
-                ;; Use default value when not provided but default exists
                 (and (nil? provided-val) has-default?)
-                (cond
-                  ;; Handle symbol defaults (e.g., PJ_WKT2_2019)
-                  (symbol? default-val)
-                  (if-let [resolved (ns-resolve 'net.willcohen.proj.fndefs default-val)]
-                    @resolved
-                    default-val)
-                  ;; Handle boolean defaults for int32 args (convert to 0/1)
-                  (and (= arg-type :int32) (boolean? default-val))
-                  (if default-val 1 0)
-                  ;; Otherwise use the default as-is
-                  :else default-val)
+                (resolve-default default-val arg-type)
 
-                ;; Handle JS-side coord arrays (CLJS) — pass through for worker data transfer
-                (and (= arg-type :pointer)
-                     #?(:cljs (and (object? provided-val)
-                                   (= (.-type provided-val) "coord-array"))
-                        :clj false))
-                provided-val
-
-                ;; Handle coord-array maps for pointer arguments (GraalVM/WASM)
-                ;; coord-array returns {:malloc ptr :array heapf64} but we need just the pointer
-                (and (= arg-type :pointer)
-                     (map? provided-val)
-                     (contains? provided-val :malloc))
-                (:malloc provided-val)
-
-                ;; Handle string-array? semantic - convert vector of strings to char**
-                (and (some? provided-val)
-                     (sequential? provided-val)
-                     (= :string-array? (:semantic-type semantics-for-arg)))
-                #?(:clj (if (graal?)
-                          (wasm/string-list-to-native-array provided-val)
-                          (StringArray. (into-array String provided-val)))
-                   :cljs (wasm/string-list-to-native-array provided-val))
-
-                ;; Nil pointer args become 0 (null pointer)
-                (and (nil? provided-val) (#{:pointer :pointer?} arg-type)) 0
-
-                ;; Nil string args: "" on FFI (string->c needs a string), 0 on WASM (NULL)
-                (and (nil? provided-val) (= arg-type :string))
-                #?(:clj (if (ffi?) "" 0)
-                   :cljs 0)
-
-                :else provided-val)))
+                :else
+                (coerce-arg provided-val arg-type semantics-for-arg))))
           argtypes)))
 
 (defn dispatch-to-platform-with-args
@@ -854,28 +815,29 @@
       (when (#{:ctx :context} first-arg-name)
         (get opts (if (= first-arg-name :ctx) :context :ctx)))))
 
+(defn- first-arg-kw
+  "Keyword of the first argtype name, or nil if argtypes is empty."
+  [fn-def]
+  (when (seq (:argtypes fn-def))
+    (keyword (first (first (:argtypes fn-def))))))
+
 (defn should-use-context-dispatch?
   "Determine if a function should use context dispatch via cs"
   [fn-key fn-def opts]
   (let [is-context-fn (is-c-context-fn? fn-key fn-def)
-        first-arg-name (when (seq (:argtypes fn-def))
-                         (keyword (first (first (:argtypes fn-def)))))
-        first-arg-val (resolve-context-val opts first-arg-name)]
+        first-arg-val (resolve-context-val opts (first-arg-kw fn-def))]
     (and is-context-fn
          (is-context? first-arg-val))))
 
 (defn get-context-atom
   "Extract the context atom from opts for context functions"
   [opts fn-def]
-  (let [first-arg-name (when (seq (:argtypes fn-def))
-                         (keyword (first (first (:argtypes fn-def)))))]
-    (resolve-context-val opts first-arg-name)))
+  (resolve-context-val opts (first-arg-kw fn-def)))
 
 (defn get-remaining-args
   "Extract args for context functions (skipping the first context arg)"
   [opts fn-def]
-  (let [first-arg-name (when (seq (:argtypes fn-def))
-                         (keyword (first (first (:argtypes fn-def)))))]
+  (let [first-arg-name (first-arg-kw fn-def)]
     (extract-args fn-def (dissoc (dissoc opts first-arg-name)
                                  (if (= first-arg-name :ctx) :context :ctx))
                   :skip-first? true)))
@@ -884,8 +846,7 @@
   "Check if a context function was called without a context argument"
   [fn-key fn-def opts]
   (and (is-c-context-fn? fn-key fn-def)
-       (let [first-arg-name (when (seq (:argtypes fn-def))
-                              (keyword (first (first (:argtypes fn-def)))))]
+       (let [first-arg-name (first-arg-kw fn-def)]
          (nil?
           #?(:clj (resolve-context-val opts first-arg-name)
              :cljs (if (object? opts)
@@ -1094,13 +1055,7 @@
                             (= arg-type :pointer) (wasm/address-as-int arg-val)
                             :else arg-val)))
                       (:argtypes fn-def) args)
-           arg-types (mapv (fn [[_ t]]
-                             (case t
-                               :pointer "number"
-                               :string "string"
-                               :int32 "number"
-                               :size-t "number"
-                               "number"))
+           arg-types (mapv (fn [[_ t]] (name (wasm/argtype->ccall-type t)))
                            (:argtypes fn-def))
            list-ptr (.asInt
                      (.execute ccall-fn
@@ -1241,13 +1196,7 @@
                                        (swap! input-idx inc)
                                        (nth graal-args i))))
                                  (:argtypes fn-def))
-           arg-types (mapv (fn [[_ t]]
-                             (case t
-                               :pointer "number"
-                               :string "string"
-                               :int32 "number"
-                               :size-t "number"
-                               "number"))
+           arg-types (mapv (fn [[_ t]] (name (wasm/argtype->ccall-type t)))
                            (:argtypes fn-def))
            result (.asInt
                    (.execute ccall-fn
@@ -1307,6 +1256,44 @@
                        (fn [k] (aset out (snake->camel k) (aget result k))))
              out))))))
 
+(defn- ^:async dispatch-struct-list
+  "Dispatch for :struct-list return type."
+  [fn-key fn-def opts key-casing]
+  (let [args (extract-args fn-def opts)]
+    #?(:clj (case @implementation
+              :ffi (dispatch-struct-list-ffi fn-key fn-def args)
+              :graal (dispatch-struct-list-graal fn-key fn-def args))
+       :cljs (convert-js-result-keys
+              (js-await (dispatch-to-platform-with-args fn-key fn-def args))
+              key-casing))))
+
+(defn- ^:async dispatch-out-params
+  "Dispatch for :out-params return type."
+  [fn-key fn-def opts key-casing]
+  (let [input-fn-def (assoc fn-def :argtypes (vec (remove out-param-arg? (:argtypes fn-def))))
+        args (extract-args input-fn-def opts)]
+    #?(:clj (case @implementation
+              :ffi (dispatch-out-params-ffi fn-key fn-def args)
+              :graal (dispatch-out-params-graal fn-key fn-def args))
+       :cljs (convert-js-result-keys
+              (js-await (dispatch-to-platform-with-args fn-key fn-def args))
+              key-casing))))
+
+(defn- ^:async dispatch-default
+  "Dispatch for functions without special return types. Handles context dispatch
+   vs plain dispatch, return value tracking, and context attachment."
+  [fn-key fn-def opts ctx-for-result]
+  (let [result (if (should-use-context-dispatch? fn-key fn-def opts)
+                 (let [context-atom (get-context-atom opts fn-def)
+                       remaining-args (get-remaining-args opts fn-def)]
+                   #?(:clj (dispatch-context-fn fn-key fn-def context-atom remaining-args)
+                      :cljs (js-await (dispatch-context-fn fn-key fn-def context-atom remaining-args))))
+                 (let [args (extract-args fn-def opts)]
+                   #?(:clj (dispatch-to-platform-with-args fn-key fn-def args)
+                      :cljs (js-await (dispatch-to-platform-with-args fn-key fn-def args)))))
+        result (process-return-value-with-tracking result fn-def)]
+    (if ctx-for-result (attach-context-to-result result ctx-for-result) result)))
+
 (defn ^:async dispatch-proj-fn
   "Central dispatcher for all PROJ functions"
   [fn-key fn-def opts & [key-casing]]
@@ -1322,44 +1309,19 @@
                opts)
         opts #?(:clj opts
                 :cljs (js-await (reconcile-cross-worker-args! fn-def opts)))
-        ctx-for-result (when (= :pj (:proj-returns fn-def))
-                         (let [first-arg-name (when (seq (:argtypes fn-def))
-                                                (keyword (first (first (:argtypes fn-def)))))]
-                           #?(:clj (resolve-context-val opts first-arg-name)
-                              :cljs (if (object? opts)
-                                      (or (aget opts (name first-arg-name))
-                                          (when (#{:ctx :context} first-arg-name)
-                                            (aget opts (if (= first-arg-name :ctx) "context" "ctx"))))
-                                      (resolve-context-val opts first-arg-name)))))]
-    (if (= :struct-list (:proj-returns fn-def))
-      #?(:clj (let [args (extract-args fn-def opts)]
-                (case @implementation
-                  :ffi (dispatch-struct-list-ffi fn-key fn-def args)
-                  :graal (dispatch-struct-list-graal fn-key fn-def args)))
-         :cljs (let [args (extract-args fn-def opts)
-                     result (js-await (dispatch-to-platform-with-args fn-key fn-def args))]
-                 (convert-js-result-keys result key-casing)))
-      (if (= :out-params (:proj-returns fn-def))
-        (let [input-fn-def (assoc fn-def :argtypes (vec (remove out-param-arg? (:argtypes fn-def))))
-              args (extract-args input-fn-def opts)]
-          #?(:clj (case @implementation
-                    :ffi (dispatch-out-params-ffi fn-key fn-def args)
-                    :graal (dispatch-out-params-graal fn-key fn-def args))
-             :cljs (convert-js-result-keys
-                    (js-await (dispatch-to-platform-with-args fn-key fn-def args))
-                    key-casing)))
-        (if (should-use-context-dispatch? fn-key fn-def opts)
-          (let [context-atom (get-context-atom opts fn-def)
-                remaining-args (get-remaining-args opts fn-def)
-                result #?(:clj (dispatch-context-fn fn-key fn-def context-atom remaining-args)
-                          :cljs (js-await (dispatch-context-fn fn-key fn-def context-atom remaining-args)))
-                result (process-return-value-with-tracking result fn-def)]
-            (if ctx-for-result (attach-context-to-result result ctx-for-result) result))
-          (let [args (extract-args fn-def opts)
-                result #?(:clj (dispatch-to-platform-with-args fn-key fn-def args)
-                          :cljs (js-await (dispatch-to-platform-with-args fn-key fn-def args)))
-                result (process-return-value-with-tracking result fn-def)]
-            (if ctx-for-result (attach-context-to-result result ctx-for-result) result)))))))
+        proj-returns (:proj-returns fn-def)]
+    (case proj-returns
+      :struct-list (dispatch-struct-list fn-key fn-def opts key-casing)
+      :out-params (dispatch-out-params fn-key fn-def opts key-casing)
+      (let [ctx-for-result (when (= :pj proj-returns)
+                             (let [fa (first-arg-kw fn-def)]
+                               #?(:clj (resolve-context-val opts fa)
+                                  :cljs (if (object? opts)
+                                          (or (aget opts (name fa))
+                                              (when (#{:ctx :context} fa)
+                                                (aget opts (if (= fa :ctx) "context" "ctx"))))
+                                          (resolve-context-val opts fa)))))]
+        (dispatch-default fn-key fn-def opts ctx-for-result)))))
 
 #?(:clj
    ;; Generate all PROJ functions at runtime for ClojureScript
@@ -1374,42 +1336,6 @@
                    ([opts] (dispatch-proj-fn fn-key fn-def opts)))))))
    :cljs
    (define-all-proj-public-fns nil))
-
-;; Runtime helper functions for macros
-
-#?(:cljs
-   (defn c-name->clj-name [c-fn-keyword]
-     (symbol (.replace (name c-fn-keyword) "_" "-"))))
-
-#?(:cljs
-   (defn to-emscripten-type [kw-type]
-     (case kw-type
-       :pointer :number
-       :double :number
-       :int :number
-       :double* :array
-       :size_t :number
-       :string :string
-       :string-array :array
-       :proj-string-list :array
-       :void nil
-       :number)))
-
-#?(:cljs
-   (defn def-proj-fn-runtime
-     "Runtime implementation of PROJ function call - dispatches to wasm implementation"
-     [fn-key fn-def args]
-  ;; Call wasm/def-wasm-fn-runtime directly
-     (wasm/def-wasm-fn-runtime fn-key fn-def args)))
-
-;; These functions are vestigial - string operations should go through worker commands
-#?(:cljs
-   (defn allocate-string-on-heap [s]
-     (throw (js/Error. "allocate-string-on-heap not supported in worker mode - use worker commands"))))
-
-#?(:cljs
-   (defn free-on-heap [ptr]
-     (throw (js/Error. "free-on-heap not supported in worker mode - use worker commands"))))
 
 ;; camelCase JS aliases for manually-defined functions
 ;; (fndefs functions get camelCase aliases via define-all-proj-public-fns macro)
