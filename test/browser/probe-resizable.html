@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>resizable-ArrayBuffer probe</title>
+<pre id="out">running...</pre>
+<script type="module">
+const log = [];
+const say = (s) => { log.push(s); document.getElementById('out').textContent = log.join('\n'); };
+
+try {
+  const rab = new ArrayBuffer(8, { maxByteLength: 16 });
+  new TextDecoder().decode(new Uint8Array(rab, 0, 4));
+  say('A textdecoder-on-resizable: ACCEPTED');
+} catch (e) {
+  say('A textdecoder-on-resizable: REJECTED -- ' + e.message);
+}
+
+// Main-thread load: only the wasm build itself is under test.
+try {
+  const { default: PROJModule } = await import('/src/cljc/net/willcohen/proj/dist/proj-emscripten.js');
+  const m = await PROJModule();
+  say('B module: loaded');
+  say('B HEAPU8.buffer.resizable: ' + m.HEAPU8.buffer.resizable);
+  say('B HEAPU8.buffer.growable:  ' + m.HEAPU8.buffer.growable);
+
+  // UTF8ToString decodes through UTF8Decoder.decode(heap.subarray(...)), the
+  // TextDecoder path from check A, applied to the wasm heap.
+  try {
+    const v = m.ccall('proj_info', 'number', [], []);
+    say('C proj_info ptr: ' + v);
+  } catch (e) {
+    say('C proj_info threw: ' + e.message);
+  }
+  try {
+    const s = m.UTF8ToString(m.ccall('proj_context_errno_string', 'number',
+                                     ['number', 'number'], [0, 1027]));
+    say('D UTF8ToString over the wasm heap: OK -- ' + JSON.stringify(s));
+  } catch (e) {
+    say('D UTF8ToString over the wasm heap: THREW -- ' + e.message);
+    say('D stack: ' + (e.stack || '').split('\n').slice(0, 4).join(' | '));
+  }
+} catch (e) {
+  say('B module load threw: ' + e.message);
+  say('B stack: ' + (e.stack || '').split('\n').slice(0, 5).join(' | '));
+}
+say('DONE');
+</script>

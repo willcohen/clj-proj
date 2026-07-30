@@ -6,10 +6,20 @@
   "homepage": "https://github.com/willcohen/clj-proj",
   "main": "dist/proj.mjs",
   "exports": {
-    ".": "./dist/proj.mjs"
+    ".": "./dist/proj.mjs",
+    "./proj-handler": "./dist/proj-handler.mjs"
   },
   "files": [
-    "dist/",
+    "dist/proj.mjs",
+    "dist/proj-handler.mjs",
+    "dist/proj-handler-overrides.mjs",
+    "dist/fetch_worker.mjs",
+    "dist/worker-bootstrap.mjs",
+    "dist/handler-runtime.mjs",
+    "dist/proj-emscripten.js",
+    "dist/proj-emscripten.wasm",
+    "dist/proj.db",
+    "dist/proj.ini",
     "README.md",
     "LICENSE"
   ],
@@ -21,8 +31,10 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "cherry-cljs": "0.5.34",
-    "resource-tracker": "0.0.1-alpha1",
+    "ffi-wasm": "0.0.1",
+    "resource-tracker": "^0.0.1",
+    "squint-cljs": "^0.14.206",
+    "worker-router": "npm:@wcohen/worker-router@^0.0.2",
     "xhr2": "0.2.1"
   },
   "devDependencies": {

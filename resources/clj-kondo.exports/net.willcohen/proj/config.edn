@@ -1,0 +1,20 @@
+;; Exported clj-kondo configuration for net.willcohen/proj.
+;;
+;; Consumers call the generated public PROJ surface, whose 156 fns are
+;; interned at runtime. Without these hooks, each call site reads as
+;; "Unresolved var".
+;;
+;; The hooks require hooks.native.generated from net.willcohen/native, so a
+;; consumer must copy that config too:
+;;   clj-kondo --lint "$(clojure -Spath)" --copy-configs --skip-lint
+{:hooks {:analyze-call {net.willcohen.proj.proj/define-proj-public-fn hooks.proj/define-proj-public-fn
+                        net.willcohen.proj.proj/define-all-proj-public-fns hooks.proj/define-all-proj-public-fns
+                        ;; proj.cljc refers the macro, so it resolves to the
+                        ;; ns that defines it. Without these keys, the hook
+                        ;; never fires on the JVM side.
+                        net.willcohen.proj.macros/define-proj-public-fn hooks.proj/define-proj-public-fn
+                        net.willcohen.proj.macros/define-all-proj-public-fns hooks.proj/define-all-proj-public-fns
+                        macros/define-proj-public-fn hooks.proj/define-proj-public-fn
+                        macros/define-all-proj-public-fns hooks.proj/define-all-proj-public-fns
+                        proj/define-proj-public-fn hooks.proj/define-proj-public-fn
+                        proj/define-all-proj-public-fns hooks.proj/define-all-proj-public-fns}}}

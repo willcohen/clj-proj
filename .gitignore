@@ -1,20 +1,39 @@
 *.allium
+.mcp.json
+.claude/
+docs/plans/
+# Per-developer agent and editor wiring. These carry absolute paths to one
+# machine's node, home directory and plugin tree, so they cannot be shared.
+.eca/
+.joyride/
+.github/hooks/
+# Local cross-repo handoffs, same class as WORKPLAN.md and docs/plans/.
+HANDOFF-*.md
+bench-results/
 *.bak
 *.class
 *.jar
 *.log
 *.wasm
+*.wasm.map
 *~
 **/.emscriptencache
 **/node_modules
-.calva/output-window/
+.calva/
 .classpath
+# .clj-kondo/config.edn is a tracked project source. The hooks themselves
+# live in resources/clj-kondo.exports/net.willcohen/proj, because cg consumes
+# clj-proj as a library and needs them to resolve the generated PROJ surface.
 .clj-kondo/.cache
+# Copied in from dependencies by `clj-kondo --copy-configs`. Refresh with:
+#   clj-kondo --lint "$(clojure -Spath)" --copy-configs --skip-lint
+# net.willcohen/native carries hooks.native.generated, which .clj-kondo/
+# config.edn names in :config-paths, so that step is necessary after a clone.
 .clj-kondo/babashka
 .clj-kondo/cnuernber
-.clj-kondo/config.edn
-.clj-kondo/hooks
 .clj-kondo/http-kit
+.clj-kondo/imports
+.clj-kondo/net.willcohen
 .clj-kondo/rewrite-clj
 .clj-kondo/taoensso
 .cljs_node_repl
@@ -60,7 +79,8 @@ proj.db
 proj.mjs
 PROJECT_SUMMARY.md
 pw.js
-resources/*kondo*
+# resources/clj-kondo.exports is a tracked project source, not build output.
+# Do not ignore it with a `resources/*kondo*` glob.
 resources/darwin*
 resources/grids
 resources/linux*
@@ -70,12 +90,18 @@ resources/windows*
 scripts/*-build-wasm
 scripts/run_tests.sh
 src/cljc/net/willcohen/proj/fndefs.mjs
+src/cljc/net/willcohen/proj/handler.mjs
 src/cljc/net/willcohen/proj/macros.mjs
 src/cljc/net/willcohen/proj/wasm.mjs
+test/cljc/**/*.mjs
 test/browser/playwright-report
 test/browser/proj.db
 test/browser/proj.ini
 test/browser/proj-emscripten.wasm
 test/browser/test-results
 vendor
+clj-native-vendor/
 WORKPLAN.md
+# Joyride nREPL/MCP server port, written at editor start-up.
+.joyride/mcp-server/
+.clj-kondo/.cache-cli

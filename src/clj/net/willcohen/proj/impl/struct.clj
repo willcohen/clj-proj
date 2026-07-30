@@ -1,9 +1,14 @@
+;; Copyright (c) 2024, 2025, 2026 Will Cohen
+;;
+;; Part of clj-proj, under the MIT License.
+;; See LICENSE for license information.
+;; SPDX-License-Identifier: MIT
+
 (ns net.willcohen.proj.impl.struct
-  (:require [tech.v3.datatype.ffi.size-t :as ffi-size-t]
-            [tech.v3.datatype.ffi.clang :as ffi-clang]
-            [tech.v3.datatype.struct :as dt-struct]
-            [camel-snake-kebab.core :as csk]
-            [clojure.string :as s]))
+  (:require [tech.v3.datatype.ffi.clang :as ffi-clang]
+            [tech.v3.datatype.struct :as dt-struct]))
+
+(set! *warn-on-reflection* true)
 
 (def crs-info-layout
   "      0 |   char * auth_name

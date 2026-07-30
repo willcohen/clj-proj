@@ -3,17 +3,12 @@ const { test, expect } = require('@playwright/test');
 
 test.describe('PROJ WASM Browser Tests', () => {
   test.beforeEach(async ({ page }) => {
-    // Capture console logs
     page.on('console', msg => console.log('Browser console:', msg.type(), msg.text()));
     page.on('pageerror', error => console.log('Browser error:', error.message));
 
-    // Navigate to the test page
     await page.goto('/test/browser/test.html');
-
-    // Wait for PROJ module to be available and initialized
     await page.waitForFunction(() => window.proj !== undefined, { timeout: 30000 });
 
-    // Initialize PROJ with better error handling
     await page.evaluate(async () => {
       console.log('Starting PROJ initialization...');
       const initFunction = window.proj.init_BANG_ || window.proj['init!'] || window.proj.init;
@@ -140,15 +135,13 @@ test.describe('PROJ WASM Browser Tests', () => {
         context: context
       });
 
-      // Create coordinate array for 1 coordinate (async)
       const coordArray = await proj.coordArray(1);
 
-      // Set coordinates: Boston City Hall (EPSG:4326 uses lat/lon order)
+      // Boston City Hall (EPSG:4326 uses lat/lon order)
       const originalLat = 42.3603222;
       const originalLon = -71.0579667;
       await proj.setCoords(coordArray, [[originalLat, originalLon, 0, 0]]);
 
-      // Transform coordinates (async)
       const PJ_FWD = proj.PJ_FWD || 1;
       await proj.projTransArray({
         p: transformer,
@@ -157,7 +150,6 @@ test.describe('PROJ WASM Browser Tests', () => {
         coord: coordArray
       });
 
-      // Get transformed coordinates from worker memory (async)
       const coords = await proj.get_coord_array(coordArray, 0);
 
       if (!coords) {
@@ -174,7 +166,7 @@ test.describe('PROJ WASM Browser Tests', () => {
         transformedY,
         xChanged: Math.abs(transformedX - originalLat) > 100,
         yChanged: Math.abs(transformedY - originalLon) > 100,
-        // Boston City Hall should be approximately X: 775,200 ft, Y: 2,956,400 ft
+        // Boston City Hall: approximately X 775,200 ft, Y 2,956,400 ft
         xInRange: transformedX > 775000 && transformedX < 776000,
         yInRange: transformedY > 2956000 && transformedY < 2957000
       };
@@ -409,7 +401,6 @@ test.describe('PROJ WASM Browser Tests', () => {
       };
     });
 
-    // Should either throw an error or return null/0
     expect(result.caught || result.transformerIsNullOrZero).toBe(true);
   });
 
@@ -418,7 +409,6 @@ test.describe('PROJ WASM Browser Tests', () => {
       const proj = window.proj;
       const context = await proj.contextCreate();
 
-      // Try to create an invalid transformation to trigger an error
       try {
         await proj.projCreateCrsToCrs({
           source_crs: "INVALID:999999",
@@ -426,10 +416,9 @@ test.describe('PROJ WASM Browser Tests', () => {
           context: context
         });
       } catch (error) {
-        // Expected - invalid CRS throws exception
+        // Expected: an invalid CRS throws.
       }
 
-      // Check error state (async)
       const errno = await proj.projContextErrno({ context: context });
 
       return {
@@ -458,7 +447,7 @@ test.describe('PROJ WASM Browser Tests', () => {
         return { error, functionExists: true };
       }
 
-      // The function might return null if there's an issue with string array processing
+      // The function can return null when string-array processing fails.
       if (authorities === null || authorities === undefined) {
         return { authorities: null, functionExists: true };
       }
@@ -471,10 +460,8 @@ test.describe('PROJ WASM Browser Tests', () => {
       };
     });
 
-    // Function should exist and either work or fail gracefully
     expect(result.functionExists || result.isArray).toBe(true);
 
-    // If it works, check the results
     if (result.isArray) {
       expect(result.hasAuthorities).toBe(true);
       expect(result.includesEPSG).toBe(true);
@@ -499,7 +486,7 @@ test.describe('PROJ WASM Browser Tests', () => {
         return { error, functionExists: true };
       }
 
-      // The function might return null if there's an issue with string array processing
+      // The function can return null when string-array processing fails.
       if (codes === null || codes === undefined) {
         return { codes: null, functionExists: true };
       }
@@ -512,10 +499,8 @@ test.describe('PROJ WASM Browser Tests', () => {
       };
     });
 
-    // Function should exist and either work or fail gracefully
     expect(result.functionExists || result.isArray).toBe(true);
 
-    // If it works, check the results
     if (result.isArray) {
       expect(result.hasManyCodes).toBe(true);
       expect(result.includes4326).toBe(true);
@@ -526,10 +511,8 @@ test.describe('PROJ WASM Browser Tests', () => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
 
-      // Test 1: Create resources without manual cleanup
       const context = await proj.contextCreate();
 
-      // Create multiple resources using simple proj strings (async)
       const transformer1 = await proj.projCreateCrsToCrs({
         source_crs: "+proj=longlat +datum=WGS84 +no_defs",
         target_crs: "+proj=merc +datum=WGS84 +no_defs",
@@ -541,8 +524,6 @@ test.describe('PROJ WASM Browser Tests', () => {
         target_crs: "+proj=longlat +datum=WGS84 +no_defs",
         context: context
       });
-
-      // No manual cleanup - resources should be tracked automatically
 
       return {
         transformer1Created: !!transformer1,
@@ -566,7 +547,6 @@ test.describe('PROJ WASM Browser Tests', () => {
       const originalLon = -71.0579667;
       const PJ_FWD = proj.PJ_FWD || 1;
 
-      // Test 1: Network OFF
       const ctxOff = await proj.contextCreate({ network: false });
       await proj.projContextSetEnableNetwork({ context: ctxOff, enabled: 0 });
 
@@ -590,7 +570,6 @@ test.describe('PROJ WASM Browser Tests', () => {
       const xOff = coordsOff[0];
       const yOff = coordsOff[1];
 
-      // Test 2: Network ON (default)
       const ctxOn = await proj.contextCreate();
 
       const transformerOn = await proj.projCreateCrsToCrs({
@@ -639,10 +618,8 @@ test.describe('PROJ WASM Browser Tests', () => {
 
       const wgs84 = entries.find(e => e.code === '4326');
 
-      // Test without auth filter
       const allEntries = await proj.projGetCrsInfoListFromDatabase({ context });
 
-      // Nonexistent authority returns empty array
       const empty = await proj.projGetCrsInfoListFromDatabase({ context, auth_name: 'NONEXISTENT_AUTH_ZZZZZ' });
 
       return {
@@ -738,8 +715,6 @@ test.describe('PROJ WASM Browser Tests', () => {
     expect(typeof result.authName).toBe('string');
   });
 
-  // Object Inspection tests
-
   test('can inspect CRS properties', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
@@ -778,15 +753,15 @@ test.describe('PROJ WASM Browser Tests', () => {
       const tgt = await proj.projGetTargetCrs({ context, pj: tx });
       const srcName = src ? await proj.projGetName({ obj: src }) : null;
       const tgtName = tgt ? await proj.projGetName({ obj: tgt }) : null;
-      const projStr = await proj.projAsProjString({ context, pj: tx, type: 0 });
+      // Serialize the extracted source CRS, not the transform: PROJ reports a
+      // crs-to-crs operation as "not exportable to PROJ" (proj_errno 44).
+      const projStr = await proj.projAsProjString({ context, pj: src, type: 0 });
       return { srcName, tgtName, projStrIsString: typeof projStr === 'string' };
     });
     expect(result.srcName).toBe('WGS 84');
     expect(result.tgtName).toContain('Massachusetts');
     expect(result.projStrIsString).toBe(true);
   });
-
-  // CRS Decomposition tests
 
   test('can decompose CRS structure', async ({ page }) => {
     const result = await page.evaluate(async () => {
@@ -814,8 +789,6 @@ test.describe('PROJ WASM Browser Tests', () => {
     expect(result.datumName).toContain('World Geodetic System 1984');
   });
 
-  // Operation Factory tests
-
   test('can find operations between CRS', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
@@ -834,8 +807,6 @@ test.describe('PROJ WASM Browser Tests', () => {
     expect(result.count).toBeGreaterThan(0);
     expect(result.hasNormalized).toBe(true);
   });
-
-  // CreateFromWkt test
 
   test('can create CRS from WKT roundtrip', async ({ page }) => {
     const result = await page.evaluate(async () => {
@@ -856,7 +827,6 @@ test.describe('PROJ WASM Browser Tests', () => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
 
-      // Check if resource-tracker is available (it's an external dependency)
       if (!window.resourceTracker && !window['resource-tracker']) {
         return { error: 'resource-tracker not available - it must be loaded as an external dependency' };
       }
@@ -868,11 +838,9 @@ test.describe('PROJ WASM Browser Tests', () => {
 
       let insideBlockSuccess = false;
 
-      // Use releasing block for deterministic cleanup
       await rt.releasing(async () => {
         const context = await proj.contextCreate();
 
-        // Create resources inside releasing block (async)
         const crs = await proj.projCreateFromDatabase({
           context: context,
           auth_name: "EPSG",
@@ -880,8 +848,6 @@ test.describe('PROJ WASM Browser Tests', () => {
         });
 
         insideBlockSuccess = !!crs;
-
-        // All resources created in this block will be cleaned up when it exits
       });
 
       return {
@@ -890,7 +856,8 @@ test.describe('PROJ WASM Browser Tests', () => {
       };
     });
 
-    // Resource-tracker is an external dependency, so it might not be loaded in some test environments
+    // resource-tracker is an external dependency and can be absent in some
+    // test environments.
     if (result.error) {
       expect(result.error).toContain('resource-tracker');
     } else {
@@ -933,8 +900,6 @@ test.describe('PROJ WASM Browser Tests', () => {
     expect(result.epsgName).toBe('WGS 84');
     expect(result.pipelineCreated).toBe(true);
   });
-
-  // Out-params tests
 
   test('can get area of use for CRS', async ({ page }) => {
     const result = await page.evaluate(async () => {
@@ -1088,7 +1053,7 @@ test.describe('PROJ WASM Browser Tests', () => {
       });
       return r ? { hasValues: Array.isArray(r.values), length: r.values.length } : null;
     });
-    // helmert may not support towgs84; null is acceptable
+    // helmert can lack towgs84 support, so null is permitted.
     if (result) {
       expect(result.hasValues).toBe(true);
       expect(result.length).toBe(7);

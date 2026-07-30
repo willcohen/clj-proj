@@ -6,13 +6,13 @@ const COORDS_PER_CONTEXT = 100000;
 /**
  * Multi-worker browser benchmark for proj-wasm coordinate transformations.
  *
- * Tests actual parallelism by creating multiple contexts (round-robined to
- * workers), each with its own transformer + coord array, then firing all
- * transforms concurrently via Promise.all.
+ * Measures parallelism: multiple contexts (round-robined to workers), each
+ * with its own transformer and coord array, and all transforms fired
+ * concurrently through Promise.all.
  *
- * Playwright's project matrix runs this against both servers automatically:
- *   - port 8080: single-threaded mode (no COOP/COEP)
- *   - port 8081: pthreads mode (COOP/COEP enabled)
+ * Playwright's project matrix runs this against the two servers:
+ *   - port 8080: no COOP/COEP, so crossOriginIsolated is false
+ *   - port 8081: COOP/COEP, so crossOriginIsolated is true
  */
 test.describe('Multi-worker browser benchmark', () => {
   test.setTimeout(180_000);
@@ -66,12 +66,10 @@ test.describe('Multi-worker browser benchmark', () => {
           if (shutdownFn) await shutdownFn();
 
           const initFn = proj.init || proj.init_BANG_;
-          await initFn(null, { workers: workerCount });
+          await initFn({ workers: workerCount });
 
-          const mode = proj.get_worker_mode ? proj.get_worker_mode() : 'unknown';
-          const numTasks = 16; // fixed task count
+          const numTasks = 16; // same total work for each worker count
 
-          // --- Test A: Concurrent transforms ---
           const coordSets = [];
           for (let i = 0; i < numTasks; i++) {
             coordSets.push(generateRandomCoords(coordsPerContext));
@@ -94,7 +92,6 @@ test.describe('Multi-worker browser benchmark', () => {
           ));
           const tElapsed = performance.now() - tStart;
 
-          // Spot check first coord of each task
           const spotChecks = [];
           for (const t of tasks) {
             const c = await proj.get_coord_array(t.coordArray, 0);
@@ -105,11 +102,9 @@ test.describe('Multi-worker browser benchmark', () => {
             elapsed: tElapsed,
             numTasks,
             totalCoords: numTasks * coordsPerContext,
-            spotChecks,
-            mode
+            spotChecks
           };
 
-          // --- Test B: Concurrent CRS creation ---
           const numOps = 20;
           const contexts = [];
           for (let i = 0; i < numOps; i++) {
@@ -130,11 +125,10 @@ test.describe('Multi-worker browser benchmark', () => {
           crsResults[workerCount] = {
             elapsed: cElapsed,
             count: numOps,
-            allValid,
-            mode
+            allValid
           };
 
-          console.log(`${workerCount} worker(s) [${mode}]: transforms ${tElapsed.toFixed(1)}ms, CRS ${cElapsed.toFixed(1)}ms`);
+          console.log(`${workerCount} worker(s): transforms ${tElapsed.toFixed(1)}ms, CRS ${cElapsed.toFixed(1)}ms`);
         } catch (error) {
           return {
             success: false,
@@ -144,7 +138,6 @@ test.describe('Multi-worker browser benchmark', () => {
         }
       }
 
-      // Build report
       const tCounts = Object.keys(transformResults).map(Number).sort((a, b) => a - b);
       const cCounts = Object.keys(crsResults).map(Number).sort((a, b) => a - b);
 
@@ -161,7 +154,7 @@ test.describe('Multi-worker browser benchmark', () => {
             workers: w, numTasks: r.numTasks, totalCoords: r.totalCoords,
             ms: r.elapsed, speedup: tBase / r.elapsed,
             usPerCoord: r.elapsed / r.totalCoords * 1000,
-            spotChecks: r.spotChecks, mode: r.mode
+            spotChecks: r.spotChecks
           };
         }),
         crs: cCounts.map(w => {
@@ -170,7 +163,7 @@ test.describe('Multi-worker browser benchmark', () => {
             workers: w, count: r.count,
             ms: r.elapsed, speedup: cBase / r.elapsed,
             msPerOp: r.elapsed / r.count,
-            allValid: r.allValid, mode: r.mode
+            allValid: r.allValid
           };
         })
       };
@@ -183,20 +176,17 @@ test.describe('Multi-worker browser benchmark', () => {
 
     expect(result.success).toBe(true);
 
-    // Log transform results
     console.log(`\n=== Browser Benchmark (${modeName}, crossOriginIsolated=${result.crossOriginIsolated}) ===`);
     console.log(`${result.coordsPerContext} coords per task`);
     console.log('--- Concurrent Transforms ---');
     for (const r of result.transforms) {
       console.log(`${r.workers} worker(s): ${r.numTasks} tasks, ${r.ms.toFixed(1)}ms (${r.speedup.toFixed(2)}x, ${r.usPerCoord.toFixed(1)}us/coord)`);
-      // Spot check
       for (const [x, y] of r.spotChecks) {
         expect(Math.abs(x)).toBeGreaterThan(1000);
         expect(Math.abs(y)).toBeGreaterThan(1000);
       }
     }
 
-    // Log CRS results
     console.log('--- Concurrent CRS Creation ---');
     for (const r of result.crs) {
       console.log(`${r.workers} worker(s): ${r.count} ops, ${r.ms.toFixed(1)}ms (${r.speedup.toFixed(2)}x, ${r.msPerOp.toFixed(1)}ms/op)`);

@@ -4,14 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PROJ in the Browser</title>
-    <script>
-        window.coi = {
-            shouldRegister: () => localStorage.getItem('coi-disabled') !== 'true',
-            shouldDeregister: () => localStorage.getItem('coi-disabled') === 'true',
-            quiet: false
-        };
-    </script>
-    <script src="coi-serviceworker.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -311,9 +303,6 @@
             left: 50%;
             transform: translate(-50%, -50%);
         }
-        #mode-badge { font-weight: bold; }
-        .badge-pthreads { color: #4caf50; }
-        .badge-single-threaded { color: #ff9800; }
         .error { color: red; }
         .inline-copy {
             font-size: 0.8em;
@@ -541,9 +530,7 @@
                     <p class="sidebar-subtitle">in the Browser</p>
                 </div>
                 <div class="sidebar-status">
-                    <div>Mode: <span id="mode-badge">...</span></div>
                     <div>Workers: <span id="worker-count">...</span></div>
-                    <div>COI: <span id="coi-status">...</span> <a href="#" id="coi-toggle">toggle</a></div>
                 </div>
                 <div class="sidebar-actions">
                     <a href="#" id="btn-reset-defaults">Reset to Defaults</a>
@@ -576,10 +563,10 @@
                         <p style="font-size: 0.9em; margin: 6px 0;"><strong>Runtime:</strong></p>
                         <ul style="font-size: 0.9em; margin: 6px 0; padding-left: 20px;">
                             <li>PROJ runs in Web Workers, keeping the main thread responsive</li>
-                            <li>The same WASM binary is used in both modes; with Cross-Origin Isolation (COOP/COEP headers), SharedArrayBuffer enables Emscripten's internal pthreads within each worker; without it, the module runs single-threaded</li>
-                            <li>Each PROJ context is pinned to a specific worker; the pool uses round-robin assignment</li>
+                            <li>One single-threaded WASM binary serves every lane. It needs no SharedArrayBuffer and no Cross-Origin Isolation, so it runs on ordinary static hosting with no special headers</li>
+                            <li>Each PROJ context is pinned to a specific worker. The pool assigns workers in rotation</li>
                             <li>The <code>proj.db</code> and <code>proj.ini</code> files are fetched at startup and written to Emscripten's virtual filesystem in each worker</li>
-                            <li>Grid shift files (NADCON, NTv2, etc.) are fetched on demand from <a href="https://cdn.proj.org/">cdn.proj.org</a> when a transformation requires them</li>
+                            <li>Grid shift files (NADCON, NTv2, and others) are fetched on demand from <a href="https://cdn.proj.org/">cdn.proj.org</a> when a transformation requires them</li>
                             <li>C-allocated objects are cleaned up using <a href="https://www.npmjs.com/package/resource-tracker">resource-tracker</a></li>
                         </ul>
                     </details>
@@ -627,7 +614,7 @@
                                 <div class="epoch-group">
                                     <input type="checkbox" id="source-epoch-enable">
                                     <span title="For dynamic datums like ITRF2014/ITRF2020. Specifies when coordinates were observed, enabling plate motion corrections.">Epoch:</span>
-                                    <input type="number" id="source-epoch" step="0.1" placeholder="e.g. 2024.0" disabled>
+                                    <input type="number" id="source-epoch" step="0.1" placeholder="2024.0" disabled>
                                 </div>
                                 <label>Input Coordinates</label>
                                 <textarea id="source-coordinates" rows="8" placeholder="lat lon (one pair per line)&#10;42.3603 -71.0591&#10;42.3554 -71.0655">42.3603 -71.0591</textarea>
@@ -646,7 +633,7 @@
                                 <div class="epoch-group">
                                     <input type="checkbox" id="target-epoch-enable">
                                     <span title="For dynamic datums like ITRF2014/ITRF2020. Specifies when coordinates were observed, enabling plate motion corrections.">Epoch:</span>
-                                    <input type="number" id="target-epoch" step="0.1" placeholder="e.g. 2024.0" disabled>
+                                    <input type="number" id="target-epoch" step="0.1" placeholder="2024.0" disabled>
                                 </div>
                                 <label>Decimal Places
                                     <input type="number" id="decimal-places" value="4" min="0" max="15" style="width: 60px; margin-left: 8px;">
@@ -726,7 +713,6 @@
         let monacoEditor = null;
         let crsCatalog = [];
 
-        // --- Examples ---
         const examples = {
             'basic-transform': `// Basic coordinate transformation: WGS84 to Web Mercator
 const transformer = await proj.projCreateCrsToCrs({
@@ -976,7 +962,7 @@ console.log("snake_case:", r2[0].toFixed(2), r2[1].toFixed(2));
 console.log("\\nBoth styles produce identical results.");`,
 
             'manual-context': `// Manual context creation
-// Most functions create a context automatically if you don't pass one.
+// Most functions create a context automatically if you do not pass one.
 // Create an explicit context when you need to:
 //   - disable network grid fetching
 //   - pin multiple operations to the same worker
@@ -1056,8 +1042,7 @@ for (const wc of counts) {
     if (shutdownFn) await shutdownFn();
     await proj.init(null, { workers: wc });
 
-    const mode = proj.getWorkerMode ? proj.getWorkerMode() : '?';
-    console.log(wc + " worker(s) [" + mode + "]");
+    console.log(wc + " worker(s)");
 
     // --- Transforms ---
     const tasks = [];
@@ -1122,14 +1107,10 @@ if (shutdownFn2) await shutdownFn2();
 await proj.init(null, { workers: max });
 context = await proj.contextCreate();
 window.context = context;
-const finalMode = proj.getWorkerMode ? proj.getWorkerMode() : 'unknown';
-document.getElementById('mode-badge').textContent = finalMode;
-document.getElementById('mode-badge').className = finalMode === 'pthreads' ? 'badge-pthreads' : 'badge-single-threaded';
 document.getElementById('worker-count').textContent = proj.getWorkerCount ? proj.getWorkerCount() : '?';
-console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
+console.log("\\nRestored to " + max + " worker(s)");`
         };
 
-        // --- Init ---
         async function initApp() {
             const loader = document.getElementById('loading-indicator');
             const content = document.getElementById('app-content');
@@ -1155,7 +1136,7 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
                 setupConsole();
 
                 try {
-                    // Dedup: PROJ returns multiple rows per CRS when there are multiple usage entries
+                    // PROJ returns one row for each usage entry of a CRS.
                     const rawCatalog = await proj.getCrsInfoListFromDatabase({ context });
                     const seen = new Set();
                     crsCatalog = rawCatalog.filter(e => {
@@ -1185,7 +1166,6 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             }
         }
 
-        // --- Version ---
         function displayVersion() {
             const major = proj.PROJ_VERSION_MAJOR;
             const minor = proj.PROJ_VERSION_MINOR;
@@ -1195,31 +1175,10 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             }
         }
 
-        // --- Mode / COI ---
         function updateModeInfo() {
-            document.getElementById('coi-status').textContent = self.crossOriginIsolated ? 'true' : 'false';
-            const mode = proj.getWorkerMode ? proj.getWorkerMode() : 'unknown';
-            const badge = document.getElementById('mode-badge');
-            badge.textContent = mode;
-            badge.className = mode === 'pthreads' ? 'badge-pthreads' : 'badge-single-threaded';
             const count = proj.getWorkerCount ? proj.getWorkerCount() : '?';
             document.getElementById('worker-count').textContent = count;
         }
-
-        document.getElementById('coi-toggle').addEventListener('click', async (e) => {
-            e.preventDefault();
-            const isDisabled = localStorage.getItem('coi-disabled') === 'true';
-            if (isDisabled) {
-                localStorage.removeItem('coi-disabled');
-                alert('COOP/COEP will be ENABLED on reload (pthreads mode).');
-            } else {
-                localStorage.setItem('coi-disabled', 'true');
-                const regs = await navigator.serviceWorker.getRegistrations();
-                for (const reg of regs) await reg.unregister();
-                alert('COOP/COEP will be DISABLED on reload (single-threaded mode).');
-            }
-            location.reload();
-        });
 
         document.getElementById('btn-reset-defaults').addEventListener('click', (e) => {
             e.preventDefault();
@@ -1245,7 +1204,6 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             window.history.replaceState(null, '', window.location.pathname);
         });
 
-        // --- Transform Section ---
         let autoTransformTimer = null;
         function scheduleAutoTransform() {
             clearTimeout(autoTransformTimer);
@@ -1433,7 +1391,6 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             }
         }
 
-        // --- URL Persistence ---
         function updateDimNote() {
             const note = document.getElementById('dim-mismatch-note');
             const srcSel = crsSelectors['source-crs-selector'];
@@ -1524,7 +1481,6 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             else if (tgtSel) tgtSel.setValue('EPSG:2249');
         }
 
-        // --- Clipboard ---
         window.copyToClipboard = async function(targetId, btn) {
             const el = document.getElementById(targetId);
             if (!el.value?.trim()) return;
@@ -1534,7 +1490,6 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             setTimeout(() => { btn.textContent = orig; }, 2000);
         };
 
-        // --- File Loading ---
         function handleFileLoad(event, targetId, onLoad, onContent) {
             const file = event.target.files[0];
             if (!file) return;
@@ -1552,7 +1507,6 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             event.target.value = '';
         }
 
-        // --- CRS Info Section ---
         function setupCrsInfoSection() {
             document.getElementById('btn-lookup-crs').addEventListener('click', lookupCrs);
         }
@@ -1609,11 +1563,9 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
                 }
                 document.getElementById('crs-projstr').value = projStr || '';
 
-                // Enhanced metadata
                 const enhancedEl = document.getElementById('crs-enhanced-meta');
                 const metaParts = [];
 
-                // Catalog metadata (area, bbox, projection)
                 if (authName && authCode) {
                     const catEntry = crsCatalog.find(e =>
                         e.auth_name.toLowerCase() === authName.toLowerCase() && e.code === authCode);
@@ -1631,7 +1583,6 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
                     }
                 }
 
-                // Datum
                 try {
                     let datum = null;
                     try { datum = await proj.projCrsGetDatum({ context, crs: pj }); } catch (e) {}
@@ -1644,7 +1595,6 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
                     }
                 } catch (e) {}
 
-                // Ellipsoid
                 try {
                     const ellipsoid = await proj.projGetEllipsoid({ context, pj });
                     if (ellipsoid) {
@@ -1653,7 +1603,6 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
                     }
                 } catch (e) {}
 
-                // Coordinate System
                 try {
                     const cs = await proj.projCrsGetCoordinateSystem({ context, crs: pj });
                     if (cs) {
@@ -1668,7 +1617,7 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
                     }
                 } catch (e) {}
 
-                // WKT dialect detection (if input looks like WKT)
+                // Identify the WKT dialect when the input has the WKT shape.
                 if (input.match(/^[A-Z]/i) && input.includes('[')) {
                     try {
                         const dialect = await proj.projContextGuessWktDialect({ context, wkt: input });
@@ -1690,7 +1639,6 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             }
         }
 
-        // --- Console ---
         function setupConsole() {
             require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
             require(['vs/editor/editor.main'], function () {
@@ -1857,7 +1805,6 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             updateURLParams();
         }
 
-        // --- CRS Selector Component ---
         const HORIZONTAL_TYPES = new Set([9, 10, 12, 13, 15, 16, 28]);
         const VERTICAL_TYPES = new Set([14]);
         const TYPES_3D = new Set([10, 13]);
@@ -2344,7 +2291,6 @@ console.log("\\nRestored to " + max + " worker(s) [" + finalMode + "]");`
             return selector;
         }
 
-        // --- Start ---
         window.addEventListener('load', initApp);
     </script>
 </body>

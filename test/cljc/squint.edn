@@ -1,0 +1,4 @@
+;; squint finds macro sources for :require-macros through :paths. SCI
+;; expands the macros at compile time, which lets a macro suppress the
+;; bodies of unported deftests.
+{:paths ["."]}

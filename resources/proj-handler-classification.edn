@@ -1,0 +1,49 @@
+;; Input to clj-native's gen-handler-source. `bb gen-handler` reads this
+;; file and regenerates proj-handler.mjs. The hand-written methods live in
+;; proj-handler-overrides.mjs.
+;;
+;; The runtime classifies each exposed method as busy (counter increments)
+;; or destroy (gated on counter == 0). The runtime's workerQueue serializes
+;; calls, so the counter never passes 1 and the destroy gate does nothing.
+;; The classification stays for handlers with concurrent busy methods.
+;;
+;; :destroy-fns lists the C functions the ccall dispatcher treats as
+;; teardown. Documentary only under the serial workerQueue.
+
+{:overrides-import-path "./proj-handler-overrides.mjs"
+ :runtime-import-path   "ffi-wasm/handler-runtime"
+
+ :exposed-methods [:context_create :set_log_level :context_destroy
+                   :ccall :malloc :free
+                   :heapf64_set :heapf64_get :read_string_array
+                   :heapu8_set :heapu8_get
+                   :string_to_utf8 :utf8_to_string
+                   :shutdown]
+
+ :busy-methods [:context_create :set_log_level
+                :ccall :malloc
+                :heapf64_set :heapf64_get :read_string_array
+                :heapu8_set :heapu8_get
+                :string_to_utf8 :utf8_to_string]
+
+ :destroy-methods [:context_destroy :free :shutdown]
+
+ ;; Init-arg fields in the handler cache key. With these, the generator
+ ;; emits the fingerprint, so proj-handler-overrides.mjs does not import the
+ ;; handler runtime. The overrides module stays external while the generated
+ ;; handler is bundled, and a second runtime import would give the overrides
+ ;; its own copy of the runtime's logging state.
+ :fingerprint-fields [:dbBytes :iniBytes :logLevel]
+
+ :destroy-fns ["proj_celestial_body_list_destroy"
+               "proj_context_destroy"
+               "proj_crs_info_list_destroy"
+               "proj_destroy"
+               "proj_get_crs_list_parameters_destroy"
+               "proj_insert_object_session_destroy"
+               "proj_int_list_destroy"
+               "proj_list_destroy"
+               "proj_operation_factory_context_destroy"
+               "proj_string_destroy"
+               "proj_string_list_destroy"
+               "proj_unit_list_destroy"]}

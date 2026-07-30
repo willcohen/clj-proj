@@ -1,3 +1,9 @@
+// Copyright (c) 2024, 2025, 2026 Will Cohen
+//
+// Part of clj-proj, under the MIT License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: MIT
+
 package net.willcohen.proj;
 
 import java.util.List;
@@ -5,13 +11,6 @@ import java.util.Map;
 
 /**
  * Test for the Java PROJ API.
- *
- * This test exercises the main functionality of the PROJ Java wrapper:
- * - Initialization
- * - Context creation
- * - CRS transformation creation
- * - Coordinate transformation
- * - Database queries
  */
 public class PROJTest {
 
@@ -21,7 +20,6 @@ public class PROJTest {
     public static void main(String[] args) {
         System.out.println("=== PROJ Java API Test ===\n");
 
-        // Check for --graal flag to force GraalVM backend
         boolean forceGraal = false;
         for (String arg : args) {
             if ("--graal".equals(arg)) {
@@ -106,7 +104,6 @@ public class PROJTest {
             if (ctx != null) {
                 pass("Context created successfully");
 
-                // Test isContext
                 if (PROJ.isContext(ctx)) {
                     pass("isContext() returns true for context");
                 } else {
@@ -127,7 +124,6 @@ public class PROJTest {
             if (authorities != null && !authorities.isEmpty()) {
                 pass("Got " + authorities.size() + " authorities");
 
-                // Check for EPSG which should always be present
                 boolean hasEPSG = false;
                 for (Object auth : authorities) {
                     if ("EPSG".equals(auth.toString())) {
@@ -155,7 +151,6 @@ public class PROJTest {
             if (codes != null && !codes.isEmpty()) {
                 pass("Got " + codes.size() + " EPSG codes");
 
-                // Check for 4326 (WGS84) which should always be present
                 boolean has4326 = false;
                 for (Object code : codes) {
                     if ("4326".equals(code.toString())) {
@@ -179,10 +174,8 @@ public class PROJTest {
     private static void testTransformation() {
         System.out.println("Test: Coordinate transformation");
         try {
-            // Create context
             Object ctx = PROJ.contextCreate();
 
-            // Create transformation from WGS84 to MA State Plane
             // EPSG:4326 = WGS84 (lat/lon)
             // EPSG:2249 = MA State Plane (feet)
             Object transform = PROJ.createCrsToCrs(ctx, "EPSG:4326", "EPSG:2249");
@@ -192,7 +185,6 @@ public class PROJTest {
             }
             pass("Transformation created");
 
-            // Create coordinate array
             Object coords = PROJ.coordArray(1);
             if (coords == null) {
                 fail("coordArray returned null");
@@ -200,13 +192,11 @@ public class PROJTest {
             }
             pass("Coordinate array created");
 
-            // Set coordinates: Boston City Hall (lat, lon)
-            // EPSG:4326 expects lat/lon order
+            // Boston City Hall. EPSG:4326 expects lat/lon order.
             double[][] input = {{42.3603222, -71.0579667}};
             PROJ.setCoords(coords, input);
             pass("Coordinates set");
 
-            // Transform
             int result = PROJ.transArray(transform, coords, 1);
             if (result == 0) {
                 pass("Transformation executed successfully");
@@ -215,13 +205,11 @@ public class PROJTest {
                      " (" + PROJ.errorCodeToString(result) + ")");
             }
 
-            // Read back and verify transformed coordinates
             double[] transformed = PROJ.getCoords(coords, 0);
             if (transformed != null) {
                 double x = transformed[0];
                 double y = transformed[1];
-                // Boston City Hall in MA State Plane feet should be approximately:
-                // X: ~775,200 feet, Y: ~2,956,400 feet
+                // Boston City Hall in MA State Plane: X ~775,200 ft, Y ~2,956,400 ft.
                 if (x > 775000 && x < 776000) {
                     pass("X coordinate correct: " + x);
                 } else {
@@ -245,10 +233,8 @@ public class PROJTest {
     private static void testTransformationFromPj() {
         System.out.println("Test: Coordinate transformation from PJ objects");
         try {
-            // Create context
             Object ctx = PROJ.contextCreate();
 
-            // Create CRS objects from database
             Object sourceCrs = PROJ.createFromDatabase(ctx, "EPSG", "4326"); // WGS84
             if (sourceCrs == null) {
                 fail("createFromDatabase returned null for EPSG:4326");
@@ -263,7 +249,6 @@ public class PROJTest {
             }
             pass("Target CRS (EPSG:2249) created from database");
 
-            // Create transformation from CRS objects
             Object transform = PROJ.createCrsToCrsFromPj(ctx, sourceCrs, targetCrs);
             if (transform == null) {
                 fail("createCrsToCrsFromPj returned null");
@@ -271,7 +256,6 @@ public class PROJTest {
             }
             pass("Transformation created from PJ objects");
 
-            // Create coordinate array and transform
             Object coords = PROJ.coordArray(1);
             double[][] input = {{42.3603222, -71.0579667}}; // Boston City Hall
             PROJ.setCoords(coords, input);
@@ -334,7 +318,6 @@ public class PROJTest {
                 fail("EPSG:4326 not found in CRS info list");
             }
 
-            // Test without auth filter
             List<Map<String, Object>> allEntries = PROJ.getCrsInfoListFromDatabase(ctx);
             if (allEntries != null && allEntries.size() > entries.size()) {
                 pass("All-authority query returned more entries (" + allEntries.size() + ") than EPSG-only");
@@ -444,7 +427,6 @@ public class PROJTest {
                 fail("create(pipeline) returned null");
             }
 
-            // Verify the EPSG object is usable
             Object noCtx = PROJ.create("EPSG:4326");
             if (noCtx != null) {
                 pass("Created PJ without explicit context");

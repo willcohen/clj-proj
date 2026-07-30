@@ -1,0 +1,17 @@
+;; clj-proj lints itself through its own exported config, so a config change
+;; runs here before cg consumes it. The exported hooks require
+;; hooks.native.generated from net.willcohen/native. Refresh it with:
+;;   clj-kondo --lint "$(clojure -Spath)" --copy-configs --skip-lint
+{:config-paths ["../resources/clj-kondo.exports/net.willcohen/proj"
+                "net.willcohen/native"]
+
+ ;; with-test-context binds through a macro, and each reader view resolves it
+ ;; to a different namespace, so the two keys need the hook.
+ :hooks {:analyze-call
+         {net.willcohen.proj.proj-test/with-test-context hooks.test-macros/with-test-context
+          net.willcohen.proj.proj-test-macros/with-test-context hooks.test-macros/with-test-context}}
+
+ ;; The npm tree under src/cljc/.../node_modules ships its own .cljc sources
+ ;; (worker-router, resource-tracker). A lint of them reports their faults
+ ;; here.
+ :output {:exclude-files ["node_modules/"]}}

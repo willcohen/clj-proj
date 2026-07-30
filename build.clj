@@ -37,7 +37,7 @@
   (b/javac {:src-dirs ["src/java"]
             :class-dir class-dir
             :basis @basis
-            :javac-opts ["--release" "21"]})
+            :javac-opts ["--release" "25"]})
   (b/copy-dir {:src-dirs ["src/clj" "src/cljc" "resources"]
                :target-dir class-dir})
   ;; Delete npm/node related files that shouldn't be in the jar
@@ -47,12 +47,18 @@
   (b/delete {:path "target/classes/net/willcohen/proj/package-lock.json"})
   (b/delete {:path "target/classes/net/willcohen/proj/esbuild.config.mjs"})
   (b/delete {:path "target/classes/net/willcohen/proj/.npmignore"})
-  ;; Delete JavaScript build artifacts
+  ;; Delete JavaScript build artifacts. The npm package ships the worker
+  ;; JS; the JVM reads only wasm/proj-{emscripten.js,loader.mjs} above.
   (b/delete {:path "target/classes/net/willcohen/proj/proj.mjs"})
   (b/delete {:path "target/classes/net/willcohen/proj/fndefs.mjs"})
   (b/delete {:path "target/classes/net/willcohen/proj/macros.mjs"})
   (b/delete {:path "target/classes/net/willcohen/proj/wasm.mjs"})
+  (b/delete {:path "target/classes/net/willcohen/proj/handler.mjs"})
   (b/delete {:path "target/classes/net/willcohen/proj/proj-loader.mjs"})
+  (b/delete {:path "target/classes/net/willcohen/proj/proj-handler.mjs"})
+  (b/delete {:path "target/classes/net/willcohen/proj/proj-handler-overrides.mjs"})
+  (b/delete {:path "target/classes/net/willcohen/proj/squint.edn"})
+  (b/delete {:path "target/classes/net/willcohen/proj/proj-emscripten.wasm.map"})
   ;; Delete other non-jar files
   (b/delete {:path "target/classes/net/willcohen/proj/README.md"})
   (b/delete {:path "target/classes/net/willcohen/proj/LICENSE"})

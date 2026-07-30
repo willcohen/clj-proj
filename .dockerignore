@@ -1,14 +1,41 @@
-# Exclude build artifacts from container context
-# Prevents stale native .o files from contaminating cross-compilation
-/target/*
-!/target/*.tar.gz
-/dist
-/vendor
-/.clj-kondo/.cache
-/.cpcache
-/.shadow-cljs
-/.lsp/.cache
-/.direnv
-/.vscode
-/.git
+# Build context for `bb build --cross` and `bb build --cross-platform`.
+# The Containerfile does `COPY . .`, so everything here is sent to the
+# daemon and becomes an image layer. Without this file the context is
+# about 1.4 GB, and almost all of it is local output the container
+# rebuilds or never reads.
+#
+# Do not ignore clj-native-vendor/. The build task writes that directory
+# before it calls the container, and the flake reads it through
+# --override-input.
+
+# Version control. Excluding .git also stops nix from treating /build as
+# a git tree and evaluating the flake against the index.
+.git
+.jj
+
+# Local build output. The container makes its own.
+classes
+target
 **/node_modules
+**/dist
+
+# A network-enabled run leaves a grid-populated proj.db here. It is
+# ignored by .gitignore and reaches 200 MB or more.
+proj
+
+# Editor and tool caches.
+.lsp
+.shadow-cljs
+.cljs_node_repl
+.cpcache
+.clj-kondo
+
+# Host and WASM artifacts. A native cross build reads neither, and the
+# build-all stage takes the WASM output from the wasm-build stage.
+resources/darwin-aarch64
+resources/wasm
+
+# Not read by any build stage.
+docs
+test/browser/test-results
+test/browser/playwright-report

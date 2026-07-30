@@ -1,22 +1,79 @@
+;; Copyright (c) 2024, 2025, 2026 Will Cohen
+;;
+;; Part of clj-proj, under the MIT License.
+;; See LICENSE for license information.
+;; SPDX-License-Identifier: MIT
+
 (ns net.willcohen.proj.proj-test
-  #?(:clj (:require [clojure.test :refer :all]
-                    [net.willcohen.proj.proj :as proj] ; Public API for PROJ
-                    [net.willcohen.proj.wasm :as wasm] ; For debug logging
-                    [net.willcohen.proj.impl.logging :as proj-logging]
-                    [clojure.tools.logging :as log]
+  ;; Exclude clojure.core/await so the JVM identity macro below
+  ;; resolves. On CLJS, squint's `await` is a parser-level special
+  ;; form, and the exclude is a no-op.
+  (:refer-clojure :exclude [await])
+  #?(:clj (:require [clojure.test :refer [deftest is testing use-fixtures]]
+                    [net.willcohen.proj.proj :as proj]
+                    [net.willcohen.proj.wasm :as wasm]
                     [tech.v3.resource :as resource])
-     :cljs (:require [cljs.test :refer-macros [deftest is testing]]
-                     [net.willcohen.proj.proj :as proj]))) ; Fixed CLJS require
+     :cljs (:require [cljs.test :as t :refer [deftest is testing]]
+                     ["proj-wasm" :as proj]
+                     ;; squint expands cljc macros through SCI at
+                     ;; compile time, so plain :require works.
+                     [net.willcohen.proj.proj-test-macros
+                      :refer [with-each-implementation with-test-context]]
+                     ;; `bb stage:clj-native-test-deps` copies this
+                     ;; into test/cljc/dist/. An import through the
+                     ;; proj-wasm symlink chain loads a second
+                     ;; squint-cljs and splits the cljs.test registry.
+                     ["../../../dist/test_runner.mjs"
+                      :refer [run_tests_and_exit_BANG_]])))
 
-;; Initialize PROJ for ClojureScript at namespace load time
-#?(:cljs (proj/init))
+;; One test body for each deftest runs on the JVM (`bb test:clj`) and
+;; on squint+Node (`bb test:cljs:wip`). The `await` shim, the `^:async`
+;; marks, and the two macros absorb the platform differences.
+;;
+;; These tests are race-sensitive. Run the file repeatedly after a
+;; concurrency change:
+;;   get-crs-info-list-from-database-test
+;;   as-proj-json-test
+;;   normalize-for-visualization-test
+;;   get-area-of-use-test
+;;   coordoperation-get-param-test
+;;
+;; These tests are sensitive to a dispatch change:
+;;   is-deprecated-test
+;;   get-datum-test
+;;   get-area-of-use-ex-test
+;;   prime-meridian-get-parameters-test
 
-;(println "DEBUG: proj_test.cljc is loading...")
+;; On CLJS, `await` is squint's special form, valid only inside
+;; ^:async fns. The JVM API is synchronous, so this identity macro
+;; makes `(await expr)` a no-op there. JVM clojure.test ignores
+;; `^:async` metadata. squint's cljs.test wraps the test fn as async.
+#?(:clj
+   (defmacro await [body] body))
 
-;; Helper to run tests for each implementation
+;; JVM calls return maps with kebab keyword keys. CLJS calls return
+;; JS objects with snake_case string keys. On the JVM, `prop` is
+;; `get`. On CLJS, `prop` converts the kebab key to snake_case before
+;; the lookup. Single-word keys, for example :name, are equal on the
+;; two platforms, so tests read them directly.
+#?(:clj
+   (defn prop [x k] (get x k))
+   :cljs
+   (defn prop [x k]
+     ;; squint compiles a keyword literal at the call site to a plain
+     ;; JS string, so `k` is already the name string. cljs.core/name
+     ;; is not necessary, and squint does not export it.
+     (when (some? x)
+       (get x (.replace k (js/RegExp. "-" "g") "_")))))
+
+;; The cljs `with-each-implementation` macro expansion calls this fn.
+#?(:cljs
+   (defn ^:async ensure-init! []
+     (when (nil? @proj/implementation)
+       (await (.init proj)))))
+
 #?(:clj
    (def ^:dynamic *test-implementation*
-  ;; Reads from system property, defaults to :ffi if not set
      (delay (keyword (System/getProperty "net.willcohen.proj.proj-test.implementation" "ffi")))))
 
 #?(:clj
@@ -24,181 +81,174 @@
      "Macro to wrap test bodies, setting the PROJ implementation based on *test-implementation*."
      [& body]
      `(do
-        (let [current-impl# @*test-implementation*] ; Dereference the delay to get the keyword
+        (let [current-impl# @*test-implementation*]
           (when (nil? current-impl#)
             (throw (ex-info "Test implementation not set. Set *test-implementation* dynamically or via system property." {})))
-          ;(log/info (str "--- Running tests with implementation: " (name current-impl#) " ---"))
 
           (testing (str "With implementation: " (name current-impl#))
-            ;; force-ffi! or force-graal! must be called BEFORE proj-init
+            ;; force-*! clears @implementation. The explicit init! is
+            ;; necessary for tests that read @proj/implementation and
+            ;; do not call a proj fn (initialization-test,
+            ;; query-implementation-test).
             (case current-impl#
               :ffi (proj/force-ffi!)
               :graal (proj/force-graal!))
-            ;; proj/proj-init is handled by the `use-fixtures` below, which runs once per namespace
-            ;; and ensures initialization after the force-X! call.
+            (proj/init!)
             (try
               ~@body
-              (finally))))))
-              ;; No proj/proj-reset here; relying on resource tracking for cleanup.
+              (finally))))))) ; no proj-reset: resource tracking does the cleanup
 
-   :cljs
-   (defmacro with-each-implementation [& body]
-     ;; For CLJS, you'll typically run tests separately for node and browser.
-     ;; proj/implementation should be set by the test runner environment.
-     `(testing (str "With implementation: " @proj/implementation)
-        (try
-          ;; For CLJS, proj/proj-init is called at the top-level of the namespace.
-          ~@body
-          (finally)))))
+;; tech.v3.resource :auto tracking releases the context.
+#?(:clj
+   (defmacro with-test-context [[ctx-binding] & body]
+     `(let [~ctx-binding (proj/context-create)]
+        ~@body)))
 
-;; Helper to create and manage a test context
-(defmacro with-test-context [[ctx-binding] & body]
-  ;; Create context with default resource tracking (e.g., :auto)
-  ;; Its lifecycle should be managed by tech.v3.resource/resource-tracker
-  `(let [~ctx-binding (proj/context-create)] ; nil for log-level, default resource-type
-     ~@body))
-     ;; No explicit finally block to destroy ctx-binding here;
-     ;; relying on :auto tracking from proj/context-create.
-
-;; Global test fixtures for CLJ to initialize PROJ once per test run
 #?(:clj
    (use-fixtures :once
      (fn [f]
-       ;; Skip this -- init will always be called on first fn use.
-       ;(log/info "Global test setup: Initializing PROJ.")
-       ;; The `with-each-implementation` macro will call `proj/force-ffi!` or `proj/force-graal!`.
-       ;; `proj/proj-init` is idempotent and will ensure the library is loaded.
-       ;(proj/proj-init :info)
-       ;; WASM/GraalVM ccall logging - logs at the specified level (e.g. :info, :warn, :debug)
-       ;; Set to nil to disable ccall logging entirely
+       ;; No global init: `with-each-implementation` inits each impl.
+       ;; nil disables wasm ccall logs. Use :info, :warn, or :debug
+       ;; for logs.
        (binding [wasm/*runtime-log-level* nil]
-         (f))))) ; Run the tests
-       ;(log/info "Global test teardown: (if necessary, clean up global PROJ state here).")
-       ;; If there's a global `proj/proj-reset` or similar cleanup, it would go here.
+         (f)))))
 
-;; --- Tests ---
-
-(deftest get-authorities-from-database-test
+(deftest ^:async get-authorities-from-database-test
   (with-each-implementation
-    (testing "get-authorities-from-database returns a non-empty set of strings"
-      (let [authorities (proj/proj-get-authorities-from-database)]
-        (is (coll? authorities) "Result should be a collection")
-        (is (not (empty? authorities)) "Result set should not be empty")
-        (is (every? string? authorities) "All eements should be strings")))))
+    (testing "get-authorities-from-database returns a non-empty result of strings"
+      ;; A coll? check would fail on CLJS, where the result is a JS
+      ;; array.
+      (let [authorities (await (proj/proj-get-authorities-from-database))]
+        (is (some? authorities) "Result should be non-nil")
+        (is (not (empty? authorities)) "Result should not be empty")
+        (is (every? string? authorities) "All elements should be strings")))))
 
-(deftest get-codes-from-database-test
+(deftest ^:async get-codes-from-database-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "get-codes-from-database returns codes for EPSG"
-        (let [epsg-codes (proj/proj-get-codes-from-database {:context ctx
-                                                             :auth_name "EPSG"})]
-          (is (coll? epsg-codes) "Result should be a collection")
-          (is (not (empty? epsg-codes)) "Result collection should not be empty")
+        (let [epsg-codes (await (proj/proj-get-codes-from-database {:context ctx
+                                                                    :auth_name "EPSG"}))]
+          (is (some? epsg-codes) "Result should be non-nil")
+          (is (not (empty? epsg-codes)) "Result should not be empty")
           (is (every? string? epsg-codes) "All elements should be strings")
+          ;; squint wraps a set predicate as a `get` fn, and `get` on
+          ;; a Set returns a present key. Thus the set predicate works
+          ;; on a JS array in cljs.
           (is (some #{"4326"} epsg-codes) "Should contain a well-known code like '4326'"))))))
 
-(deftest get-crs-info-list-from-database-test
-  (with-each-implementation
-    (with-test-context [ctx]
-      (testing "get-crs-info-list-from-database returns CRS entries for EPSG"
-        (let [entries (proj/proj-get-crs-info-list-from-database {:context ctx :auth-name "EPSG"})]
-          (is (coll? entries) "Result should be a collection")
-          (is (> (count entries) 1000) "EPSG should have >1000 CRS entries")
-          (let [wgs84 (first (filter #(= "4326" (:code %)) entries))]
-            (is (some? wgs84) "Should contain EPSG:4326")
-            (is (= "EPSG" (:auth-name wgs84)))
-            (is (= "WGS 84" (:name wgs84)))
-            (is (= false (:deprecated wgs84)))
-            (is (= true (:bbox-valid wgs84)))
-            (is (number? (:west-lon-degree wgs84)))
-            (is (string? (:area-name wgs84))))))
-      (testing "get-crs-info-list-from-database with no auth-name returns entries from multiple authorities"
-        (let [entries (proj/proj-get-crs-info-list-from-database {:context ctx})
-              auths (into #{} (map :auth-name entries))]
-          (is (> (count auths) 1) "Should have entries from multiple authorities")
-          (is (contains? auths "EPSG") "Should include EPSG")))
-      (testing "nullable struct fields return nil for absent values"
-        (let [entries (proj/proj-get-crs-info-list-from-database {:context ctx :auth-name "EPSG"})
-              wgs84 (first (filter #(= "4326" (:code %)) entries))]
-          (is (nil? (:projection-method-name wgs84))
-              "Geographic CRS should have nil projection-method-name")))
-      (testing "nonexistent authority returns empty list"
-        (let [entries (proj/proj-get-crs-info-list-from-database {:context ctx :auth-name "NONEXISTENT_AUTH_ZZZZZ"})]
-          (is (= [] entries) "Nonexistent authority should return empty vector"))))))
+(deftest ^:async get-crs-info-list-from-database-test
+  #?(:clj  (with-each-implementation
+             (with-test-context [ctx]
+               (testing "get-crs-info-list-from-database returns CRS entries for EPSG"
+                 (let [entries (proj/proj-get-crs-info-list-from-database {:context ctx :auth-name "EPSG"})]
+                   (is (coll? entries) "Result should be a collection")
+                   (is (> (count entries) 1000) "EPSG should have >1000 CRS entries")
+                   (let [wgs84 (first (filter #(= "4326" (:code %)) entries))]
+                     (is (some? wgs84) "Should contain EPSG:4326")
+                     (is (= "EPSG" (:auth-name wgs84)))
+                     (is (= "WGS 84" (:name wgs84)))
+                     (is (= false (:deprecated wgs84)))
+                     (is (= true (:bbox-valid wgs84)))
+                     (is (number? (:west-lon-degree wgs84)))
+                     (is (string? (:area-name wgs84))))))
+               (testing "get-crs-info-list-from-database with no auth-name returns entries from multiple authorities"
+                 (let [entries (proj/proj-get-crs-info-list-from-database {:context ctx})
+                       auths (into #{} (map :auth-name entries))]
+                   (is (> (count auths) 1) "Should have entries from multiple authorities")
+                   (is (contains? auths "EPSG") "Should include EPSG")))
+               (testing "nullable struct fields return nil for absent values"
+                 (let [entries (proj/proj-get-crs-info-list-from-database {:context ctx :auth-name "EPSG"})
+                       wgs84 (first (filter #(= "4326" (:code %)) entries))]
+                   (is (nil? (:projection-method-name wgs84))
+                       "Geographic CRS should have nil projection-method-name")))
+               (testing "nonexistent authority returns empty list"
+                 (let [entries (proj/proj-get-crs-info-list-from-database {:context ctx :auth-name "NONEXISTENT_AUTH_ZZZZZ"})]
+                   (is (= [] entries) "Nonexistent authority should return empty vector")))))
+     :cljs (do
+             (await (ensure-init!))
+             (testing "get-crs-info-list-from-database returns CRS entries for EPSG (cljs)"
+               (let [ctx     (await (.contextCreate proj))
+                     entries (await (.projGetCrsInfoListFromDatabase
+                                     proj
+                                     (clj->js {:context ctx :auth_name "EPSG"})))]
+                 (is (some? entries) "Should return a non-nil result")
+                 (is (> (.-length entries) 1000)
+                     "EPSG should have >1000 CRS entries"))))))
 
-(deftest get-units-from-database-test
+(deftest ^:async get-units-from-database-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-get-units-from-database returns unit entries"
-        (let [entries (proj/proj-get-units-from-database {:context ctx :auth-name "EPSG" :category "linear" :allow-deprecated 0})]
-          (is (coll? entries) "Result should be a collection")
+        (let [entries (await (proj/proj-get-units-from-database
+                              {:context ctx :auth-name "EPSG" :category "linear" :allow-deprecated 0}))]
+          (is (some? entries) "Result should be non-nil")
           (is (pos? (count entries)) "Should have unit entries")
           (let [meter (first (filter #(= "9001" (:code %)) entries))]
             (is (some? meter) "Should contain EPSG:9001 (metre)")
-            (is (= "EPSG" (:auth-name meter)))
+            (is (= "EPSG" (prop meter :auth-name)))
             (is (string? (:name meter)))
-            (is (number? (:conv-factor meter)))
+            (is (number? (prop meter :conv-factor)))
             (is (= false (:deprecated meter))))
           (let [us-foot (first (filter #(= "9003" (:code %)) entries))]
             (is (some? us-foot) "Should contain EPSG:9003 (US survey foot)")
-            (is (= "EPSG" (:auth-name us-foot)))
-            (is (< 0.3 (:conv-factor us-foot) 0.4) "US survey foot conv-factor ~0.3048")))))))
+            (is (= "EPSG" (prop us-foot :auth-name)))
+            (is (< 0.3 (prop us-foot :conv-factor) 0.4) "US survey foot conv-factor ~0.3048")))))))
 
-(deftest get-celestial-body-list-from-database-test
+(deftest ^:async get-celestial-body-list-from-database-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-get-celestial-body-list-from-database returns celestial bodies"
-        (let [entries (proj/proj-get-celestial-body-list-from-database {:context ctx :auth-name ""})]
-          (is (coll? entries) "Result should be a collection")
+        (let [entries (await (proj/proj-get-celestial-body-list-from-database {:context ctx :auth-name ""}))]
+          (is (some? entries) "Result should be non-nil")
           (is (pos? (count entries)) "Should have celestial body entries")
           (let [earth (first (filter #(= "Earth" (:name %)) entries))]
             (is (some? earth) "Should contain Earth")
-            (is (string? (:auth-name earth)))))))))
+            (is (string? (prop earth :auth-name)))))))))
 
-(deftest initialization-test
+(deftest ^:async initialization-test
   (with-each-implementation
     (testing "Library initialization and implementation setting"
-      ;; Force initialization if needed
-      (when (nil? @proj/implementation)
-        (proj/init!))
-      ;; Now check implementation
-      (is (not (nil? @proj/implementation))
+      ;; JVM inits as :ffi or :graal. CLJS self-detects :node or
+      ;; :browser.
+      (is (some? @proj/implementation)
           "Implementation should not be nil after initialization")
-      (is (#{:ffi :graal :cljs} @proj/implementation)
-          "Should have a valid implementation"))))
+      (is (#{:ffi :graal :cljs :node :browser} @proj/implementation)
+          "Should be a recognized runtime impl"))))
 
-(deftest context-creation-test
-  (with-each-implementation
-    (testing "Context creation returns valid atom with expected structure"
-      (let [ctx (proj/context-create)]
-        (is (instance? clojure.lang.Atom ctx) "Context should be an atom")
-        (is (map? @ctx) "Context should deref to a map")
-        (is (contains? @ctx :ptr) "Context should contain :ptr key")
-        (is (contains? @ctx :op) "Context should contain :op key")
-        (is (number? (:op @ctx)) "Op counter should be a number")))))
+(deftest ^:async context-creation-test
+  #?(:clj  (with-each-implementation
+             (testing "Context creation returns valid atom with expected structure"
+               (let [ctx (proj/context-create)]
+                 (is (instance? clojure.lang.Atom ctx) "Context should be an atom")
+                 (is (map? @ctx) "Context should deref to a map")
+                 (is (contains? @ctx :ptr) "Context should contain :ptr key")
+                 (is (contains? @ctx :op) "Context should contain :op key")
+                 (is (number? (:op @ctx)) "Op counter should be a number"))))
+     :cljs (do
+             (await (ensure-init!))
+             (testing "Context creation (cljs): returns a plain immutable object, not an atom"
+               (let [ctx (await (.contextCreate proj))]
+                 (is (some? ctx) "Context should be non-nil"))))))
 
-(deftest coord-array-creation-test
+(deftest ^:async coord-array-creation-test
   (with-each-implementation
     (testing "Coordinate array creation and manipulation"
       (let [n-coords 3
             dims 2
             arr (proj/coord-array n-coords dims)]
         (is (not (nil? arr)) "Coordinate array should not be nil")
-        ;; Set some test coordinates
         (let [test-coords [[1.0 2.0] [3.0 4.0] [5.0 6.0]]]
           (proj/set-coords! arr test-coords)
-          ;; Just verify set-coords! didn't throw
           (is true "set-coords! completed without error"))))))
 
 #?(:clj
-   (deftest coord-array-roundtrip-test
+   (deftest ^:async coord-array-roundtrip-test
      (with-each-implementation
        (testing "set-coords!/get-coords roundtrip verification"
          (let [arr (proj/coord-array 1)]
            (is (not (nil? arr)) "Coordinate array should not be nil")
-           ;; Set coordinates with all 4 dimensions
            (proj/set-coords! arr [[42.3603222 -71.0579667 100.0 0.0]])
-           ;; Read back and verify
            (let [[x y z t] (proj/get-coords arr 0)]
              (is (< (Math/abs (- x 42.3603222)) 0.0001)
                  (str "X should be 42.3603222, got " x))
@@ -210,7 +260,7 @@
                  (str "T should be 0.0, got " t))))))))
 
 #?(:clj
-   (deftest coord-to-coord-array-test
+   (deftest ^:async coord-to-coord-array-test
      (with-each-implementation
        (testing "coord->coord-array creates a 1-element coord array from a single coordinate"
          (let [ca (proj/coord->coord-array [42.3603222 -71.0579667 100.0 0.0])]
@@ -226,7 +276,7 @@
                  (str "T should be 0.0, got " t))))))))
 
 #?(:clj
-   (deftest transformation-modifies-coords-test
+   (deftest ^:async transformation-modifies-coords-test
      (with-each-implementation
        (with-test-context [ctx]
          (testing "proj-trans-array should modify coordinates in place"
@@ -236,181 +286,201 @@
                       :target_crs "EPSG:2249"})
                  coords (proj/coord-array 1)]
              (is (some? tx) "Transformer should be created")
-             ;; Set input coordinates
              (proj/set-coords! coords [[42.3603222 -71.0579667 0 0]])
-             ;; Verify input was set correctly
              (let [[x-before y-before _ _] (proj/get-coords coords 0)]
                (is (< (Math/abs (- x-before 42.3603222)) 0.0001)
                    (str "Before transform: X should be 42.3603222, got " x-before))
-               ;; Transform
                (let [result (proj/proj-trans-array {:p tx :direction 1 :n 1 :coord coords})]
                  (is (or (nil? result) (= 0 result))
                      (str "Transform should succeed, got " result))
-                 ;; Read after transformation
                  (let [[x-after y-after _ _] (proj/get-coords coords 0)]
                    (is (not= x-before x-after)
                        (str "X should have changed! Before: " x-before ", After: " x-after))
                    (is (not= y-before y-after)
                        (str "Y should have changed! Before: " y-before ", After: " y-after))
-                   ;; Expected MA State Plane values
                    (is (< 775000 x-after 776000)
                        (str "X should be ~775,200 feet, got " x-after))
                    (is (< 2956000 y-after 2957000)
                        (str "Y should be ~2,956,400 feet, got " y-after)))))))))))
 
-(deftest authority-list-extended-test
+#?(:clj
+   (deftest ^:async short-coords-pad-test
+     (with-each-implementation
+       (testing "set-coords! pads a short coordinate with zeros"
+         ;; A short coordinate broke the two backends differently. The
+         ;; tensor path threw IndexOutOfBoundsException. The WASM path
+         ;; wrote the next coordinate's values into the previous one's z
+         ;; and t slots and left the last coordinate at zero, with no
+         ;; error. PROJ.setCoords pads the same way on the Java side.
+         (let [short-ca (proj/coord-array 2)
+               full-ca (proj/coord-array 2)]
+           (proj/set-coords! short-ca [[42.3603222 -71.0579667]
+                                       [40.7127 -74.0059]])
+           (proj/set-coords! full-ca [[42.3603222 -71.0579667 0 0]
+                                      [40.7127 -74.0059 0 0]])
+           (is (= (proj/get-coords full-ca 0) (proj/get-coords short-ca 0))
+               "Row 0 should match the four-value form")
+           (is (= (proj/get-coords full-ca 1) (proj/get-coords short-ca 1))
+               "Row 1 should match the four-value form, not stay at zero")
+           (let [[_ _ z t] (proj/get-coords short-ca 0)]
+             (is (zero? z) "Row 0 z should be a zero pad, not row 1's x")
+             (is (zero? t) "Row 0 t should be a zero pad, not row 1's y")))))))
+
+(deftest ^:async authority-list-extended-test
   (with-each-implementation
     (testing "Authority list contains expected authorities"
-      (let [authorities (proj/proj-get-authorities-from-database)]
-        (is (coll? authorities) "Should return a collection")
+      (let [authorities (await (proj/proj-get-authorities-from-database))]
+        (is (some? authorities) "Should return a non-nil result")
         (is (>= (count authorities) 8) "Should have at least 8 authorities")
-        ;; Check for specific expected authorities
         (is (some #{"EPSG"} authorities) "Should contain EPSG")
         (is (some #{"ESRI"} authorities) "Should contain ESRI")
         (is (some #{"PROJ"} authorities) "Should contain PROJ")
         (is (some #{"OGC"} authorities) "Should contain OGC")))))
 
-;; Object Inspection tests
-
-(deftest get-name-test
+(deftest ^:async get-name-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-get-name returns the name of a CRS"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
+        (let [crs (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))]
           (is (some? crs))
-          (is (= "WGS 84" (proj/proj-get-name {:obj crs}))))))))
+          (is (= "WGS 84" (await (proj/proj-get-name {:obj crs})))))))))
 
-(deftest get-type-test
+(deftest ^:async get-type-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-get-type returns a PJ_TYPE integer"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
+        (let [crs (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))]
           (is (some? crs))
-          (let [t (proj/proj-get-type {:obj crs})]
+          (let [t (await (proj/proj-get-type {:obj crs}))]
             (is (number? t))
             (is (= 12 t) "EPSG:4326 should be PJ_TYPE_GEOGRAPHIC_2D_CRS (12)")))))))
 
-(deftest is-deprecated-test
+(deftest ^:async is-deprecated-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-is-deprecated returns 0 for non-deprecated CRS"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
-          (is (= 0 (proj/proj-is-deprecated {:obj crs}))))))))
+        (let [crs (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))]
+          (is (= 0 (await (proj/proj-is-deprecated {:obj crs})))))))))
 
-(deftest as-wkt-test
+(deftest ^:async as-wkt-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-as-wkt returns a WKT string"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-              wkt (proj/proj-as-wkt {:context ctx :pj crs})]
+        (let [crs (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+              wkt (await (proj/proj-as-wkt {:context ctx :pj crs}))]
           (is (string? wkt))
           (is (> (count wkt) 100) "WKT should be a substantial string")
           (is (re-find #"WGS 84" wkt) "WKT should mention WGS 84"))))))
 
-(deftest as-proj-json-test
+(deftest ^:async as-proj-json-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-as-projjson returns a PROJJSON string"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-              json (proj/proj-as-projjson {:context ctx :pj crs})]
+        (let [crs  (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+              json (await (proj/proj-as-projjson {:context ctx :pj crs}))]
           (is (string? json))
           (is (re-find #"GeographicCRS" json) "PROJJSON should contain type"))))))
 
-(deftest as-proj-string-test
+(deftest ^:async as-proj-string-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-as-proj-string returns a PROJ string"
-        (let [tx (proj/proj-create-crs-to-crs {:context ctx :source-crs "EPSG:4326" :target-crs "EPSG:3857"})
-              s (proj/proj-as-proj-string {:context ctx :pj tx :type 0})]
+        (let [tx (await (proj/proj-create-crs-to-crs {:context ctx :source-crs "EPSG:4326" :target-crs "EPSG:3857"}))
+              s  (await (proj/proj-as-proj-string {:context ctx :pj tx :type 0}))]
           (is (string? s))
           (is (re-find #"proj" s) "PROJ string should contain proj keyword"))))))
 
-(deftest concatenated-operation-not-exportable-test
+(deftest ^:async concatenated-operation-not-exportable-test
+  ;; A 4326->2249 transform is a concatenated operation. PROJ cannot
+  ;; export it and sets errno=4096 (PROJ_ERR_OTHER), which the
+  ;; errno-check raises.
   (with-each-implementation
     (with-test-context [ctx]
-      (let [tx (proj/proj-create-crs-to-crs {:context ctx :source-crs "EPSG:4326" :target-crs "EPSG:2249"})]
-        (testing "proj-as-proj-string returns nil/empty for concatenated operation"
-          (let [s (proj/proj-as-proj-string {:context ctx :pj tx :type 0})]
-            (is (or (nil? s) (= "" s)))))
-        (testing "proj-as-wkt returns nil for concatenated operation"
-          (let [w (proj/proj-as-wkt {:context ctx :pj tx})]
-            (is (nil? w))))
-        (testing "proj-as-projjson returns nil for concatenated operation"
-          (let [j (proj/proj-as-projjson {:context ctx :pj tx})]
-            (is (nil? j))))))))
+      (let [tx (await (proj/proj-create-crs-to-crs {:context ctx :source-crs "EPSG:4326" :target-crs "EPSG:2249"}))]
+        (testing "proj-as-proj-string raises for non-exportable concatenated operation"
+          (is (thrown? #?(:clj Exception :cljs js/Error)
+                       (await (proj/proj-as-proj-string {:context ctx :pj tx :type 0})))))
+        (testing "proj-as-wkt raises for non-exportable concatenated operation"
+          (is (thrown? #?(:clj Exception :cljs js/Error)
+                       (await (proj/proj-as-wkt {:context ctx :pj tx})))))
+        (testing "proj-as-projjson raises for non-exportable concatenated operation"
+          (is (thrown? #?(:clj Exception :cljs js/Error)
+                       (await (proj/proj-as-projjson {:context ctx :pj tx})))))))))
 
-(deftest coordoperation-proj-string-test
+(deftest ^:async coordoperation-proj-string-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "Coordoperation extracted from projected CRS is exportable"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"})
-              coordop (proj/proj-crs-get-coordoperation {:ctx ctx :crs crs})
-              s (proj/proj-as-proj-string {:context ctx :pj coordop :type 0})]
+        (let [crs     (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"}))
+              coordop (await (proj/proj-crs-get-coordoperation {:ctx ctx :crs crs}))
+              s       (await (proj/proj-as-proj-string {:context ctx :pj coordop :type 0}))]
           (is (string? s))
           (is (> (count s) 0) "Coordoperation PROJ string should not be empty")
           (is (re-find #"proj=lcc" s) "EPSG:2249 uses Lambert Conic Conformal"))))))
 
-(deftest get-source-target-crs-test
+(deftest ^:async get-source-target-crs-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-get-source-crs and proj-get-target-crs return CRS objects"
-        (let [tx (proj/proj-create-crs-to-crs {:context ctx :source-crs "EPSG:4326" :target-crs "EPSG:2249"})
-              src (proj/proj-get-source-crs {:context ctx :pj tx})
-              tgt (proj/proj-get-target-crs {:context ctx :pj tx})]
+        (let [tx       (await (proj/proj-create-crs-to-crs {:context ctx :source-crs "EPSG:4326" :target-crs "EPSG:2249"}))
+              src      (await (proj/proj-get-source-crs {:context ctx :pj tx}))
+              tgt      (await (proj/proj-get-target-crs {:context ctx :pj tx}))
+              src-name (await (proj/proj-get-name {:obj src}))
+              tgt-name (await (proj/proj-get-name {:obj tgt}))]
           (is (some? src) "Should return source CRS")
           (is (some? tgt) "Should return target CRS")
-          (is (= "WGS 84" (proj/proj-get-name {:obj src})))
-          (is (re-find #"Massachusetts" (proj/proj-get-name {:obj tgt}))))))))
+          (is (= "WGS 84" src-name))
+          (is (re-find #"Massachusetts" tgt-name)))))))
 
-;; CRS Decomposition tests
-
-(deftest get-geodetic-crs-test
+(deftest ^:async get-geodetic-crs-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-crs-get-geodetic-crs extracts the geodetic CRS"
-        (let [projected (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"})
-              geodetic (proj/proj-crs-get-geodetic-crs {:ctx ctx :crs projected})]
+        (let [projected (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"}))
+              geodetic  (await (proj/proj-crs-get-geodetic-crs {:ctx ctx :crs projected}))
+              name      (await (proj/proj-get-name {:obj geodetic}))]
           (is (some? geodetic))
-          (is (re-find #"NAD83" (proj/proj-get-name {:obj geodetic}))))))))
+          (is (re-find #"NAD83" name)))))))
 
-(deftest get-coordinate-system-test
+(deftest ^:async get-coordinate-system-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-crs-get-coordinate-system returns a CS object"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-              cs (proj/proj-crs-get-coordinate-system {:ctx ctx :crs crs})]
+        (let [crs (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+              cs  (await (proj/proj-crs-get-coordinate-system {:ctx ctx :crs crs}))]
           (is (some? cs) "Should return a coordinate system"))))))
 
-(deftest get-axis-count-test
+(deftest ^:async get-axis-count-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-cs-get-axis-count returns axis count"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-              cs (proj/proj-crs-get-coordinate-system {:ctx ctx :crs crs})
-              count (proj/proj-cs-get-axis-count {:ctx ctx :cs cs})]
+        (let [crs   (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+              cs    (await (proj/proj-crs-get-coordinate-system {:ctx ctx :crs crs}))
+              count (await (proj/proj-cs-get-axis-count {:ctx ctx :cs cs}))]
           (is (= 2 count) "EPSG:4326 should have 2 axes"))))))
 
-(deftest get-ellipsoid-test
+(deftest ^:async get-ellipsoid-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-get-ellipsoid returns the ellipsoid"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-              ellipsoid (proj/proj-get-ellipsoid {:ctx ctx :obj crs})]
+        (let [crs       (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+              ellipsoid (await (proj/proj-get-ellipsoid {:ctx ctx :obj crs}))
+              name      (await (proj/proj-get-name {:obj ellipsoid}))]
           (is (some? ellipsoid))
-          (is (= "WGS 84" (proj/proj-get-name {:obj ellipsoid}))))))))
+          (is (= "WGS 84" name)))))))
 
-(deftest get-datum-test
+(deftest ^:async get-datum-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-crs-get-datum-forced returns the datum for WGS 84"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-              datum (proj/proj-crs-get-datum-forced {:ctx ctx :crs crs})]
+        (let [crs   (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+              datum (await (proj/proj-crs-get-datum-forced {:ctx ctx :crs crs}))
+              name  (await (proj/proj-get-name {:obj datum}))]
           (is (some? datum))
-          (is (re-find #"World Geodetic System 1984"
-                       (proj/proj-get-name {:obj datum}))))))))
+          (is (re-find #"World Geodetic System 1984" name)))))))
 
 #?(:clj
-   (deftest promote-demote-3d-test
+   (deftest ^:async promote-demote-3d-test
      (with-each-implementation
        (with-test-context [ctx]
          (testing "proj-crs-promote-to-3D and proj-crs-demote-to-2D roundtrip"
@@ -424,69 +494,64 @@
                (is (= 3 (proj/proj-cs-get-axis-count {:ctx ctx :cs cs-3d})))
                (is (= 2 (proj/proj-cs-get-axis-count {:ctx ctx :cs cs-2d}))))))))))
 
-;; Operation Factory tests
-
-(deftest create-operations-test
+(deftest ^:async create-operations-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "operation factory finds operations between CRS"
-        (let [src (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-              tgt (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"})
-              ofc (proj/proj-create-operation-factory-context {:context ctx})
-              ops (proj/proj-create-operations {:context ctx :source_crs src :target_crs tgt :operationContext ofc})]
+        (let [src   (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+              tgt   (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"}))
+              ofc   (await (proj/proj-create-operation-factory-context {:context ctx}))
+              ops   (await (proj/proj-create-operations {:context ctx :source_crs src :target_crs tgt :operationContext ofc}))
+              count (await (proj/proj-list-get-count {:result ops}))]
           (is (some? ofc) "Should create operation factory context")
           (is (some? ops) "Should find operations")
-          (let [count (proj/proj-list-get-count {:result ops})]
-            (is (pos? count) "Should find at least one operation")))))))
+          (is (pos? count) "Should find at least one operation"))))))
 
-(deftest normalize-for-visualization-test
+(deftest ^:async normalize-for-visualization-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-normalize-for-visualization returns a normalized CRS"
-        (let [tx (proj/proj-create-crs-to-crs {:context ctx :source-crs "EPSG:4326" :target-crs "EPSG:3857"})
-              normalized (proj/proj-normalize-for-visualization {:context ctx :obj tx})]
+        (let [tx         (await (proj/proj-create-crs-to-crs {:context ctx :source-crs "EPSG:4326" :target-crs "EPSG:3857"}))
+              normalized (await (proj/proj-normalize-for-visualization {:context ctx :obj tx}))]
           (is (some? normalized) "Should return a normalized transformation"))))))
 
-(deftest create-from-wkt-test
+(deftest ^:async create-from-wkt-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-create-from-wkt creates a CRS from WKT"
-        (let [crs-orig (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-              wkt (proj/proj-as-wkt {:context ctx :pj crs-orig})
-              crs-wkt (proj/proj-create-from-wkt {:context ctx :wkt wkt})]
+        (let [crs-orig (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+              wkt      (await (proj/proj-as-wkt {:context ctx :pj crs-orig}))
+              crs-wkt  (await (proj/proj-create-from-wkt {:context ctx :wkt wkt}))
+              name     (await (proj/proj-get-name {:obj crs-wkt}))]
           (is (some? crs-wkt) "Should create CRS from WKT")
-          (is (= "WGS 84" (proj/proj-get-name {:obj crs-wkt}))))))))
+          (is (= "WGS 84" name)))))))
 
-(deftest create-test
+(deftest ^:async create-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-create with PROJ string"
-        (let [pj (proj/proj-create {:context ctx :definition "+proj=robin"})]
+        (let [pj (await (proj/proj-create {:context ctx :definition "+proj=robin"}))]
           (is (some? pj))))
       (testing "proj-create with EPSG code"
-        (let [pj (proj/proj-create {:context ctx :definition "EPSG:4326"})]
+        (let [pj   (await (proj/proj-create {:context ctx :definition "EPSG:4326"}))
+              name (await (proj/proj-get-name {:obj pj}))]
           (is (some? pj))
-          (is (= "WGS 84" (proj/proj-get-name {:obj pj})))))
+          (is (= "WGS 84" name))))
       (testing "proj-create with pipeline"
-        (let [pj (proj/proj-create {:context ctx
-                                    :definition "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=robin"})]
+        (let [pj (await (proj/proj-create {:context ctx
+                                           :definition "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=robin"}))]
           (is (some? pj)))))))
 
-;; QueryImplementation test
-
-(deftest query-implementation-test
+(deftest ^:async query-implementation-test
   (with-each-implementation
     (testing "Implementation predicates reflect current state"
-      (let [impl @proj/implementation]
-        (case impl
-          :ffi (do (is (proj/ffi?)) (is (not (proj/graal?))))
-          :graal (do (is (proj/graal?)) (is (not (proj/ffi?))))
-          (is true "CLJS implementation"))))))
-
-;; SetCoord / SetColumn tests (JVM only)
+      ;; proj/ffi? and proj/graal? are JVM-only, so assert the
+      ;; runtime keyword directly.
+      (is (#{:ffi :graal :cljs :node :browser} @proj/implementation)
+          "Implementation should be one of the known runtime keys"))))
 
 #?(:clj
-   (deftest set-coord-test
+   (deftest ^:async set-coord-test
      (with-each-implementation
        (when (proj/ffi?)
          (testing "set-coord! sets a single coordinate at an index"
@@ -500,7 +565,7 @@
                (is (< (Math/abs (- t 40.0)) 0.001)))))))))
 
 #?(:clj
-   (deftest set-column-test
+   (deftest ^:async set-column-test
      (with-each-implementation
        (when (proj/ffi?)
          (testing "set-col! and convenience wrappers set coordinate columns"
@@ -518,111 +583,88 @@
                (is (< (Math/abs (- y1 5.0)) 0.001))
                (is (< (Math/abs (- y2 6.0)) 0.001)))))))))
 
- ;; Tests documenting known issues - these currently fail but document expected behavior
-
-(deftest crs-without-context-test
+(deftest ^:async crs-without-context-test
   (with-each-implementation
     (testing "CRS transformation without explicit context should auto-create one"
-      (let [transformer (proj/proj-create-crs-to-crs
-                         {:source_crs "EPSG:4326"
-                          :target_crs "EPSG:3857"})]
+      (let [transformer (await (proj/proj-create-crs-to-crs
+                                {:source_crs "EPSG:4326"
+                                 :target_crs "EPSG:3857"}))]
         (is (some? transformer) "Transformer should be created without explicit context")
         (when transformer
           (let [coords (proj/coord-array 1)]
             (proj/set-coords! coords [[42.3603 -71.0591 0 0]])
-            (proj/proj-trans-array {:p transformer :direction 1 :n 1 :coord coords})
+            (await (proj/proj-trans-array {:p transformer :direction 1 :n 1 :coord coords}))
             #?(:clj
-               (let [[x y _ _] (proj/get-coords coords 0)]
+               (let [[x _ _ _] (proj/get-coords coords 0)]
                  (is (> (Math/abs x) 1000)
                      (str "Transformed X should be large (Web Mercator), got " x)))
                :cljs
-               (is true "CLJS coord check deferred"))))))))
+               (is true "CLJS coord check not implemented"))))))))
 
-(deftest authorities-without-context-test
+(deftest ^:async authorities-without-context-test
   (with-each-implementation
     (testing "get-authorities-from-database without explicit context"
-      (let [authorities (proj/proj-get-authorities-from-database {})]
-        (is (coll? authorities) "Should return a collection without context")
+      (let [authorities (await (proj/proj-get-authorities-from-database {}))]
+        (is (some? authorities) "Should return non-nil without context")
         (is (some #{"EPSG"} authorities) "Should contain EPSG")))))
 
-(deftest create-from-database-without-context-test
+(deftest ^:async create-from-database-without-context-test
   (with-each-implementation
     (testing "proj-create-from-database without explicit context"
-      (let [crs (proj/proj-create-from-database {:auth_name "EPSG" :code "4326"})]
+      (let [crs (await (proj/proj-create-from-database {:auth_name "EPSG" :code "4326"}))]
         (is (some? crs) "CRS should be created without explicit context")))))
 
-(deftest parameter-naming-convention-test
+(deftest ^:async parameter-naming-convention-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "Both underscore and hyphenated parameter names should work"
-        ;; Test hyphenated parameter names (idiomatic Clojure)
-        (let [result-hyphens (proj/proj-create-crs-to-crs {:context ctx
-                                                           :source-crs "EPSG:4326"
-                                                           :target-crs "EPSG:2249"})]
-          (is (some? result-hyphens) "Hyphenated parameters should work and return a valid transformer"))
-
-        ;; Test underscore parameter names (matching C API)
-        (let [result-underscores (proj/proj-create-crs-to-crs {:context ctx
-                                                               :source_crs "EPSG:4326"
-                                                               :target_crs "EPSG:2249"})]
-          (is (some? result-underscores) "Underscore parameters should also work and return a valid transformer"))
-
-        ;; Test that both produce equivalent results
-        (let [transformer-hyphens (proj/proj-create-crs-to-crs {:context ctx
-                                                                :source-crs "EPSG:4326"
-                                                                :target-crs "EPSG:2249"})
-              transformer-underscores (proj/proj-create-crs-to-crs {:context ctx
-                                                                    :source_crs "EPSG:4326"
-                                                                    :target_crs "EPSG:2249"})]
-          (is (and (some? transformer-hyphens) (some? transformer-underscores))
+        (let [result-hyphens     (await (proj/proj-create-crs-to-crs {:context ctx
+                                                                      :source-crs "EPSG:4326"
+                                                                      :target-crs "EPSG:2249"}))
+              result-underscores (await (proj/proj-create-crs-to-crs {:context ctx
+                                                                      :source_crs "EPSG:4326"
+                                                                      :target_crs "EPSG:2249"}))]
+          (is (some? result-hyphens) "Hyphenated parameters should work and return a valid transformer")
+          (is (some? result-underscores) "Underscore parameters should also work and return a valid transformer")
+          (is (and (some? result-hyphens) (some? result-underscores))
               "Both naming conventions should produce valid transformers"))))))
 
-(deftest crs-creation-nil-test
+(deftest ^:async crs-creation-nil-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "CRS to CRS transformation creation should create a pointer"
-        (let [transform (proj/proj-create-crs-to-crs {:context ctx
-                                                      :source_crs "EPSG:4326"
-                                                      :target_crs "EPSG:2249"})]
-          ;; When fixed, should be:
+        (let [transform (await (proj/proj-create-crs-to-crs {:context ctx
+                                                             :source_crs "EPSG:4326"
+                                                             :target_crs "EPSG:2249"}))]
           (is (not (nil? transform)) "Transform should not be nil"))))))
-          ;; not a thing... (is (resource/tracked? transform) "Transform should be resource tracked")
 
-(deftest database-codes-error-test
+(deftest ^:async database-codes-error-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "Database code retrieval with underscores"
-        ;; This used to fail in REPL but works in test suite
-        (let [codes (proj/proj-get-codes-from-database {:context ctx
-                                                        :auth_name "EPSG"})]
-          (is (coll? codes) "Should return collection")
+        (let [codes (await (proj/proj-get-codes-from-database {:context ctx
+                                                               :auth_name "EPSG"}))]
+          (is (some? codes) "Should return non-nil")
           (is (> (count codes) 1000) "EPSG should have thousands of codes"))))))
 
- ;; Tests for transformation functionality (currently blocked by CRS creation issues)
-
-;; Tests for transformation functionality (currently blocked by CRS creation issues)
-
-(deftest single-coordinate-transform-test
+(deftest ^:async single-coordinate-transform-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "Single coordinate transformation"
-        (let [transformer (proj/proj-create-crs-to-crs
-                           {:context ctx
-                            :source_crs "EPSG:4326"
-                            :target_crs "EPSG:2249"})
+        (let [transformer (await (proj/proj-create-crs-to-crs
+                                  {:context ctx
+                                   :source_crs "EPSG:4326"
+                                   :target_crs "EPSG:2249"}))
               coord-array (proj/coord-array 1)]
           (is (not (nil? transformer)) "Transformer should not be nil")
-          ;; Set Boston City Hall coordinates
           (proj/set-coords! coord-array [[42.3603222 -71.0579667 0 0]])
-          ;; Transform
-          (let [result (proj/proj-trans-array
-                        {:p transformer
-                         :direction 1 ; PJ_FWD
-                         :n 1
-                         :coord coord-array})]
-            ;; Check the transform completed - GraalVM may return nil or 0
+          (let [result (await (proj/proj-trans-array
+                               {:p transformer
+                                :direction 1 ; PJ_FWD
+                                :n 1
+                                :coord coord-array}))]
+            ;; GraalVM returns nil or 0 on success.
             (is (or (nil? result) (= 0 result)) "Transform should succeed")
-            ;; Check transformed coordinates are reasonable
             #?(:clj
                (if (map? coord-array)
                  ;; GraalVM mode - coord-array is a map with :array
@@ -630,46 +672,45 @@
                    (when arr
                      (let [x (.asDouble (.getArrayElement arr 0))
                            y (.asDouble (.getArrayElement arr 1))]
-                       ;; GraalVM seems to not transform correctly, just check we got numbers
+                       ;; The GraalVM path does not transform
+                       ;; correctly here, so only assert numbers.
                        (is (number? x) "X should be a number")
                        (is (number? y) "Y should be a number"))))
                  ;; FFI mode - coord-array is a tensor
                  (let [x (get-in coord-array [0 0])
                        y (get-in coord-array [0 1])]
-                   ;; Boston City Hall in MA State Plane should be around X: 775,200 feet, Y: 2,956,400 feet
+                   ;; Boston City Hall in MA State Plane: X ~775,200 ft, Y ~2,956,400 ft
                    (is (< 775000 x 776000) "X coordinate should be around 775,200 feet")
                    (is (< 2956000 y 2957000) "Y coordinate should be around 2,956,400 feet")))
                :cljs
                (is true "Coordinate access differs in CLJS - test passed"))))))))
 
-(deftest array-transformation-test
+(deftest ^:async array-transformation-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "Array coordinate transformation with multiple points"
-        (let [transformer (proj/proj-create-crs-to-crs
-                           {:context ctx
-                            :source_crs "EPSG:4326"
-                            :target_crs "EPSG:2249"})
-              coord-array (proj/coord-array 2)] ; 2 coordinates
+        (let [transformer (await (proj/proj-create-crs-to-crs
+                                  {:context ctx
+                                   :source_crs "EPSG:4326"
+                                   :target_crs "EPSG:2249"}))
+              coord-array (proj/coord-array 2)]
           (is (not (nil? transformer)) "Transformer should not be nil")
-          ;; Set multiple coordinates (EPSG:4326 uses lat/lon order)
           (proj/set-coords! coord-array [[42.3603222 -71.0579667 0 0] ; Boston City Hall
                                          [42.3601 -71.0598 0 0]]) ; Boston Common
-          ;; Transform all at once
-          (let [result (proj/proj-trans-array
-                        {:p transformer
-                         :direction 1 ; PJ_FWD
-                         :n 2
-                         :coord coord-array})]
-            ;; Check the transform completed - GraalVM may return nil or 0
+          (let [result (await (proj/proj-trans-array
+                               {:p transformer
+                                :direction 1 ; PJ_FWD
+                                :n 2
+                                :coord coord-array}))]
+            ;; GraalVM returns nil or 0 on success.
             (is (or (nil? result) (= 0 result)) "Transform should succeed")
-            ;; Check transformed coordinates are reasonable
             #?(:clj
                (if (map? coord-array)
                  ;; GraalVM mode - coord-array is a map with :array
                  (let [arr (:array coord-array)]
                    (when arr
-                     ;; Just check we can access the values
+                     ;; The GraalVM path does not transform correctly
+                     ;; here, so only assert numbers.
                      (is (number? (.asDouble (.getArrayElement arr 0))) "First X should be a number")
                      (is (number? (.asDouble (.getArrayElement arr 1))) "First Y should be a number")))
                  ;; FFI mode - coord-array is a tensor
@@ -683,128 +724,96 @@
                :cljs
                (is true "Coordinate access differs in CLJS - test passed"))))))))
 
- ;; Resource management tests
+;; JVM-only. CLJS resource cleanup tests are in
+;; resource_tracking_test.cljc.
+#?(:clj
+   (deftest ^:async resource-tracking-test
+     (with-each-implementation
+       (testing "Resources are cleaned up in stack contexts"
+         (let [cleanup-called (atom #{})
+               orig proj/call-native]
+        ;; call-native is the single dispatch leaf for the two backends.
+           (with-redefs [proj/call-native
+                         (fn [fn-key & more]
+                           (if (#{:proj_destroy :proj_list_destroy
+                                  :proj_context_destroy :proj_string_list_destroy
+                                  :proj_crs_info_list_destroy :proj_unit_list_destroy} fn-key)
+                             (do
+                               (swap! cleanup-called conj fn-key)
+                               nil)
+                             (apply orig fn-key more)))]
+             (when (nil? @proj/implementation)
+               (proj/init!))
 
-(deftest resource-tracking-test
-  (with-each-implementation
-    (testing "Resources are cleaned up in stack contexts"
-      ;; Clojure - use tech.v3.resource/stack-resource-context
-      (let [cleanup-called (atom #{})
-            ;; Store original functions
-            orig-call-ffi-fn proj/call-ffi-fn
-            orig-call-graal-fn proj/call-graal-fn]
-        ;; Track what gets cleaned up by intercepting destroy calls
-        (with-redefs [proj/call-ffi-fn
-                      (fn [fn-key args]
-                        (if (#{:proj_destroy :proj_list_destroy
-                               :proj_context_destroy :proj_string_list_destroy
-                               :proj_crs_info_list_destroy :proj_unit_list_destroy} fn-key)
-                          (do
-                            (swap! cleanup-called conj fn-key)
-                            ;; For destroy functions, just return success
-                            nil)
-                          ;; For non-destroy functions, call the original
-                          (orig-call-ffi-fn fn-key args)))
-                      proj/call-graal-fn
-                      (fn [fn-key fn-def args]
-                        (if (#{:proj_destroy :proj_list_destroy
-                               :proj_context_destroy :proj_string_list_destroy
-                               :proj_crs_info_list_destroy :proj_unit_list_destroy} fn-key)
-                          (do
-                            (swap! cleanup-called conj fn-key)
-                            ;; For destroy functions, just return success
-                            nil)
-                          ;; For non-destroy functions, call the original
-                          (orig-call-graal-fn fn-key fn-def args)))]
-          ;; Ensure we're initialized
-          (when (nil? @proj/implementation)
-            (proj/init!))
+             (resource/stack-resource-context
+              (let [ctx (proj/context-create)]
+                (is (some? ctx) "Context should be created")
+                (let [crs-4326 (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
+                  (is (some? crs-4326) "Should create CRS from database for EPSG:4326"))
+                (let [crs-3857 (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "3857"})]
+                  (is (some? crs-3857) "Should create CRS from database for EPSG:3857"))
+                (let [authorities (proj/proj-get-authorities-from-database {:context ctx})]
+                  (is (coll? authorities) "Should get authorities from database"))))
 
-          (resource/stack-resource-context
-           ;; Create various resources that should be auto-cleaned
-           (let [ctx (proj/context-create)]
-             (is (some? ctx) "Context should be created")
-             (let [crs-4326 (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
-               (is (some? crs-4326) "Should create CRS from database for EPSG:4326"))
-             (let [crs-3857 (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "3857"})]
-               (is (some? crs-3857) "Should create CRS from database for EPSG:3857"))
-             ;; This should work and return a string list
-             (let [authorities (proj/proj-get-authorities-from-database {:context ctx})]
-               (is (coll? authorities) "Should get authorities from database"))))
+             (is (pos? (count @cleanup-called))
+                 (str "Some cleanup functions should have been called. Called: " @cleanup-called))))))))
 
-          ;; After leaving context, check cleanup was called
-          ;; We should see at least some cleanup calls
-          (is (pos? (count @cleanup-called))
-              (str "Some cleanup functions should have been called. Called: " @cleanup-called)))))))
-
-;; Error handling tests
-
-(deftest invalid-crs-error-test
+(deftest ^:async invalid-crs-error-test
   (with-each-implementation
     (with-test-context [ctx]
-      (testing "Invalid CRS codes should handle gracefully"
-        (let [result (proj/proj-create-crs-to-crs {:context ctx
-                                                   :source_crs "INVALID:9999"
-                                                   :target_crs "EPSG:4326"})]
-          ;; Currently returns nil, which is acceptable error handling
-          (is (nil? result) "Invalid CRS should return nil"))))))
+      (testing "Invalid CRS codes raise via PROJ errno-check"
+        (is (thrown? #?(:clj Exception :cljs js/Error)
+                     (await (proj/proj-create-crs-to-crs {:context ctx
+                                                          :source_crs "INVALID:9999"
+                                                          :target_crs "EPSG:4326"}))))))))
 
-(deftest context-error-state-test
+(deftest ^:async context-error-state-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "Context error state can be queried"
-        (let [errno (proj/proj-context-errno {:context ctx})]
+        (let [errno (await (proj/proj-context-errno {:context ctx}))]
           (is (number? errno) "Error number should be numeric")
           (is (>= errno 0) "Error number should be non-negative"))))))
 
-;; Platform-specific behavior tests
-
-(deftest platform-initialization-timing-test
+(deftest ^:async platform-initialization-timing-test
   (testing "Platform-specific initialization characteristics"
-    (let [impl @proj/implementation
-          start (System/currentTimeMillis)]
-      ;; Initialization already happened, just document expected behavior
+    (let [impl @proj/implementation]
+      ;; The case arms are vacuous. They record the expected impl keys
+      ;; and fail on an unknown key.
       (case impl
         :ffi (is true "FFI implementation initializes quickly (<100ms)")
         :graal (is true "GraalVM implementation has slower initialization (5-30s)")
         :cljs (is true "ClojureScript initializes at namespace load")
+        :node (is true "Node-side cljs initializes at namespace load")
+        :browser (is true "Browser-side cljs initializes at namespace load")
         (is false (str "Unknown implementation: " impl))))))
 
-(deftest create-crs-to-crs-from-pj-test
+(deftest ^:async create-crs-to-crs-from-pj-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj_create_crs_to_crs_from_pj creates transformation from PJ objects"
-        ;; Strategy: create CRS objects from the database, then use them to create
-        ;; a transformation via proj-create-crs-to-crs-from-pj
-        (let [;; Create CRS objects from database
-              source-crs (proj/proj-create-from-database {:context ctx
-                                                          :auth_name "EPSG"
-                                                          :code "4326"})
-              target-crs (proj/proj-create-from-database {:context ctx
-                                                          :auth_name "EPSG"
-                                                          :code "2249"})]
+        (let [source-crs (await (proj/proj-create-from-database {:context ctx
+                                                                 :auth_name "EPSG"
+                                                                 :code "4326"}))
+              target-crs (await (proj/proj-create-from-database {:context ctx
+                                                                 :auth_name "EPSG"
+                                                                 :code "2249"}))]
           (is (some? source-crs) "Should create source CRS from database")
           (is (some? target-crs) "Should create target CRS from database")
-
-          ;; Now create a transformation using the CRS PJ* objects
-          (let [transform-from-pj (proj/proj-create-crs-to-crs-from-pj
-                                   {:context ctx
-                                    :source_crs source-crs
-                                    :target_crs target-crs})]
+          (let [transform-from-pj (await (proj/proj-create-crs-to-crs-from-pj
+                                          {:context ctx
+                                           :source_crs source-crs
+                                           :target_crs target-crs}))]
             (is (some? transform-from-pj) "Should create transformation from PJ objects")
-
-            ;; Verify the new transformation works by transforming a coordinate
             (when transform-from-pj
               (let [coord-array (proj/coord-array 1)]
-                ;; Boston City Hall (lat, lon for EPSG:4326)
                 (proj/set-coords! coord-array [[42.3603222 -71.0579667 0 0]])
-                (let [result (proj/proj-trans-array
-                              {:p transform-from-pj
-                               :direction 1 ; PJ_FWD
-                               :n 1
-                               :coord coord-array})]
+                (let [result (await (proj/proj-trans-array
+                                     {:p transform-from-pj
+                                      :direction 1
+                                      :n 1
+                                      :coord coord-array}))]
                   (is (or (nil? result) (= 0 result)) "Transform should succeed")
-                  ;; Verify coordinates transformed to reasonable MA State Plane values
                   #?(:clj
                      (let [[x y _ _] (proj/get-coords coord-array 0)]
                        (is (< 775000 x 776000)
@@ -814,31 +823,28 @@
                      :cljs
                      (is true "Coordinate access differs in CLJS")))))))))))
 
-(deftest create-crs-to-crs-from-pj-with-options-test
+(deftest ^:async create-crs-to-crs-from-pj-with-options-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj_create_crs_to_crs_from_pj with options parameter"
-        ;; Create CRS objects from database
-        (let [source-crs (proj/proj-create-from-database {:context ctx
-                                                          :auth_name "EPSG"
-                                                          :code "4326"})
-              target-crs (proj/proj-create-from-database {:context ctx
-                                                          :auth_name "EPSG"
-                                                          :code "2249"})]
+        (let [source-crs (await (proj/proj-create-from-database {:context ctx
+                                                                 :auth_name "EPSG"
+                                                                 :code "4326"}))
+              target-crs (await (proj/proj-create-from-database {:context ctx
+                                                                 :auth_name "EPSG"
+                                                                 :code "2249"}))
+              transform  (await (proj/proj-create-crs-to-crs-from-pj
+                                 {:context ctx
+                                  :source_crs source-crs
+                                  :target_crs target-crs
+                                  :options ["ALLOW_BALLPARK=NO"]}))]
           (is (some? source-crs) "Should create source CRS from database")
           (is (some? target-crs) "Should create target CRS from database")
-
-          ;; Create transformation with options (e.g., ALLOW_BALLPARK=NO)
-          (let [transform (proj/proj-create-crs-to-crs-from-pj
-                           {:context ctx
-                            :source_crs source-crs
-                            :target_crs target-crs
-                            :options ["ALLOW_BALLPARK=NO"]})]
-            (is (some? transform)
-                "Should create transformation from database CRS objects with options")))))))
+          (is (some? transform)
+              "Should create transformation from database CRS objects with options"))))))
 
 #?(:clj
-   (deftest network-grid-fetch-comparison-test
+   (deftest ^:async network-grid-fetch-comparison-test
      (with-each-implementation
        (testing "NAD27 to NAD83 State Plane - grid fetch should change result"
          (let [ctx-off (proj/context-create {:network false})
@@ -869,143 +875,141 @@
                      (str "Grid fetch should change the transformation result. "
                           "off=" [x-off y-off] " on=" [x-on y-on]))))))))))
 
-;; Out-params tests
-
-(deftest get-area-of-use-test
+(deftest ^:async get-area-of-use-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-get-area-of-use returns AreaOfUse map for EPSG:4326"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-              area (proj/proj-get-area-of-use {:context ctx :obj crs})]
+        (let [crs  (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+              area (await (proj/proj-get-area-of-use {:context ctx :obj crs}))]
           (is (some? area))
-          (is (map? area))
-          (is (= -180.0 (:west-lon-degree area)))
-          (is (= -90.0 (:south-lat-degree area)))
-          (is (= 180.0 (:east-lon-degree area)))
-          (is (= 90.0 (:north-lat-degree area)))
-          (is (string? (:area-name area))))))))
+          (is (= -180.0 (prop area :west-lon-degree)))
+          (is (= -90.0 (prop area :south-lat-degree)))
+          (is (= 180.0 (prop area :east-lon-degree)))
+          (is (= 90.0 (prop area :north-lat-degree)))
+          (is (string? (prop area :area-name))))))))
 
-(deftest get-area-of-use-ex-test
+(deftest ^:async get-area-of-use-ex-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-get-area-of-use-ex returns AreaOfUse for domain index 0"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-              area (proj/proj-get-area-of-use-ex {:context ctx :obj crs :domainIdx 0})]
+        (let [crs  (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+              area (await (proj/proj-get-area-of-use-ex {:context ctx :obj crs :domainIdx 0}))]
           (is (some? area))
-          (is (map? area))
-          (is (number? (:west-lon-degree area)))
-          (is (number? (:north-lat-degree area))))))))
+          (is (number? (prop area :west-lon-degree)))
+          (is (number? (prop area :north-lat-degree))))))))
 
-(deftest get-axis-info-test
+(deftest ^:async get-axis-info-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-cs-get-axis-info returns AxisInfo map"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-              cs (proj/proj-crs-get-coordinate-system {:ctx ctx :crs crs})
-              axis (proj/proj-cs-get-axis-info {:ctx ctx :cs cs :index 0})]
+        (let [crs  (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+              cs   (await (proj/proj-crs-get-coordinate-system {:ctx ctx :crs crs}))
+              axis (await (proj/proj-cs-get-axis-info {:ctx ctx :cs cs :index 0}))]
           (is (some? axis))
-          (is (map? axis))
           (is (string? (:name axis)))
           (is (string? (:abbreviation axis)))
           (is (string? (:direction axis)))
-          (is (number? (:unit-conv-factor axis)))
-          (is (string? (:unit-name axis))))))))
+          (is (number? (prop axis :unit-conv-factor)))
+          (is (string? (prop axis :unit-name))))))))
 
-(deftest ellipsoid-get-parameters-test
+(deftest ^:async ellipsoid-get-parameters-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-ellipsoid-get-parameters returns EllipsoidParameters"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-              ellipsoid (proj/proj-get-ellipsoid {:ctx ctx :obj crs})
-              params (proj/proj-ellipsoid-get-parameters {:ctx ctx :ellipsoid ellipsoid})]
+        (let [crs       (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+              ellipsoid (await (proj/proj-get-ellipsoid {:ctx ctx :obj crs}))
+              params    (await (proj/proj-ellipsoid-get-parameters {:ctx ctx :ellipsoid ellipsoid}))]
           (is (some? params))
-          (is (map? params))
-          (is (> (:semi-major-metre params) 6378000.0))
-          (is (> (:semi-minor-metre params) 6356000.0))
-          (is (> (:inv-flattening params) 298.0)))))))
+          (is (> (prop params :semi-major-metre) 6378000.0))
+          (is (> (prop params :semi-minor-metre) 6356000.0))
+          (is (> (prop params :inv-flattening) 298.0)))))))
 
-(deftest prime-meridian-get-parameters-test
+(deftest ^:async prime-meridian-get-parameters-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-prime-meridian-get-parameters returns PrimeMeridianParameters"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
-              pm (proj/proj-get-prime-meridian {:ctx ctx :obj crs})
-              params (proj/proj-prime-meridian-get-parameters {:ctx ctx :prime_meridian pm})]
+        (let [crs    (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+              pm     (await (proj/proj-get-prime-meridian {:ctx ctx :obj crs}))
+              params (await (proj/proj-prime-meridian-get-parameters {:ctx ctx :prime_meridian pm}))]
           (is (some? params))
-          (is (map? params))
           (is (= 0.0 (:longitude params)))
-          (is (number? (:unit-conv-factor params)))
-          (is (string? (:unit-name params))))))))
+          (is (number? (prop params :unit-conv-factor)))
+          (is (string? (prop params :unit-name))))))))
 
-(deftest coordoperation-get-method-info-test
+(deftest ^:async coordoperation-get-method-info-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-coordoperation-get-method-info returns MethodInfo"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"})
-              coordop (proj/proj-crs-get-coordoperation {:ctx ctx :crs crs})
-              info (proj/proj-coordoperation-get-method-info {:ctx ctx :coordoperation coordop})]
+        (let [crs     (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"}))
+              coordop (await (proj/proj-crs-get-coordoperation {:ctx ctx :crs crs}))
+              info    (await (proj/proj-coordoperation-get-method-info {:ctx ctx :coordoperation coordop}))]
           (is (some? info))
-          (is (map? info))
-          (is (string? (:method-name info))))))))
+          (is (string? (prop info :method-name))))))))
 
-(deftest coordoperation-get-param-test
+(deftest ^:async coordoperation-get-param-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-coordoperation-get-param returns CoordoperationParam"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"})
-              coordop (proj/proj-crs-get-coordoperation {:ctx ctx :crs crs})
-              param (proj/proj-coordoperation-get-param {:ctx ctx :coordoperation coordop :index 0})]
+        (let [crs     (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"}))
+              coordop (await (proj/proj-crs-get-coordoperation {:ctx ctx :crs crs}))
+              param   (await (proj/proj-coordoperation-get-param {:ctx ctx :coordoperation coordop :index 0}))]
           (is (some? param))
-          (is (map? param))
           (is (string? (:name param)))
           (is (number? (:value param))))))))
 
-(deftest coordoperation-get-grid-used-test
+(deftest ^:async coordoperation-get-grid-used-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-coordoperation-get-grid-used-count and get-grid-used"
-        (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"})
-              coordop (proj/proj-crs-get-coordoperation {:ctx ctx :crs crs})
-              grid-count (proj/proj-coordoperation-get-grid-used-count {:ctx ctx :coordoperation coordop})]
+        (let [crs        (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "2249"}))
+              coordop    (await (proj/proj-crs-get-coordoperation {:ctx ctx :crs crs}))
+              grid-count (await (proj/proj-coordoperation-get-grid-used-count {:ctx ctx :coordoperation coordop}))]
           (is (number? grid-count))
           (when (pos? grid-count)
-            (let [grid (proj/proj-coordoperation-get-grid-used {:ctx ctx :coordoperation coordop :index 0})]
+            (let [grid (await (proj/proj-coordoperation-get-grid-used {:ctx ctx :coordoperation coordop :index 0}))]
               (is (some? grid))
-              (is (map? grid))
-              (is (string? (:short-name grid))))))))))
+              (is (string? (prop grid :short-name))))))))))
 
-(deftest uom-get-info-from-database-test
+(deftest ^:async uom-get-info-from-database-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-uom-get-info-from-database returns UomInfo for metre"
-        (let [info (proj/proj-uom-get-info-from-database {:context ctx :auth_name "EPSG" :code "9001"})]
+        (let [info (await (proj/proj-uom-get-info-from-database {:context ctx :auth_name "EPSG" :code "9001"}))]
           (is (some? info))
-          (is (map? info))
           (is (= "metre" (:name info)))
-          (is (= 1.0 (:conv-factor info)))
+          (is (= 1.0 (prop info :conv-factor)))
           (is (= "linear" (:category info))))))))
 
-(deftest grid-get-info-from-database-test
+(deftest ^:async grid-get-info-from-database-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-grid-get-info-from-database returns GridDatabaseInfo"
-        (let [info (proj/proj-grid-get-info-from-database {:context ctx :grid_name "us_noaa_nadcon5_nad83_1986_nad83_harn_conus.tif"})]
+        (let [info (await (proj/proj-grid-get-info-from-database {:context ctx :grid_name "us_noaa_nadcon5_nad83_1986_nad83_harn_conus.tif"}))]
           (is (some? info))
-          (is (map? info))
-          (is (string? (:full-name info)))
+          (is (string? (prop info :full-name)))
           (is (number? (:available info))))))))
 
-(deftest coordoperation-get-towgs84-values-test
+(deftest ^:async coordoperation-get-towgs84-values-test
   (with-each-implementation
     (with-test-context [ctx]
       (testing "proj-coordoperation-get-towgs84-values returns double array"
-        (let [op (proj/proj-create {:context ctx
-                                    :definition "+proj=helmert +x=23 +y=-45 +z=67 +rx=0.1 +ry=-0.2 +rz=0.3 +s=1.5 +convention=position_vector"})
-              result (proj/proj-coordoperation-get-towgs84-values {:ctx ctx :coordoperation op :value_count 7 :emit_error_if_incompatible 0})]
+        (let [op     (await (proj/proj-create {:context ctx
+                                               :definition "+proj=helmert +x=23 +y=-45 +z=67 +rx=0.1 +ry=-0.2 +rz=0.3 +s=1.5 +convention=position_vector"}))
+              result (await (proj/proj-coordoperation-get-towgs84-values {:ctx ctx :coordoperation op :value_count 7 :emit_error_if_incompatible 0}))]
           (if (some? result)
-            (do
-              (is (map? result))
-              (is (vector? (:values result)))
-              (is (= 7 (count (:values result))))
-              (is (every? number? (:values result))))
+            (let [values (:values result)]
+              ;; values: Clojure vector on JVM, JS array on CLJS.
+              (is (some? values))
+              (is (= 7 (count values)))
+              (is (every? number? values)))
             (is true "towgs84 returned nil for this operation type")))))))
+
+;; CLJS runner footer. The teardown must call proj.shutdown: live
+;; Worker_threads keep the Node event loop alive, and the bb task
+;; then hangs on a green run.
+;;
+;; shutdown! is a named top-level ^:async defn because squint drops
+;; ^:async from inline fns in argument position.
+#?(:cljs (defn ^:async shutdown! [] (await (.shutdown proj))))
+
+#?(:cljs (run_tests_and_exit_BANG_ shutdown!))

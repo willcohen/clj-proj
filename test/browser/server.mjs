@@ -1,4 +1,10 @@
-// Simple HTTP server with optional COOP/COEP headers for SharedArrayBuffer support
+// Copyright (c) 2024, 2025, 2026 Will Cohen
+//
+// Part of clj-proj, under the MIT License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: MIT
+
+// HTTP server with optional COOP/COEP headers for SharedArrayBuffer support.
 import { createServer } from 'http';
 import { readFile, stat } from 'fs/promises';
 import { join, extname } from 'path';
@@ -26,14 +32,13 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   let filePath = join(rootDir, url.pathname);
 
-  // Default to index.html for directory requests
   try {
     const stats = await stat(filePath);
     if (stats.isDirectory()) {
       filePath = join(filePath, 'index.html');
     }
   } catch {
-    // File doesn't exist, will 404 below
+    // Missing file: the 404 occurs below.
   }
 
   try {
@@ -41,13 +46,11 @@ const server = createServer(async (req, res) => {
     const ext = extname(filePath);
     const mimeType = MIME_TYPES[ext] || 'application/octet-stream';
 
-    // Set COOP/COEP headers if enabled
     if (ENABLE_COOP_COEP) {
       res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
       res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
     }
 
-    // Always set CORS headers for resources
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', mimeType);
     res.writeHead(200);

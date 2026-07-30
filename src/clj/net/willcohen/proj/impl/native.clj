@@ -1,212 +1,38 @@
+;; Copyright (c) 2024, 2025, 2026 Will Cohen
+;;
+;; Part of clj-proj, under the MIT License.
+;; See LICENSE for license information.
+;; SPDX-License-Identifier: MIT
+
 (ns net.willcohen.proj.impl.native
-  (:require [tech.v3.datatype.ffi :as dt-ffi]
-            [tech.v3.datatype.native-buffer :as dt-nb]
-            [tech.v3.datatype.struct :as dt-struct]
-            [net.willcohen.proj.impl.struct :as struct]
-            [net.willcohen.proj.fndefs :as fn-defs-data]
-            [clojure.java.io :as io]
-            [clojure.string :as s])
-  (:import [java.io File InputStream OutputStream]
-           [java.nio.file Files Path]
-           [java.net JarURLConnection]
-           [com.sun.jna Native NativeLibrary]))
+  "Native FFI backend. Extracts the platform PROJ library through
+  clj-native and defines the dt-ffi bindings from fndefs."
+  (:require [net.willcohen.native.platform :as nplatform]
+            [net.willcohen.proj.fndefs :as fn-defs-data]))
 
-(def fn-defs fn-defs-data/fndefs)
+(set! *warn-on-reflection* true)
 
-(defn get-os
-  []
-  (let [vendor (s/lower-case (System/getProperty "java.vendor"))
-        os (s/lower-case (System/getProperty "os.name"))]
-    (cond (s/includes? vendor "android") :android
-          (s/includes? os "mac") :darwin
-          (s/includes? os "win") :windows
-          :else :linux)))
+(def fn-defs (nplatform/rehydrate-fn-defs fn-defs-data/fndefs))
 
-(defn get-arch
-  []
-  (let [arch (System/getProperty "os.arch")]
-    (case arch
-      "amd64" :amd64
-      "x86_64" :amd64
-      "x86-64" :amd64
-      "i386" :x86
-      "i486" :x86
-      "i586" :x86
-      "i686" :x86
-      "i786" :x86
-      "i886" :x86
-      "aarch64" :aarch64
-      ; Default case - convert to keyword and handle unknown archs
-      (keyword (s/replace arch #"[_-]" "")))))
+;; Holds {:file :path :libname :singleton}, or {} when extraction failed.
+;; PROJ reads proj.db, proj.ini, and the grid files from the directory
+;; that holds the extracted library. Thus they come out adjacent to it,
+;; and proj.cljc passes that :path as the database path.
+(def proj
+  (atom (nplatform/extract-and-bind-library!
+         {:lib-basename    "libproj"
+          :tmp-prefix      "proj"
+          :fn-defs-var     #'fn-defs
+          :extra-resources [{:resource "proj.db"}
+                            {:resource "proj.ini"}
+                            {:resource-dir "grids/"}]})))
 
-(defn get-proj-filename
-  [os]
-  (case os
-    :android "libproj"
-    :darwin "libproj"
-    :windows "libproj"
-    :linux "libproj"))
-
-(defn get-libtiff-filename
-  [os]
-  (case os
-    :android "libtiff"
-    :darwin "libtiff"
-    :windows "tifflib"
-    :linux "libtiff"))
-
-(defn get-proj-suffix
-  [os]
-  (case os
-    :android ".a"
-    :darwin ".dylib"
-    :windows ".dll"
-    :linux ".so"))
-
-(defn get-libtiff-suffix
-  [os]
-  (case os
-    :android ".a"
-    :darwin ".dylib"
-    :windows ".dll"
-    :linux ".so"))
-
-(defn copy-file
-  [p f]
-  (doto ^File f
-    (.setReadable true)
-    (.setWritable true true)
-    (.setExecutable true true))
-  (if-let [resource-url (io/resource p)]
-    (with-open [in (.openStream resource-url)
-                out (java.io.FileOutputStream. f)]
-      (io/copy in out))
-    (throw (java.io.FileNotFoundException. (str "Classpath resource not found: " p)))))
-
-(defn tmp-dir
-  []
-  (let [tmp (Files/createTempDirectory "proj" (into-array java.nio.file.attribute.FileAttribute []))]
-    tmp))
-
-(defn locate-proj-file
-  ([t]
-   (locate-proj-file t (get-os) (get-arch)))
-  ([t os arch]
-   (let [suffix (get-proj-suffix os)
-         dir-name (str (name os) "-" (name arch))
-         file-name (str (get-proj-filename os) suffix)
-         resource-path (str dir-name "/" file-name)
-         tmp (File. (.toString t) file-name)]
-     (doto tmp .deleteOnExit)
-     (copy-file resource-path tmp)
-     tmp)))
-
-(defn locate-libtiff-file
-  ([t]
-   (locate-libtiff-file t (get-os) (get-arch)))
-  ([t os arch]
-   (let [suffix (get-libtiff-suffix os)
-         dir-name (str (name os) "-" (name arch))
-         file-name (str (get-libtiff-filename os) suffix)
-         resource-path (str dir-name "/" file-name)
-         tmp (File. (.toString t) file-name)]
-     (doto tmp .deleteOnExit)
-     (copy-file resource-path tmp)
-     tmp)))
-
-(defn locate-proj-db
-  ([t]
-   (let [tmp (File. (.toString t) "proj.db")
-         tmp-ini (File. (.toString t) "proj.ini")]
-     (doto tmp .deleteOnExit)
-     (doto tmp-ini .deleteOnExit)
-     (copy-file "proj.db" tmp)
-     (copy-file "proj.ini" tmp-ini)
-     tmp)))
-
-(defn- list-resource-dir
-  "Lists all file resources within a given directory path on the classpath,
-  supporting both filesystem and JAR resources.
-  Returns a sequence of relative file paths."
-  [path]
-  (let [url (io/resource path)]
-    (when url
-      (let [protocol (.getProtocol url)]
-        (cond
-          (= "file" protocol)
-          (let [dir (io/file url)]
-            (when (.isDirectory dir)
-              (let [dir-path (.toPath dir)]
-                (->> (file-seq dir)
-                     (filter #(.isFile %))
-                     (map #(str (.relativize ^Path dir-path (.toPath ^File %))))))))
-
-          (= "jar" protocol)
-          (let [^JarURLConnection conn (.openConnection url)
-                jar-file (.getJarFile conn)
-                entry-prefix (.getEntryName conn)]
-            (->> (enumeration-seq (.entries jar-file))
-                 (map #(.getName %))
-                 (filter #(and (.startsWith % entry-prefix)
-                               (not (.endsWith % "/")))) ; only files
-                 (map #(subs % (count entry-prefix)))))
-
-          :else
-          (throw (ex-info (str "Unsupported resource protocol: " protocol) {:url url})))))))
-
-(defn locate-grids
-  "Copies the PROJ grid files from classpath resources into a 'grids'
-  subdirectory within the specified temporary directory `t`."
-  [t]
-  (let [tmp-grids-dir (File. (.toString t) "grids")]
-    (.mkdirs tmp-grids-dir)
-    (when-let [grid-files (list-resource-dir "grids/")]
-      (doseq [grid-file grid-files]
-        (let [dest-file (File. tmp-grids-dir grid-file)]
-          (io/make-parents dest-file)
-          (copy-file (str "grids/" grid-file) dest-file))))))
-
-(defn init-ffi!
-  []
-  (dt-ffi/set-ffi-impl! :jna))
-  ;; (try (dt-ffi/set-ffi-impl! :jdk)
-  ;;      (catch Exception _
-  ;;        (dt-ffi/set-ffi-impl! :jna))))
-
-(def proj (atom {}))
-
-(swap! proj
-       (fn [proj]
-         (try
-           (let [tmpdir (tmp-dir)
-                 pf (locate-proj-file tmpdir)
-                 pd (locate-proj-db tmpdir)
-                 _ (locate-grids tmpdir)
-                 p (.getCanonicalPath (.getParentFile pf))
-                 pl (-> (.getName pf)
-                        (.replaceFirst "[.][^.]+$" "")
-                        (.replaceFirst "lib" ""))
-                 s (dt-ffi/library-singleton #'fn-defs)]
-             (when (dt-ffi/jna-ffi?)
-               (System/setProperty "jna.library.path" (.toString tmpdir)))
-             {:file pf :db pd :path p :singleton s :libname pl})
-           (catch Exception _ proj))))
-
-;; If native libs fail to load, check: (clojure.java.io/resource "darwin-aarch64/libproj.dylib")
-;; to verify the platform-specific resource exists on the classpath.
 (defn init-proj
   []
-  (init-ffi!)
-  ;; The @proj atom is already configured by the top-level swap! which
-  ;; handles copying all necessary native files. This call just triggers
-  ;; the final library loading by the FFI implementation.
-  (dt-ffi/library-singleton-set! (:singleton @proj) (:libname @proj)))
+  ;; The @proj atom already holds the extracted files. This call does the
+  ;; final load, selects :jdk, and binds the singleton to the absolute
+  ;; path of the library.
+  (nplatform/init-jdk-library! (:singleton @proj) (:file @proj)))
 
-(defn reset-proj
-  []
-  (dt-ffi/library-singleton-reset! (:singleton @proj)))
-
-(dt-ffi/define-library-functions
-  fn-defs
-  #(dt-ffi/library-singleton-find-fn (:singleton @proj) %)
-  dt-ffi/check-error)
+;; No PROJ fn-def sets :check-error?, so no error-check fn is given.
+(nplatform/define-library-fns! fn-defs proj)
