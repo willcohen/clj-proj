@@ -512,10 +512,13 @@
     <script type="importmap">
     {
         "imports": {
-            "cherry-cljs/cljs.core.js": "https://cdn.jsdelivr.net/npm/cherry-cljs@0.5.33/lib/cljs.core.js",
-            "cherry-cljs/lib/clojure.string.js": "https://cdn.jsdelivr.net/npm/cherry-cljs@0.5.33/lib/clojure.string.js",
-            "resource-tracker": "https://cdn.jsdelivr.net/npm/resource-tracker@0.0.1-alpha1/resource.mjs",
-            "proj-wasm": "https://cdn.jsdelivr.net/npm/proj-wasm@0.1.0-alpha7/dist/proj.mjs"
+            "squint-cljs/core.js": "https://cdn.jsdelivr.net/npm/squint-cljs@0.14.206/core.js",
+            "squint-cljs/src/squint/string.js": "https://cdn.jsdelivr.net/npm/squint-cljs@0.14.206/src/squint/string.js",
+            "resource-tracker": "https://cdn.jsdelivr.net/npm/resource-tracker@0.0.1/resource.mjs",
+            "worker-router": "https://cdn.jsdelivr.net/npm/@wcohen/worker-router@0.0.2/dist/index.mjs",
+            "worker-router/worker-bootstrap": "https://cdn.jsdelivr.net/npm/@wcohen/worker-router@0.0.2/dist/worker-bootstrap.mjs",
+            "comlink": "https://cdn.jsdelivr.net/npm/comlink@4.4.2/dist/esm/comlink.mjs",
+            "proj-wasm": "https://cdn.jsdelivr.net/npm/proj-wasm@0.1.0-alpha9/dist/proj.mjs"
         }
     }
     </script>
@@ -556,7 +559,7 @@
                         <p style="font-size: 0.9em; margin: 6px 0;"><strong>Build:</strong></p>
                         <ul style="font-size: 0.9em; margin: 6px 0; padding-left: 20px;">
                             <li>PROJ is compiled to WASM using <a href="https://emscripten.org/">Emscripten</a></li>
-                            <li>Clojure source is compiled to ES6 modules using <a href="https://github.com/squint-cljs/cherry">Cherry</a></li>
+                            <li>Clojure source is compiled to ES6 modules using <a href="https://github.com/squint-cljs/squint">squint</a></li>
                             <li>PROJ C function bindings are automatically extracted from <code>fndefs.cljc</code> and exported from WASM</li>
                             <li>Modules are bundled with <a href="https://esbuild.github.io/">esbuild</a></li>
                         </ul>
@@ -564,7 +567,8 @@
                         <ul style="font-size: 0.9em; margin: 6px 0; padding-left: 20px;">
                             <li>PROJ runs in Web Workers, keeping the main thread responsive</li>
                             <li>One single-threaded WASM binary serves every lane. It needs no SharedArrayBuffer and no Cross-Origin Isolation, so it runs on ordinary static hosting with no special headers</li>
-                            <li>Each PROJ context is pinned to a specific worker. The pool assigns workers in rotation</li>
+                            <li>The worker pool is managed by <a href="https://www.npmjs.com/package/@wcohen/worker-router">worker-router</a>, which owns the call protocol through <a href="https://www.npmjs.com/package/comlink">comlink</a>. Each PROJ context is pinned to one worker, and the pool assigns workers in rotation</li>
+                            <li>Workers must be same-origin, so worker-router starts each worker from a small same-origin blob shim that imports the cross-origin script. This is what lets this demo load everything from a CDN</li>
                             <li>The <code>proj.db</code> and <code>proj.ini</code> files are fetched at startup and written to Emscripten's virtual filesystem in each worker</li>
                             <li>Grid shift files (NADCON, NTv2, and others) are fetched on demand from <a href="https://cdn.proj.org/">cdn.proj.org</a> when a transformation requires them</li>
                             <li>C-allocated objects are cleaned up using <a href="https://www.npmjs.com/package/resource-tracker">resource-tracker</a></li>
@@ -993,7 +997,7 @@ try {
 }`,
 
             'crs-catalog': `// Browse the full CRS catalog from PROJ's database
-const all = await proj.getCrsInfoListFromDatabase({});
+const all = await proj.proj_get_crs_info_list_from_database({});
 console.log("Total CRS entries:", all.length);
 
 const epsg = all.filter(e => e.auth_name === "EPSG");
@@ -1137,7 +1141,7 @@ console.log("\\nRestored to " + max + " worker(s)");`
 
                 try {
                     // PROJ returns one row for each usage entry of a CRS.
-                    const rawCatalog = await proj.getCrsInfoListFromDatabase({ context });
+                    const rawCatalog = await proj.proj_get_crs_info_list_from_database({ context });
                     const seen = new Set();
                     crsCatalog = rawCatalog.filter(e => {
                         const key = `${e.auth_name}:${e.code}`;
