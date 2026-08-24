@@ -1,11 +1,16 @@
 #!/usr/bin/env node
+// Copyright (c) 2024, 2025, 2026 Will Cohen
+//
+// Part of clj-proj, under the MIT License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: MIT
 
 /**
  * Multi-worker benchmark for proj-wasm coordinate transformations.
  *
- * Tests actual parallelism by creating multiple contexts (round-robined to
- * workers), each with its own transformer + coord array, then firing all
- * transforms concurrently via Promise.all.
+ * Measures parallelism: multiple contexts (round-robined to workers), each
+ * with its own transformer and coord array, and all transforms fired
+ * concurrently through Promise.all.
  *
  * Run with: node --test test/js/benchmark.test.mjs
  */
@@ -27,8 +32,8 @@ function generateRandomCoords(n) {
 }
 
 /**
- * Create a "task" on a specific context: context + transformer + coord array,
- * all bound to the same worker via round-robin context assignment.
+ * Creates one task: a context, a transformer, and a coord array, all bound
+ * to the same worker through round-robin context assignment.
  */
 async function createTask(proj, coords) {
   const context = await proj.context_create({ network: false });
@@ -39,20 +44,15 @@ async function createTask(proj, coords) {
   });
   assert(transformer, "transformer should be truthy");
 
-  // coord_array with 3 args: (n, dims, opts-or-object-with-worker-idx)
-  // Passing transformer routes the allocation to the same worker
+  // The third coord_array argument routes the allocation to the
+  // transformer's worker.
   const coordArray = await proj.coord_array(COORDS_PER_CONTEXT, 4, transformer);
   await proj.set_coords_BANG_(coordArray, coords);
 
   return { context, transformer, coordArray };
 }
 
-/**
- * Test A: Concurrent batch transforms.
- * Creates numTasks independent transform pipelines, fires them all at once.
- */
 async function benchConcurrentTransforms(proj, numTasks, coordSets) {
-  // Setup: create all tasks (contexts round-robin to workers)
   const tasks = [];
   for (let i = 0; i < numTasks; i++) {
     tasks.push(await createTask(proj, coordSets[i]));
@@ -60,7 +60,6 @@ async function benchConcurrentTransforms(proj, numTasks, coordSets) {
 
   const PJ_FWD = proj.PJ_FWD || 1;
 
-  // Timed section: fire all transforms concurrently
   const start = performance.now();
   await Promise.all(tasks.map(t =>
     proj.proj_trans_array({
@@ -72,7 +71,6 @@ async function benchConcurrentTransforms(proj, numTasks, coordSets) {
   ));
   const elapsed = performance.now() - start;
 
-  // Read back first coord from each task for verification
   const spotChecks = [];
   for (const t of tasks) {
     const c = await proj.get_coord_array(t.coordArray, 0);
@@ -82,18 +80,12 @@ async function benchConcurrentTransforms(proj, numTasks, coordSets) {
   return { elapsed, spotChecks, totalCoords: numTasks * COORDS_PER_CONTEXT };
 }
 
-/**
- * Test B: Concurrent CRS creation.
- * Fires many proj_create_crs_to_crs calls at once across workers.
- */
 async function benchConcurrentCRSCreation(proj, numOps) {
-  // Create contexts first (round-robined)
   const contexts = [];
   for (let i = 0; i < numOps; i++) {
     contexts.push(await proj.context_create({ network: false }));
   }
 
-  // Timed section: concurrent CRS creation
   const start = performance.now();
   const transformers = await Promise.all(contexts.map(ctx =>
     proj.proj_create_crs_to_crs({
@@ -104,7 +96,6 @@ async function benchConcurrentCRSCreation(proj, numOps) {
   ));
   const elapsed = performance.now() - start;
 
-  // Verify all succeeded
   for (const t of transformers) {
     assert(t, "CRS creation should return truthy transformer");
   }
@@ -123,21 +114,18 @@ describe('Multi-worker benchmark', () => {
       if (proj.shutdown) await proj.shutdown();
       await proj.init(null, { workers: workerCount });
 
-      const mode = proj.get_worker_mode ? proj.get_worker_mode() : 'unknown';
-      const numTasks = 16; // fixed task count -- same work across all worker counts
+      const numTasks = 16; // same total work for each worker count
 
-      // Generate coords per task
       const coordSets = [];
       for (let i = 0; i < numTasks; i++) {
         coordSets.push(generateRandomCoords(COORDS_PER_CONTEXT));
       }
 
       const result = await benchConcurrentTransforms(proj, numTasks, coordSets);
-      transformTimings[workerCount] = { ...result, numTasks, mode };
+      transformTimings[workerCount] = { ...result, numTasks };
 
-      console.log(`  ${workerCount} worker(s) [${mode}]: ${numTasks} tasks x ${COORDS_PER_CONTEXT} coords = ${result.totalCoords} total in ${result.elapsed.toFixed(1)}ms`);
+      console.log(`  ${workerCount} worker(s): ${numTasks} tasks x ${COORDS_PER_CONTEXT} coords = ${result.totalCoords} total in ${result.elapsed.toFixed(1)}ms`);
 
-      // Spot check: transformed coords should be in Web Mercator range
       for (const [x, y] of result.spotChecks) {
         assert(Math.abs(x) > 1000, `X should be in Mercator range: ${x}`);
         assert(Math.abs(y) > 1000, `Y should be in Mercator range: ${y}`);
@@ -154,13 +142,12 @@ describe('Multi-worker benchmark', () => {
       if (proj.shutdown) await proj.shutdown();
       await proj.init(null, { workers: workerCount });
 
-      const mode = proj.get_worker_mode ? proj.get_worker_mode() : 'unknown';
-      const numOps = 20; // fixed op count
+      const numOps = 20;
 
       const result = await benchConcurrentCRSCreation(proj, numOps);
-      crsTimings[workerCount] = { ...result, mode };
+      crsTimings[workerCount] = { ...result };
 
-      console.log(`  ${workerCount} worker(s) [${mode}]: ${numOps} CRS creations in ${result.elapsed.toFixed(1)}ms`);
+      console.log(`  ${workerCount} worker(s): ${numOps} CRS creations in ${result.elapsed.toFixed(1)}ms`);
 
       if (proj.shutdown) await proj.shutdown();
     });

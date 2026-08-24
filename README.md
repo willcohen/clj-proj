@@ -6,69 +6,59 @@
 [![NPM Version](https://img.shields.io/npm/v/proj-wasm)](https://www.npmjs.com/package/proj-wasm)
 [![Clojars Version](https://img.shields.io/clojars/v/net.willcohen%2Fproj)](https://clojars.org/net.willcohen/proj)
 
-This project provides a native (or transpiled) version of [PROJ](https://proj.org/) ([GitHub](https://github.com/OSGeo/PROJ)) for both the JVM and JS ecosystems.
+This project supplies a native (or transpiled) version of [PROJ](https://proj.org/) ([GitHub](https://github.com/OSGeo/PROJ)) for the JVM and JS ecosystems.
 
-The goal of this project is to provide a long-missing component of geospatial
-analysis for these platforms: a performant version of PROJ that can closely
-follow upstream development.
+The goal is a fast version of PROJ for these platforms that stays
+synchronized with upstream development.
 
-This currently provides bindings to the JVM via Clojure using a [package
-published to Clojars](https://clojars.org/net.willcohen/proj), and to pure
-Javascript via [an ES6 module called
-`proj-wasm`](https://www.npmjs.com/package/proj-wasm) published to NPM, which provides a clean
+For the JVM, a [package published to
+Clojars](https://clojars.org/net.willcohen/proj) gives Clojure bindings. For
+JavaScript, [an ES6 module called
+`proj-wasm`](https://www.npmjs.com/package/proj-wasm) published to NPM gives an
 interface to an internal transpiled WASM module.
 
 
 ## EARLY DEVELOPMENT 
 
-This project is in its initial phases, with partial functionality
-built out, and incomplete testing. Feedback from
-testers is welcome and encouraged.
+This project is new. Some functions are not complete. The tests are not
+complete. Feedback from testers is welcome.
 
-Consider all APIs and structuring of this library to be an early
-work-in-progress, subject to potentially substantial change while basic
-functionality continues to be developed.
+The APIs and the structure of this library are an early work-in-progress.
+They can change while development continues.
 
 ## How It Works
 
-clj-proj provides PROJ functionality through a multi-implementation architecture that automatically selects the best available backend at runtime:
-
 ### API Scope
 
-This library currently focuses on PROJ's [C API for ISO 19111
+This library is limited to PROJ's [C API for ISO 19111
 functionality](https://proj.org/en/stable/development/reference/functions.html#c-api-for-iso-19111-functionality).
-PROJ's C API is split into several sections, and objects from the ISO 19111
-section generally do not mix with functions from other sections (and vice versa).
-ISO 19111 `CoordinateOperation` objects that can be exported as valid PROJ
-pipelines are the exception — these work with transformation functions like
-`proj_trans_array()`.
+The PROJ C API has some sections. Objects from the ISO 19111 section do not
+mix with functions from the other sections. The exception is an ISO 19111
+`CoordinateOperation` object with a valid PROJ pipeline export. These objects
+operate with transformation functions, for example `proj_trans_array()`.
 
 ### Implementation Strategy
 
-The library provides a unified API (`net.willcohen.proj.proj`) that automatically selects the best available backend at runtime:
+The library has one API (`net.willcohen.proj.proj`). At runtime, it automatically selects the first available backend in this sequence:
 
-1. **Native FFI (via JNA)** - Direct calls to compiled PROJ libraries
+1. **Native FFI (Panama FFM through dtype-next)** - Direct calls to compiled PROJ libraries
 2. **GraalVM WebAssembly** - Runs emscripten-compiled PROJ in JVM
 3. **JavaScript/WebAssembly** - Direct WASM for Node.js and browsers
 
-During initialization, the library detects the environment and available backends:
+During initialization, the library identifies the environment and the available backends:
 
 ```clojure
 ;; The implementation atom tracks which backend is active
-(def implementation (atom nil))
+(defonce implementation (atom nil))
 
-;; JVM: tries native FFI first, falls back to GraalVM WASM
-;; CLJS: initializes worker pool, returns a Promise
-(defn init! []
+;; JVM: clj-native's try-init! attempts native FFI, then falls back to
+;; the GraalVM WASM backend, and records the winner in the atom.
+;; CLJS: starts the worker pool and returns a Promise.
+(defn init! [opts]
   #?(:clj
-     (if @force-graal
-       (do (wasm/init-proj) (reset! implementation :graal))
-       (try
-         (native/init-proj)
-         (reset! implementation :ffi)
-         (catch Throwable e
-           (wasm/init-proj)
-           (reset! implementation :graal))))
+     (nps/try-init! implementation force-graal log?
+                    native/init-proj
+                    wasm/init-proj)
      :cljs
      (-> (wasm/init-proj opts)
          (.then (fn [_] (reset! implementation runtime))))))
@@ -76,7 +66,7 @@ During initialization, the library detects the environment and available backend
 
 ### Runtime Dispatch System
 
-The library uses a runtime dispatch architecture where all PROJ functions flow through a central dispatcher:
+All PROJ functions flow through a central dispatcher:
 
 ```clojure
 ;; Macros generate thin wrapper functions
@@ -88,37 +78,41 @@ The library uses a runtime dispatch architecture where all PROJ functions flow t
 ;; The dispatcher orchestrates the entire call flow
 (defn dispatch-proj-fn [fn-key fn-def opts]
   (ensure-initialized!)
-  (let [args (extract-args (:argtypes fn-def) opts)
-        result (dispatch-to-platform-with-args fn-key fn-def args)]
+  (let [args (extract-args fn-def opts)
+        result (call-native fn-key fn-def args)]
     (process-return-value-with-tracking result fn-def)))
 ```
 
-The dispatch system handles:
-- **Argument extraction**: Converting Clojure maps to function arguments with defaults
-- **Platform routing**: Sending calls to the appropriate backend implementation
-- **Return processing**: Converting C types back to Clojure data structures
-- **Context management**: Ensuring thread-safe access to PROJ contexts
+The real `dispatch-proj-fn` adds an auto-context step, cross-worker argument
+reconciliation, a per-return-type branch for `:struct-list` and
+`:out-params`, and a result check that reads `proj_context_errno`.
+
+The dispatch system does these tasks:
+- **Argument extraction**: It converts Clojure maps to function arguments and applies defaults
+- **Platform routing**: It sends calls to the applicable backend implementation
+- **Return processing**: It converts C types back to Clojure data structures
+- **Context management**: It gives thread-safe access to PROJ contexts
 
 ### Resource Management
 
-PROJ returns pointers that must be freed. The library automatically tracks and cleans up these resources:
+PROJ returns pointers that the caller must free. The library tracks these resources and releases them automatically:
 
-- **JVM**: Uses `tech.v3.resource` for automatic cleanup during garbage collection
-- **JavaScript**: Uses `resource-tracker` library for automatic cleanup
+- **JVM**: automatic cleanup through `tech.v3.resource` during garbage collection
+- **JavaScript**: automatic cleanup through the `resource-tracker` library
 
 ```clojure
-;; When a function returns a pointer, it's automatically tracked internally
+;; When a function returns a pointer, the library tracks it automatically
 ;; No manual cleanup needed - this happens behind the scenes:
 (resource/track result-pointer
   {:dispose-fn (fn [] (proj-destroy pointer-address))
    :track-type :auto})  ; Cleaned up on GC
 ```
 
-You never need to call `proj-destroy` or similar cleanup functions manually. All resources are automatically cleaned up when they go out of scope or during garbage collection.
+Manual calls to `proj-destroy` or other cleanup functions are not necessary. The library releases all resources when they go out of scope or during garbage collection.
 
 ### Context Management
 
-PROJ uses contexts for thread safety and operation tracking. The library provides flexible context handling:
+PROJ uses contexts for thread safety and operation tracking:
 
 ```clojure
 ;; Use an explicit context (stored in an atom)
@@ -129,36 +123,41 @@ PROJ uses contexts for thread safety and operation tracking. The library provide
 (proj-get-authorities-from-database {})  ; Creates context internally
 ```
 
-In JavaScript with the worker pool, contexts are pinned to specific workers. When PJ objects from different workers are passed to the same function (e.g., after round-robin context creation), the library automatically reconciles them by recreating mismatched objects on the target worker via PROJJSON roundtrip. A `console.warn` is emitted when this happens — for best performance, use an explicit shared context.
+In JavaScript, the worker pool pins each context to one worker. If PJ objects from different workers go to the same function (for example, after round-robin context creation), the library recreates the mismatched objects on the target worker through a PROJJSON roundtrip. The library also sends a `console.warn` message. For the best performance, use an explicit shared context.
 
-For functions that require atomic context access, the library uses the `cs` (context-swap) wrapper:
-- Ensures thread-safe access by wrapping operations in an atom's `swap!`
-- Tracks operation counts and results
-- Handles platform-specific context requirements
+When atomic context access is necessary, the library uses the `cs` (context-swap) wrapper:
+- It puts each operation in an atom's `swap!` for thread-safe access
+- It records operation counts and results
+- It applies platform-specific context requirements
 
-Context atoms maintain state including:
+Each context atom holds this state:
 - The native context pointer
-- Operation counter for tracking calls
+- An operation counter
 - Result storage for atomic operations
 
 ### Coordinate Transformation Implementation
 
-The library provides efficient handling of both single and batch coordinate transformations:
+The library transforms coordinates in arrays. A single coordinate uses an
+array of one.
 
 ```clojure
-;; Single coordinate transformation
-(trans-coord transformation [longitude latitude])
-
 ;; Batch transformation with coordinate arrays
-(def coords (coord-array 1000 2))  ; 1000 2D coordinates
-(set-coords! coords [[lon1 lat1] [lon2 lat2] ...])
-(proj-trans-array {:P transformation :coord coords :n 1000})
+(def coords (coord-array 2))  ; 2 coordinates
+;; EPSG:4326 uses lat/lon order. Each coordinate is (x y z t).
+(set-coords! coords [[42.3603222 -71.0579667 0 0]
+                     [40.7127 -74.0059 0 0]])
+(proj-trans-array {:p transformation :direction 1 :n 2 :coord coords})
 ```
 
-Coordinate arrays are implemented differently per platform:
-- **FFI**: Uses `dtype-next` tensors for zero-copy native memory access
-- **GraalVM**: Allocates memory in the WASM heap
-- **ClojureScript**: Worker-allocated arrays via message passing
+`proj-trans-array` mutates the coordinate array in place. The `:direction`
+key is necessary: 1 is forward, -1 is inverse. `set-coords!` needs one
+coordinate for each row of the array, and each coordinate needs all four
+values.
+
+Each platform implements coordinate arrays differently:
+- **FFI**: `dtype-next` tensors give zero-copy native memory access
+- **GraalVM**: memory allocated in the WASM heap
+- **ClojureScript**: worker-allocated arrays through message passing
 
 ### Advanced Features
 
@@ -174,7 +173,7 @@ Coordinate arrays are implemented differently per platform:
 ```
 
 #### Cross-Platform Testing
-The test framework ensures consistent behavior across all implementations:
+The test framework makes sure that behavior is the same on all implementations:
 ```clojure
 (defmacro with-each-implementation [& body]
   ;; Runs the same test against FFI, GraalVM, and ClojureScript
@@ -183,16 +182,16 @@ The test framework ensures consistent behavior across all implementations:
 
 ### Flexible API
 
-The library provides a developer-friendly API with several conveniences:
+The API gives these conveniences:
 
-- **Parameter naming flexibility**: Use either underscores or hyphens
+- **Parameter naming flexibility**: Use underscores or hyphens
   ```clojure
-  ;; Both work identically:
+  ;; The two forms work identically:
   (proj-create-crs-to-crs {:source_crs "EPSG:4326" :target_crs "EPSG:2249"})
   (proj-create-crs-to-crs {:source-crs "EPSG:4326" :target-crs "EPSG:2249"})
   ```
 
-- **Optional parameters with defaults**: Functions provide sensible defaults
+- **Optional parameters with defaults**: Functions apply defaults
   ```clojure
   ;; Context is optional - library creates one if needed
   (proj-get-authorities-from-database {})
@@ -201,29 +200,28 @@ The library provides a developer-friendly API with several conveniences:
   (proj-get-authorities-from-database {:context my-ctx})
   ```
 
-- **Idiomatic return keys per platform**: Maps returned by out-param and struct-list functions use platform-native key casing:
+- **Idiomatic return keys per platform**: Out-param and struct-list functions return maps with platform-native key casing:
   - Clojure: kebab-case keywords (`:west-lon-degree`, `:semi-major-metre`)
   - Java: camelCase strings (`"westLonDegree"`, `"semiMajorMetre"`)
   - JS camelCase aliases: camelCase keys (`westLonDegree`, `semiMajorMetre`)
   - JS snake_case aliases: snake_case keys (`west_lon_degree`, `semi_major_metre`)
 
-- **Consistent error handling**: All platforms handle errors uniformly
-  - C++ exceptions from WASM are caught and converted
-  - Native errors are wrapped in Clojure exceptions
-  - Helpful error messages across all backends
+- **Consistent error handling**: Error behavior is the same on all platforms
+  - The library catches C++ exceptions from WASM and converts them
+  - The library puts native errors in Clojure exceptions
 
 ## Grid Fetching
 
-PROJ transformations can require grid shift files -- TIFF-format datum corrections hosted at `cdn.proj.org`. Without these grids, transformations like NAD27->NAD83 degrade to "ballpark" accuracy. clj-proj fetches grids automatically when network access is enabled.
+For some PROJ transformations, grid shift files are necessary. These files are TIFF-format datum corrections from `cdn.proj.org`. Without these grids, some transformations (for example, NAD27->NAD83) give only "ballpark" accuracy. When network access is on, clj-proj fetches grids automatically.
 
 ### Per-Platform Behavior
 
-- **JVM + Native FFI**: Java's HttpClient handles HTTP range requests via JNA callbacks. No configuration needed.
-- **JVM + GraalVM WASM**: Java's HttpClient fetches grids via a C stub bridge (`proj_network_stubs.c` + `network.clj`). No configuration needed.
-- **Browser**: PROJ runs in Web Workers where Emscripten's synchronous FETCH (via `Atomics.wait`) is allowed. Works without special headers; pthreads mode requires Cross-Origin Isolation (see below).
-- **Node.js**: PROJ runs in `worker_threads` with an XMLHttpRequest polyfill that delegates sync requests to a fetch-worker via SharedArrayBuffer + Atomics. No configuration needed.
+- **JVM + Native FFI**: Java's HttpClient does HTTP range requests through native upcall callbacks. No configuration is necessary.
+- **JVM + GraalVM WASM**: Java's HttpClient fetches grids through ProxyExecutable callbacks that `network.clj` installs in the WASM function table. No configuration is necessary.
+- **Browser**: PROJ runs in Web Workers, where Emscripten's synchronous FETCH (through `Atomics.wait`) is permitted. No special headers are necessary.
+- **Node.js**: PROJ runs in `worker_threads` with an XMLHttpRequest polyfill that sends sync requests to a fetch-worker through SharedArrayBuffer + Atomics. No configuration is necessary.
 
-### Enabling/Disabling Network
+### Network On and Off
 
 ```clojure
 ;; Network enabled by default
@@ -239,16 +237,19 @@ const ctx = await proj.contextCreate();              // network enabled (default
 const ctxOffline = await proj.contextCreate({network: false}); // network disabled
 ```
 
-### Browser: Cross-Origin Isolation
+### Browser: no Cross-Origin Isolation necessary
 
-The library supports two worker modes in browsers:
+There is one WASM build, and it is single-threaded. Each worker runs that
+binary with no internal threads. The WASM memory is a plain `ArrayBuffer`,
+not a `SharedArrayBuffer`.
 
-- **Single-threaded mode** (fallback): Each worker runs the same WASM binary but without internal threading. No special headers needed.
-- **Pthreads mode**: With SharedArrayBuffer available, Emscripten can spawn internal pthreads within each worker for additional parallelism. Requires Cross-Origin Isolation headers:
-  - `Cross-Origin-Opener-Policy: same-origin`
-  - `Cross-Origin-Embedder-Policy: require-corp`
+Thus the `Cross-Origin-Opener-Policy` header and the
+`Cross-Origin-Embedder-Policy` header are not necessary. The library operates
+the same when `crossOriginIsolated` is true or false. The browser test suite
+runs against a server of each type.
 
-The `coi-serviceworker.js` included in the demo page enables pthreads mode on static hosting (e.g. GitHub Pages) but is not required.
+Parallelism comes from the worker pool. To change the number of workers, use
+the `workers` option of `init`.
 
 ### Known Limitations
 - GraalVM network callbacks add initialization overhead
@@ -257,12 +258,12 @@ The `coi-serviceworker.js` included in the demo page enables pthreads mode on st
 
 ### JVM (Java / Clojure)
 
-The JVM implementation supports two backends:
+The JVM implementation has two backends:
 
 1. **Native FFI (Preferred)** - Available on supported platforms
 2. **GraalVM WebAssembly (Fallback)** - For platforms without native libraries
 
-Currently supported platforms (native):
+Supported platforms (native):
 - macOS/darwin Apple Silicon (arm64)
 - Linux x64 and arm64
 - Windows x64
@@ -271,20 +272,20 @@ Not yet built:
 - macOS/darwin Intel (x86_64)
 - Windows ARM64 - Cross-compiler not available in nixpkgs
 
-### JDK 21+ with native library
+### JDK 25+ with native library
 
-On platforms with a native precompiled PROJ available, this library utilizes
-JNA via dtype-next. This is the preferred option. If dtype-next adopts
-Panama FFM, this library may follow.
+On platforms with a native precompiled PROJ, this library calls it through
+dtype-next on the JDK Panama FFM backend (`java.lang.foreign`). This is the
+preferred option.
 
 #### How Native FFI Works
 
 The native implementation:
 1. Extracts platform-specific libraries from resources to a temp directory
-2. Configures JNA to load from that directory
-3. Uses `dtype-next` for efficient native interop and memory management
+2. Binds the `dtype-next` library singleton to the absolute path of the extracted library
+3. Uses `dtype-next` for native interop and memory management
 
-The library includes pre-compiled PROJ libraries for each platform in `resources/{platform}/`. At runtime, it detects the OS and architecture, then loads the appropriate libraries.
+The library contains pre-compiled PROJ libraries for each platform in `resources/{platform}/`. At runtime, it identifies the OS and architecture. Then it loads the applicable libraries.
 
 #### Usage
 
@@ -293,9 +294,7 @@ On a computer where the native library was built:
 (require '[net.willcohen.proj.proj :as proj])
 
 ;; Initialization happens automatically on first use in Clojure/JVM
-;; For explicit initialization, you can call:
-;; (proj/init!)  ; Primary function
-;; (proj/init)   ; Convenience alias (same as init!)
+;; For explicit initialization, call (proj/init!)
 
 ;; Create a coordinate transformation
 (def ctx (proj/context-create))
@@ -306,13 +305,13 @@ On a computer where the native library was built:
 ;; Transform a single coordinate 
 (def coords (proj/coord-array 1))
 ;; EPSG:4326 uses lat/lon order, not lon/lat!
-(proj/set-coords! coords [[42.3603222 -71.0579667]]) ; Boston City Hall (lat, lon)
-(proj/proj-trans-array {:P transformer :coord coords :n 1})
+(proj/set-coords! coords [[42.3603222 -71.0579667 0 0]]) ; Boston City Hall (lat, lon)
+(proj/proj-trans-array {:p transformer :direction 1 :n 1 :coord coords})
 ;; coords now contains transformed coordinates in EPSG:2249 (MA State Plane)
 
 ;; Query available authorities
 (proj/proj-get-authorities-from-database)
-;; => ["EPSG" "ESRI" "PROJ" "OGC" ...]
+;; => ["EPSG" "ESRI" "IAU_2015" "IGNF" "NKG" "NRCAN" ...]
 
 ;; No manual cleanup needed! Resources are automatically tracked and 
 ;; cleaned up when they go out of scope or during garbage collection
@@ -320,7 +319,7 @@ On a computer where the native library was built:
 
 ### Java API
 
-A Java wrapper class (`net.willcohen.proj.PROJ`) provides idiomatic Java access to the library:
+A Java wrapper class (`net.willcohen.proj.PROJ`) gives idiomatic Java access to the library:
 
 ```java
 import net.willcohen.proj.PROJ;
@@ -340,7 +339,7 @@ PROJ.transArray(transform, coords, 1);
 
 // Query available authorities
 List<String> authorities = PROJ.getAuthoritiesFromDatabase();
-// => ["EPSG", "ESRI", "PROJ", "OGC", ...]
+// => ["EPSG", "ESRI", "IAU_2015", "IGNF", "NKG", "NRCAN", ...]
 
 // Create transformation from CRS objects (for advanced use)
 Object sourceCrs = PROJ.createFromDatabase(ctx, "EPSG", "4326");
@@ -350,35 +349,35 @@ Object transformFromPj = PROJ.createCrsToCrsFromPj(ctx, sourceCrs, targetCrs);
 // No manual cleanup needed - resources are automatically tracked!
 ```
 
-The Java API mirrors the Clojure API and supports:
+The Java API has the same functions as the Clojure API. It includes:
 - All initialization and backend control methods (`init()`, `forceGraal()`, `forceFfi()`)
 - Context management (`contextCreate()`, `isContext()`)
 - CRS transformations (`createCrsToCrs()`, `createCrsToCrsFromPj()`, `createFromDatabase()`)
 - Coordinate arrays (`coordArray()`, `setCoords()`, `transArray()`)
 - Database queries (`getAuthoritiesFromDatabase()`, `getCodesFromDatabase()`)
-- CRS introspection (`getAreaOfUse()`, `ellipsoidGetParameters()`, `csGetAxisInfo()`, `primeMeridianGetParameters()`, `coordoperationGetMethodInfo()`, etc.) -- C output parameters are handled automatically, returning Maps
+- CRS introspection (`getAreaOfUse()`, `ellipsoidGetParameters()`, `csGetAxisInfo()`, `primeMeridianGetParameters()`, `coordoperationGetMethodInfo()`, and so on). The library reads C output parameters automatically and returns Maps
 - Direction constants (`PJ_FWD`, `PJ_INV`, `PJ_IDENT`)
 
-### JDK 21+ with GraalVM WebAssembly
+### JDK 25+ with GraalVM WebAssembly
 
-On platforms where no native library is available, this library falls back to
-running the WebAssembly transpiled version of PROJ through GraalVM's WebAssembly support.
+On platforms with no native library, this library runs the transpiled
+WebAssembly version of PROJ through GraalVM's WebAssembly support.
 
-Users needing this transpiled PROJ must use at least JDK 21 due to GraalVM's requirements
-and should enable JVMCI to improve performance.
+For this transpiled PROJ, JDK 25 or later is necessary because of GraalVM.
+Enable JVMCI for better performance.
 
 #### How GraalVM Implementation Works
 
-When native libraries aren't available, the GraalVM implementation:
+When native libraries are not available, the GraalVM implementation:
 1. Creates a GraalVM polyglot context with JavaScript and WebAssembly support
 2. Loads the emscripten-compiled PROJ module, then writes proj.db and proj.ini to Emscripten's virtual filesystem
-3. Manages type conversion between JVM and JavaScript using ProxyArray, ProxyExecutable, and ProxyObject
-4. Bridges PROJ's network callbacks through C stubs (`proj_network_stubs.c`) that dispatch to Java-side ProxyExecutable callbacks (`network.clj`) via `globalThis`, enabling grid fetching through Java's HttpClient
-5. Handles C++ exceptions from WASM code gracefully
+3. Does type conversion between JVM and JavaScript with ProxyArray, ProxyExecutable, and ProxyObject
+4. Installs Java-side ProxyExecutable callbacks (`network.clj`) in the WASM function table and registers them with PROJ. This lets Java's HttpClient fetch grids
+5. Catches C++ exceptions from WASM code
 
-> **Note:** GraalVM may print "WARNING: The polyglot context is using an implementation that does not support runtime compilation" during initialization. This is expected behavior indicating interpreted (non-JIT) WASM execution and does not affect correctness.
+> **Note:** GraalVM can show "WARNING: The polyglot context is using an implementation that does not support runtime compilation" during initialization. This message shows interpreted (non-JIT) WASM execution. It has no effect on correctness.
 
-The main challenge is initialization performance -- loading the WASM binary (3.6MB) and PROJ database (9.4MB) takes several seconds.
+Initialization is slow. The load of the WASM binary (3.6MB) and the PROJ database (10.2MB) takes some seconds.
 
 #### Usage
 
@@ -400,26 +399,26 @@ To force GraalVM implementation on a system where native libraries are available
 
 ;; Transform coordinates (EPSG:4326 uses lat/lon order)
 (def coords (proj/coord-array 1))
-(proj/set-coords! coords [[42.3603222 -71.0579667]]) ; Boston City Hall
-(proj/proj-trans-array {:P transformer :coord coords :n 1})
+(proj/set-coords! coords [[42.3603222 -71.0579667 0 0]]) ; Boston City Hall
+(proj/proj-trans-array {:p transformer :direction 1 :n 1 :coord coords})
 ;; coords now contains transformed coordinates
 
 ;; No manual cleanup needed - resources are automatically managed!
 ```
 
-Note: GraalVM initialization takes 5-7 seconds as it loads the WASM module. You may see Truffle/GraalVM diagnostic output during initialization.
+Note: GraalVM initialization takes 5-7 seconds because it loads the WASM module. You can see Truffle/GraalVM diagnostic output during initialization.
 
 ### JavaScript / ClojureScript
 
-The JavaScript implementation uses emscripten-compiled PROJ running in workers:
+The JavaScript implementation uses emscripten-compiled PROJ in workers:
 
-- **Worker-based WASM execution**: PROJ runs in Web Workers (browser) or `worker_threads` (Node.js), keeping the main thread responsive and allowing synchronous network operations for grid fetching
-- **Cherry-cljs compilation**: ClojureScript code compiles to clean ES6 modules
-- **Async API**: All operations return Promises since they dispatch to workers
+- **Worker-based WASM execution**: PROJ runs in Web Workers (browser) or `worker_threads` (Node.js). This keeps the main thread responsive. It also lets the workers do synchronous network operations for grid fetching
+- **squint compilation**: ClojureScript code compiles to ES6 modules
+- **Async API**: All operations return Promises because they dispatch to workers
 
 #### Environment-Specific Behavior
 
-The library automatically detects and adapts to different JavaScript environments:
+The library identifies the JavaScript environment automatically and adapts to it:
 
 - **Node.js**: PROJ runs in `worker_threads` with an XMLHttpRequest polyfill for grid fetching
 - **Browser**: PROJ runs in Web Workers with Emscripten's built-in FETCH support
@@ -458,14 +457,14 @@ console.log("Transformed:", transformed[0], transformed[1]);
 await proj.shutdown();
 
 // Resources are automatically cleaned up - no manual cleanup needed!
-// The resource-tracker library handles cleanup when objects go out of scope
+// The resource-tracker library releases them when objects go out of scope
 
 // Optional: create an explicit context to disable network or pin to a worker
 // const ctx = await proj.contextCreate({ network: false });
 // const t = await proj.projCreateCrsToCrs({ context: ctx, ... });
 ```
 
-For browsers, the same API works. See the [Grid Fetching](#grid-fetching) section for Cross-Origin Isolation requirements when using pthreads mode.
+For browsers, the API is the same, and no special headers are necessary.
 
 ```bash
 $ node index.mjs
@@ -476,14 +475,31 @@ $ node index.mjs
 
 ## Prerequisites
 
-**Docker/Podman users**: 
-- Install Docker or Podman
-- **Resource requirements**: 150GB disk, 8GB RAM  
-- **Podman setup**: `podman machine init --disk-size 150 --memory 8192`
+Builds run through Babashka and Nix. The host build needs no container.
+
+Two tasks do need podman or docker:
+
+- `bb build --cross` and `bb build --cross-platform` build each target in a
+  container, from the Containerfile that clj-native supplies. clj-proj has no
+  Containerfile of its own. The task vendors clj-native into
+  `clj-native-vendor/` and points the flake at it. On the published clj-native
+  jar, the flake files come out of the jar. With the `:dev` checkout override,
+  the task copies the checkout.
+- `bb test:linux` pulls the public `clojure:tools-deps-trixie` image.
 
 **Babashka + Nix users**:
 - Install [Nix](https://nixos.org/download.html) and [direnv](https://direnv.net/)
 - **One-time setup**: `direnv allow`
+- The flake pins **GraalVM CE 25** as the JDK. Its libgraal lets the `:graal`
+  PROJ WASM guest JIT-compile. Without it, the guest runs interpreted, which
+  is much slower. `direnv allow` points `JAVA_HOME` at the GraalVM JDK
+  automatically for each shell that enters the repo. For a shell without
+  direnv, run tasks with `direnv exec . bb <task>`. The `bb test:graal` /
+  `test:clojure-graal` tasks give a warning if they identify a non-GraalVM
+  JDK.
+- Use `direnv exec <dir> <cmd>`, which uses the cached dev shell.
+  `nix develop <dir> --command <cmd>` gives the same environment. But it
+  evaluates the flake again on each call, and this takes seconds each time.
 
 ## Building
 
@@ -495,160 +511,63 @@ bb build --help   # Show build options
 bb clean --help   # Show clean options
 ```
 
-**Docker/Podman users**: First build the development container:
-```bash
-docker build --target dev -t clj-proj:dev .
-# or: podman build --target dev -t clj-proj:dev .
-```
-
-**Rebuild the container when:**
-- Containerfile changes
-- flake.nix dependencies change  
-- After pulling latest changes that modify build environment
-- Add `--no-cache` flag to force complete rebuild if needed
-
 ### Common Build Tasks
 
-**Native libraries (current platform):**
 ```bash
-# Babashka + Nix
-bb build --native
-
-# Docker/Podman alternative  
-docker run --rm -v $(pwd):/workspace clj-proj:dev bb build --native
-```
-
-**WebAssembly build:**
-```bash
-# Babashka + Nix  
-bb build --wasm
-
-# Docker/Podman alternative
-docker run --rm -v $(pwd):/workspace clj-proj:dev bb build --wasm
-```
-
-**Cross-platform builds:**
-```bash
-# Babashka + Nix (uses Docker internally)
-bb build --cross-platform linux/amd64     # Working
-bb build --cross-platform linux/aarch64   # Working
-bb build --cross-platform windows/amd64   # Working
-bb build --cross                          # Build all default platforms
-
-# Docker/Podman direct
-docker build --platform linux/amd64 --target export --output type=local,dest=./artifacts .
-docker build --platform linux/arm64 --target export --output type=local,dest=./artifacts .
-```
-
-**Complete build + test:**
-```bash
-# Babashka + Nix
-bb test-run       # Builds everything, runs all tests
-
-# Docker/Podman
-docker build --target test-all .
+bb build --native                         # Native libraries, current platform
+bb build --wasm                           # WebAssembly
+bb build --cross-platform linux/amd64     # One cross target
+bb build --cross-platform linux/aarch64
+bb build --cross-platform windows/amd64
+bb build --cross                          # All default platforms
+bb test-run                               # Build everything, run all tests
 ```
 
 ### Development Setup
 
-**Babashka + Nix:**
 ```bash
 direnv allow      # One-time setup
 bb dev            # Rich REPL with Portal
 bb demo           # Browser demo at localhost:8080
 ```
 
-**Docker/Podman:**
-```bash
-# First-time setup: build the development container
-docker build --target dev -t clj-proj:dev .
-
-# Then start interactive development environment
-docker run -it --rm -v $(pwd):/workspace -p 7888:7888 -p 8080:8080 clj-proj:dev
-# Inside container: bb dev, bb demo, etc.
-```
-
 ### Packaging
 
-**JVM (JAR file):**
 ```bash
-# Babashka + Nix
-bb jar
-
-# Docker/Podman  
-docker run --rm -v $(pwd):/workspace clj-proj:dev bb jar
-```
-
-**JavaScript (ES6 module):**
-```bash
-# Babashka + Nix
-bb cherry
-
-# Docker/Podman
-docker run --rm -v $(pwd):/workspace clj-proj:dev bb cherry
+bb jar            # JVM (JAR file)
+bb squint         # JavaScript (ES6 module)
 ```
 
 ### Build Process Overview
 
 1. **Native builds** compile PROJ + dependencies (SQLite, LibTIFF, zlib) for the host platform
-   - **Output**: `resources/{platform}/` (e.g., `resources/darwin-aarch64/`)
+   - **Output**: `resources/{platform}/` (for example, `resources/darwin-aarch64/`)
    - **Linux**: Static linking
    - **Windows**: Static linking
 
 2. **WASM builds** use emscripten to compile PROJ into WebAssembly
    - **Output**: `resources/wasm/` and `src/cljc/net/willcohen/proj/`
-   - **Requirements**: emscripten tools in PATH (automatically provided in containers)
+   - **Requirements**: emscripten tools in PATH, supplied by the Nix dev shell
 
-3. **Cross-platform builds** use Docker containers with Nix for reproducible builds
-   - **Requirements**: Docker or Podman installed  
+3. **Cross-platform builds** use Nix for reproducible builds
    - **Resource requirements**: 150GB disk, 8GB RAM
-   - **Podman setup**: `podman machine init --disk-size 150 --memory 8192`
 
 ## Testing
 
-**Run all tests:**
 ```bash
-# Babashka + Nix  
-bb test:all
+bb test:all           # Everything
 
-# Docker/Podman
-docker build --target test-all .
+bb test:ffi           # Native FFI
+bb test:graal         # GraalVM WebAssembly
+bb test:node          # JavaScript / Node.js
+bb test:playwright    # Browser integration (requires a display)
+
+bb test:jar           # JAR as a downstream dependency
+bb test:npm           # npm package as a downstream dependency
+bb test:linux         # Linux platforms, in a public container image
 ```
 
-**Test specific implementations:**
-```bash
-# Native FFI
-bb test:ffi                    # Babashka + Nix
-docker run --rm -v $(pwd):/workspace clj-proj:dev bb test:ffi
-
-# GraalVM WebAssembly  
-bb test:graal                  # Babashka + Nix
-docker run --rm -v $(pwd):/workspace clj-proj:dev bb test:graal
-
-# JavaScript/Node.js
-bb test:node                   # Babashka + Nix
-docker run --rm -v $(pwd):/workspace clj-proj:dev bb test:node
-
-# Browser integration
-bb test:playwright             # Babashka + Nix (requires display)
-# (Not available in headless containers)
-```
-
-**Test packaged artifacts:**
-```bash  
-# JAR as downstream dependency
-bb test:jar                    # Babashka + Nix
-docker run --rm -v $(pwd):/workspace clj-proj:dev bb test:jar
-
-# npm package as downstream dependency
-bb test:npm                    # Babashka + Nix  
-docker run --rm -v $(pwd):/workspace clj-proj:dev bb test:npm
-
-# Linux cross-platform testing
-bb test:linux                  # Uses Docker internally
-```
-
-The test framework runs identical tests against all implementations, ensuring consistent behavior across platforms.
+The test framework runs identical tests against all implementations. This makes sure that behavior is the same on all platforms.
 
 ## Architecture Notes
 
@@ -657,30 +576,28 @@ The test framework runs identical tests against all implementations, ensuring co
 ```
 clj-proj/
 ├── src/
-│   ├── c/
-│   │   └── proj_network_stubs.c        # GraalVM WASM network callback stubs
 │   ├── clj/net/willcohen/proj/impl/    # JVM-specific implementations
-│   │   ├── native.clj                  # JNA/FFI bindings
+│   │   ├── native.clj                  # Panama FFM bindings
 │   │   ├── logging.clj                 # PROJ log callback
 │   │   ├── network.clj                 # GraalVM WASM grid fetching
 │   │   └── struct.clj                  # Native struct definitions
 │   ├── cljc/net/willcohen/proj/        # Cross-platform core
 │   │   ├── proj.cljc                   # Public API + dispatch
 │   │   ├── wasm.cljc                   # WASM interface (GraalVM + CLJS workers)
-│   │   ├── spec.cljc                   # clojure.spec definitions
+│   │   ├── handler.cljc                # Workload-pool handler spec
 │   │   ├── fndefs.cljc                 # PROJ function definitions
-│   │   ├── macros.clj                  # JVM macros
-│   │   ├── macros.cljs                 # ClojureScript macros
+│   │   ├── macros.cljc                 # Macros for JVM and squint
 │   │   ├── proj-loader.mjs             # Main-thread WASM orchestrator
-│   │   ├── proj-worker.mjs             # Worker for browser/Node.js
-│   │   ├── fetch-worker.mjs            # Node.js sync HTTP bridge worker
-│   │   ├── *.mjs                       # Cherry-generated JS modules
+│   │   ├── proj-handler.mjs            # Generated worker-router handler
+│   │   ├── proj-handler-overrides.mjs  # Hand-written half of the handler
+│   │   ├── esbuild.config.mjs          # Bundler config
+│   │   ├── *.mjs                       # squint-generated JS modules
 │   │   └── dist/                       # esbuild bundle output (npm package)
 │   └── java/net/willcohen/proj/
 │       └── PROJ.java                   # Java API wrapper
 ├── resources/
 │   ├── {platform}/                     # Native libraries per platform
-│   ├── wasm/                           # WASM artifacts (GraalVM single-threaded build)
+│   ├── wasm/                           # WASM artifacts read by GraalVM
 │   │   ├── proj-emscripten.js          # WASM JS glue
 │   │   ├── proj-emscripten.wasm        # WASM binary
 │   │   └── proj-loader.mjs             # proj-loader.mjs for classpath
@@ -697,20 +614,21 @@ clj-proj/
 **Core API & Dispatch:**
 - `src/cljc/net/willcohen/proj/proj.cljc` - Main public API and dispatch logic
 - `src/cljc/net/willcohen/proj/fndefs.cljc` - PROJ function definitions and constants
-- `src/cljc/net/willcohen/proj/macros.clj[s]` - Code generation macros for multi-platform support
+- `src/cljc/net/willcohen/proj/macros.cljc` - Code generation macros for multi-platform support
 - `src/cljc/net/willcohen/proj/wasm.cljc` - GraalVM context management (CLJ) and worker pool (CLJS)
+- `src/cljc/net/willcohen/proj/handler.cljc` - Per-worker init and destroy for the workload-pool `:proj` handler
 
 **JVM Implementations:**
-- `src/clj/net/willcohen/proj/impl/native.clj` - JNA/FFI implementation for native libraries
+- `src/clj/net/willcohen/proj/impl/native.clj` - Panama FFM implementation for native libraries
 - `src/clj/net/willcohen/proj/impl/struct.clj` - Native struct definitions for FFI
-- `src/clj/net/willcohen/proj/impl/logging.clj` - JNA callback for PROJ log routing
-- `src/clj/net/willcohen/proj/impl/network.clj` - GraalVM WASM grid fetching callbacks
-- `src/c/proj_network_stubs.c` - C stubs bridging PROJ's network API to GraalVM Java callbacks
+- `src/clj/net/willcohen/proj/impl/logging.clj` - Native upcall for PROJ log routing
+- `src/clj/net/willcohen/proj/impl/network.clj` - Grid fetch callbacks for native FFI and GraalVM WASM
 
 **JavaScript Workers:**
 - `src/cljc/net/willcohen/proj/proj-loader.mjs` - Main-thread orchestrator (init, worker pool)
-- `src/cljc/net/willcohen/proj/proj-worker.mjs` - PROJ worker (browser Web Workers / Node.js worker_threads)
-- `src/cljc/net/willcohen/proj/fetch-worker.mjs` - Node.js sync HTTP bridge via SharedArrayBuffer + Atomics
+- `src/cljc/net/willcohen/proj/proj-handler.mjs` - Generated worker-router handler. It runs every ccall
+- `src/cljc/net/willcohen/proj/proj-handler-overrides.mjs` - Hand-written half of that handler
+- `fetch_worker.mjs` (from clj-native) - Node.js sync HTTP bridge through SharedArrayBuffer + Atomics
 
 **Java API:**
 - `src/java/net/willcohen/proj/PROJ.java` - Java wrapper class
@@ -718,9 +636,9 @@ clj-proj/
 ### Call Flow
 
 `proj.cljc` is the public API for all platforms. On the JVM, `init!` tries
-native FFI first and falls back to GraalVM WASM. On ClojureScript, it
-initializes the worker pool. After init, all calls dispatch through the
-active backend.
+native FFI first. If that fails, it uses GraalVM WASM. On ClojureScript,
+`init!` initializes the worker pool. After init, all calls dispatch through
+the active backend.
 
 ```
 JVM — Native FFI (preferred):
@@ -728,20 +646,21 @@ JVM — Native FFI (preferred):
   proj.cljc         Public API. Blocking calls. Dispatches based on
     │                @implementation (:ffi or :graal).
     ▼
-  native.clj        JNA/FFI via dtype-next. Extracts platform-specific
-    │                shared libraries from resources/{platform}/ to a temp
-    │                dir, loads them via JNA. Direct C calls, no WASM.
+  native.clj        Panama FFM through dtype-next. Extracts the
+    │                platform-specific shared libraries from
+    │                resources/{platform}/ to a temp dir, then binds them.
+    │                Direct C calls, no WASM.
     │
-    ├─ logging.clj   JNA callback bridging PROJ's log output to
+    ├─ logging.clj   Native upcall that routes PROJ's log output to
     │                 clojure.tools.logging.
     │
-    └─ struct.clj    Native struct definitions (PJ_COORD, etc.) for
-                     zero-copy memory access via dtype-next tensors.
-                     Grid fetching handled by JNA callbacks to Java HttpClient.
+    └─ struct.clj    Native struct definitions (PJ_COORD and so on) for
+                     zero-copy memory access through dtype-next tensors.
+                     Native upcalls to Java HttpClient fetch the grids.
 ```
 
 ```
-JVM — GraalVM WASM (fallback, or forced via force-graal!):
+JVM — GraalVM WASM (fallback, or forced with force-graal!):
 
   proj.cljc         Same public API, same dispatch.
     │
@@ -750,13 +669,13 @@ JVM — GraalVM WASM (fallback, or forced via force-graal!):
     │                Loads proj-emscripten.wasm, proj.db, and proj.ini from
     │                the classpath (resources/wasm/).
     ▼
-  proj-loader.mjs   initialize() runs the Emscripten module directly in
-    │                the polyglot context. No workers, no postMessage --
-    │                JVM ↔ JS interop is via ProxyArray/ProxyObject.
+  proj-loader.mjs   load() runs the Emscripten module directly in the
+    │                polyglot context. No workers, no postMessage. JVM to
+    │                JS interop goes through ProxyArray and ProxyObject.
     │
-    ├─ network.clj   Grid fetching callbacks. C stubs (proj_network_stubs.c)
-    │                 in the WASM binary call into Java via globalThis, where
-    │                 network.clj handles HTTP with Java's HttpClient.
+    ├─ network.clj   Grid fetch callbacks. ProxyExecutable callbacks in the
+    │                 WASM function table call into Java, where network.clj
+    │                 does the HTTP with Java's HttpClient.
     │
     └─ logging.clj   Same log routing as FFI, adapted for GraalVM callbacks.
 ```
@@ -767,38 +686,49 @@ Browser / Node.js (ClojureScript):
   proj.cljc         Public API. All operations return Promises.
     │
     ▼
-  wasm.cljc         Worker pool management. Routes each call to the
-    │                worker that owns the relevant PJ context.
+  wasm.cljc         Main thread. Spawns the worker-router pool and routes
+    │                each call to the worker that owns the relevant PJ
+    │                context. worker-router owns the call protocol, so
+    │                there is no hand-rolled postMessage ID table here.
     ▼
-  proj-loader.mjs   Main thread. Spawns workers, loads resources (proj.db,
-    │                proj.ini, WASM binary), and manages a promise-per-call
-    │                protocol: each outgoing postMessage gets a unique ID,
-    │                and the response resolves the matching Promise.
+  proj-loader.mjs   Reads proj.db and proj.ini once on the main thread.
+    │                init-workers! forwards them into each worker through
+    │                the handler init args.
     ▼
-  proj-worker.mjs   Runs in a Web Worker (browser) or worker_thread (Node.js).
+  proj-handler.mjs  Runs in a Web Worker (browser) or worker_thread (Node.js).
     │                All PROJ ccall/malloc/free operations happen here.
     │                Loads the Emscripten module and writes proj.db/proj.ini
-    │                to Emscripten's virtual filesystem.
+    │                to Emscripten's virtual filesystem. clj-native's
+    │                generator makes it from proj-handler-overrides.mjs. Its
+    │                runtime queue serializes every call.
     ▼
-  fetch-worker.mjs  Node.js only. A second worker_thread that bridges
-                     Emscripten's synchronous XMLHttpRequest (used for grid
-                     fetching) to Node.js async http/https via SharedArrayBuffer
-                     + Atomics.wait/notify. Browsers don't need this because
-                     Web Workers can use Emscripten's built-in FETCH support.
+  fetch_worker.mjs  Node.js only, supplied by clj-native. A second
+                     worker_thread that connects Emscripten's synchronous
+                     XMLHttpRequest (used for grid fetch) to Node.js async
+                     http/https through SharedArrayBuffer + Atomics.wait and
+                     notify. Browsers do not need this, because Web Workers
+                     can use Emscripten's built-in FETCH support.
 ```
 
-### WASM Build Variants
+### WASM Build Output
 
-The `bb build --wasm` task produces two WASM builds from the same PROJ source:
+`bb build --wasm` makes one single-threaded WASM build from the PROJ
+source. `--wasm-browser` and `--wasm-graal` are aliases of the same task.
 
-- **Pthreads build** (for ClojureScript browser/Node.js) -- output goes to `src/cljc/net/willcohen/proj/` alongside the source, where the cherry/esbuild pipeline bundles it into `dist/`.
-- **Single-threaded build** (for GraalVM) -- output goes to `resources/wasm/` on the classpath. GraalVM's polyglot engine doesn't support pthreads, so it needs this variant.
+The task writes `proj-emscripten.js` and `proj-emscripten.wasm` to two
+directories:
 
-Both builds produce files named `proj-emscripten.js` and `proj-emscripten.wasm`; they live in different directories.
+- `src/cljc/net/willcohen/proj/`, where the squint and esbuild pipeline
+  bundles them into `dist/` for ClojureScript.
+- `resources/wasm/`, where GraalVM reads them from the classpath.
+
+One build is sufficient for all three lanes. GraalVM's polyglot engine does
+not support pthreads. Browsers get no benefit from a `SharedArrayBuffer`
+memory here. Thus a second variant has no purpose.
 
 ### Performance Considerations
 
-- **Initialization**: Native FFI is near-instant, GraalVM takes 5-7 seconds
+- **Initialization**: Native FFI is almost immediate. GraalVM takes 5-7 seconds
 - **Transformations**: Native is fastest, followed by direct WASM, then GraalVM
 - **Memory**: Coordinate arrays use platform-specific optimizations
 
@@ -806,10 +736,9 @@ Both builds produce files named `proj-emscripten.js` and `proj-emscripten.wasm`;
 
 ### 1. Nix Flake and Direnv
 
-To avoid an ever evolving set of dependencies where specific versions can cause errors with the build process,
-a nix flake has been provided that will work with [direnv](https://direnv.net). (See .envrc's `use flake`).
-
-This should allow for a development environment that is consistent and known to work.
+A nix flake pins the build dependencies. This prevents errors from changed
+dependency versions. The flake operates with [direnv](https://direnv.net)
+(see .envrc's `use flake`).
 
 ### 2. Local REPL
 
@@ -826,9 +755,9 @@ bb nrepl
 clj
 ```
 
-It may be helpful to use an editor with Clojure functionality: Emacs with CIDER, VSCode with Calva and Portal extensions, IDEA and Cursive.
+An editor with Clojure support can help: Emacs with CIDER, VSCode with Calva and Portal extensions, IDEA with Cursive.
 
-The `bb nrepl` task starts an nREPL server on port 7888 with Portal included for data visualization and debugging.
+The `bb nrepl` task starts an nREPL server on port 7888. Portal is included for data visualization and debugging.
 
 ### 3. Demo Server
 
@@ -837,8 +766,6 @@ Run the browser demo locally:
 ```bash
 bb demo  # Serves at http://localhost:8080/docs/
 ```
-
-Navigate to http://localhost:8080/docs/ to see the library in action.
 
 ### 4. Documentation
 
@@ -850,13 +777,13 @@ bb quickdoc  # Generates docs from source
 
 ### 5. Task Reference
 
-Run `bb tasks` for complete list. Key commands:
+Run `bb tasks` for the complete list. Key commands:
 
 **Build & Package:**
 - `bb build --help` - Show build options (native/wasm/cross)
 - `bb build:all` - Build native + WASM + cross-platform artifacts
 - `bb jar` - Build JAR file for JVM
-- `bb cherry` - Build JavaScript ES6 module
+- `bb squint` - Build JavaScript ES6 module
 - `bb pom` - Generate/update pom.xml
 
 **Testing:**
@@ -876,7 +803,7 @@ Run `bb tasks` for complete list. Key commands:
 - `bb version-bump <version>` - Bump version across all files
 
 **CI:**
-- `bb download-ci-artifacts` - Download all build artifacts (source archives, native libs, WASM) from the most recent CI run (requires `gh` CLI)
+- `bb download-ci-artifacts` - Download all build artifacts (source archives, native libs, WASM) from the most recent CI run (the `gh` CLI is necessary)
 
 **Utilities:**
 - `bb clean --help` - Show clean options
@@ -884,9 +811,35 @@ Run `bb tasks` for complete list. Key commands:
 - `bb npm-contents` - List files in npm package
 - `bb proj:clone --help` - Local PROJ development
 
-### 7. Local PROJ Development Workflow
+### 7. The clj-native JavaScript Dependency
 
-For developers working on the PROJ C library itself, clj-proj provides a workflow to test local PROJ changes against the bindings before submitting upstream.
+The JavaScript side uses clj-native through its published npm package.
+`src/cljc/net/willcohen/proj/package.json` pins an exact `ffi-wasm`
+version, and a plain `npm install` gets it from the registry.
+
+To develop against a clj-native checkout, point the dependency at a built
+tarball. This is the npm twin of the `:dev` alias in `deps.edn` and of the
+flake's `--override-input`:
+
+```bash
+cd ../clj-native && npm pack
+```
+
+The `prepack` script runs `bb build:js` first, which compiles clj-native's
+`.cljc` sources to the `.mjs` modules that go into the package. Then set
+`"ffi-wasm"` to `"file:../../../../../../clj-native/ffi-wasm-<version>.tgz"`
+in `package.json` and run `npm install --prefix src/cljc/net/willcohen/proj`.
+Do not commit that change. After each clj-native edit, run the pack and the
+install again.
+
+worker-router is a published package (`npm:@wcohen/worker-router`), so a plain
+`npm install` gets it. For work on worker-router itself, link
+`node_modules/worker-router` to a local checkout. Run `npm run build` there.
+Then run `bb squint` here to rebuild the bundle.
+
+### 8. Local PROJ Development Workflow
+
+clj-proj has a workflow for developers of the PROJ C library. The workflow lets you examine local PROJ changes against the bindings before you send the changes upstream.
 
 **Setup:**
 ```bash
@@ -920,7 +873,7 @@ bb build --cross --local-proj             # Test musl builds with local PROJ
 - `proj:clone` - Clone OSGeo/PROJ repository with options (`--help` for details)
 
 **Local PROJ Build Flags:**
-- `--local-proj` - Use `vendor/PROJ` instead of released PROJ version (works with any build task)
+- `--local-proj` - Use `vendor/PROJ` instead of released PROJ version (applicable to all build tasks)
 
 **Directory Structure:**
 ```
@@ -930,8 +883,6 @@ clj-proj/
 ├── bb.edn
 └── ...
 ```
-
-This workflow enables integration testing between upstream PROJ C library development and clj-proj bindings, catching upstream API changes and build proces.
 
 ## License
 
@@ -959,7 +910,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --
 
 This project uses code from [PROJ](https://github.com/OSGeo/PROJ), which is
-distributed under the following terms:
+distributed under these terms:
 
 ```
 All source, data files and other contents of the PROJ package are 
@@ -999,8 +950,8 @@ Copyright information can be found in source files.
  
 --
 
-This project (in particular the implemented web interface) uses code from [wasm-proj](https://github.com/jjimenezshaw/wasm-proj), which is
-distributed under the following terms:
+This project (in particular, the web interface) uses code from [wasm-proj](https://github.com/jjimenezshaw/wasm-proj), which is
+distributed under these terms:
 
 ```
 MIT License
@@ -1029,7 +980,7 @@ SOFTWARE.
 --
  
 This project uses code from [libtiff](https://gitlab.com/libtiff/libtiff),
-which distributed under the following terms:
+which is distributed under these terms:
 
 ``` 
 Copyright © 1988-1997 Sam Leffler
@@ -1063,7 +1014,7 @@ This project bundles SQLite, which is in the public domain. See
 
 --
 
-This project uses [zlib](https://zlib.net), which is distributed under the following terms:
+This project uses [zlib](https://zlib.net), which is distributed under these terms:
 
 ```
 Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler
@@ -1085,39 +1036,11 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
---
-
-The browser demo uses [coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker)
-for SharedArrayBuffer support on static hosting, which is distributed under the MIT license:
-
-```
-MIT License
-
-Copyright (c) 2021 Guido Zuidhof
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
 
 --
 
 This project statically links [musl libc](https://musl.libc.org/) for Linux builds,
-which is distributed under the following terms:
+which is distributed under these terms:
 
 ```
 Copyright © 2005-2020 Rich Felker, et al.
@@ -1145,7 +1068,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --
 
 This project statically links MinGW-w64 runtime libraries for Windows builds.
-The MinGW-w64 runtime is distributed under various permissive licenses:
+The MinGW-w64 runtime is distributed under different permissive licenses:
 
 ```
 MinGW-w64 runtime licensing
@@ -1207,6 +1130,7 @@ See [MinGW-w64 runtime licensing](https://sourceforge.net/p/mingw-w64/mingw-w64/
 
 ### Data Files
 
-This project includes PROJ data files (proj.db, proj.ini) which contain
-coordinate system definitions from various sources including EPSG. These
-are distributed under the same terms as PROJ itself (MIT/X11 style license).
+This project includes PROJ data files (proj.db, proj.ini) that contain
+coordinate system definitions from different sources (for example, EPSG).
+These files are distributed under the same terms as PROJ (MIT/X11 style
+license).

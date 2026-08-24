@@ -6,9 +6,12 @@
     <script type="importmap">
     {
         "imports": {
-            "cherry-cljs/cljs.core.js": "https://cdn.jsdelivr.net/npm/cherry-cljs@0.4.30/lib/cljs.core.js",
-            "cherry-cljs/lib/clojure.string.js": "https://cdn.jsdelivr.net/npm/cherry-cljs@0.4.30/lib/clojure.string.js",
-            "resource-tracker": "https://cdn.jsdelivr.net/npm/resource-tracker@0.0.1-alpha1/resource.mjs",
+            "squint-cljs/core.js": "https://cdn.jsdelivr.net/npm/squint-cljs@0.14.206/core.js",
+            "squint-cljs/src/squint/string.js": "https://cdn.jsdelivr.net/npm/squint-cljs@0.14.206/src/squint/string.js",
+            "resource-tracker": "./dist/resource-tracker.mjs",
+            "worker-router": "./dist/worker-router.mjs",
+            "worker-router/worker-bootstrap": "./dist/worker-bootstrap.mjs",
+            "comlink": "./dist/comlink.mjs",
             "proj-wasm": "./dist/proj.mjs"
         }
     }
@@ -41,7 +44,6 @@
             }
         }
 
-        // Run setup on load
         runTests();
     </script>
 </body>

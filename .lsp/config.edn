@@ -1,0 +1,10 @@
+;; clojure-lsp settings for clj-proj.
+;;
+;; define-all-proj-public-fns interns one public fn per PROJ C function, and
+;; cg calls that surface from another repo. clojure-lsp cannot see those call
+;; sites, so it reports every generated fn as an unused public var. The
+;; exclusion is limited to vars that the macro defines, which keeps real
+;; dead-code reports for hand-written vars.
+{:linters {:clojure-lsp/unused-public-var
+           {:exclude-when-defined-by #{net.willcohen.proj.macros/define-all-proj-public-fns
+                                       net.willcohen.proj.macros/define-proj-public-fn}}}}

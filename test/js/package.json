@@ -10,6 +10,6 @@
   "license": "MIT",
   "dependencies": {
     "proj-js": "file:../../src/cljc/net/willcohen/proj",
-    "resource-tracker": "^0.0.1-alpha1"
+    "resource-tracker": "^0.0.1"
   }
 }

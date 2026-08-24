@@ -1,5 +1,28 @@
 {
   "nodes": {
+    "clj-native": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1787345788,
+        "narHash": "sha256-HKEd5TFTVpP39LsaAYXMLANnzEkY6AOPAgCfd/zDuq8=",
+        "owner": "willcohen",
+        "repo": "clj-native",
+        "rev": "8839bfcf3f9bd9fb691ed0b31fbebbfaf7192ff2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "willcohen",
+        "repo": "clj-native",
+        "type": "github"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -20,11 +43,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1775888245,
-        "narHash": "sha256-nwASzrRDD1JBEu/o8ekKYEXm/oJW6EMCzCRdrwcLe90=",
+        "lastModified": 1787394516,
+        "narHash": "sha256-pRGOQSClnXNI2iLUG6DYpsGvYcuw0drOutVZFTJNw90=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "13043924aaa7375ce482ebe2494338e058282925",
+        "rev": "c8f90650c15282fa8656a041bfbbd2403997a9a7",
         "type": "github"
       },
       "original": {
@@ -36,6 +59,7 @@
     },
     "root": {
       "inputs": {
+        "clj-native": "clj-native",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs"
       }

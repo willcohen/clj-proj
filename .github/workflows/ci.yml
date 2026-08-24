@@ -10,24 +10,57 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ===========================================================================
-  # SOURCE DOWNLOAD (shared by all build jobs)
-  # ===========================================================================
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Java (GraalVM CE 25)
+        uses: graalvm/setup-graalvm@v1.6.4
+        with:
+          distribution: graalvm-community
+          # Pin the CE release whose libgraal matches the org.graalvm.* 25.2.4
+          # artifacts in deps.edn. Truffle requires the two to agree.
+          version: '25.2.4'
+          java-version: '25'
+
+      - name: Install Clojure, Babashka, and clj-kondo
+        uses: DeLaGuardo/setup-clojure@13.6.1
+        with:
+          bb: latest
+          cli: latest
+          clj-kondo: latest
+
+      - name: Setup Clojure and clj-kondo cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.m2
+            ~/.gitlibs
+            ~/.clojure/.cpcache
+            .clj-kondo/.cache-cli
+            .clj-kondo/net.willcohen
+          key: lint-${{ hashFiles('**/deps.edn', '**/bb.edn') }}
+          restore-keys: lint-
+
+      - name: Run clj-kondo
+        run: bb lint
 
   download-sources:
     name: Download Source Archives
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Babashka
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
 
       - name: Restore source cache
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target/*.tar.gz
           key: source-archives-${{ hashFiles('bb.edn') }}
@@ -37,33 +70,29 @@ jobs:
         run: bb download-sources
 
       - name: Upload source archives
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: source-archives
           path: target/*.tar.gz
           retention-days: 7
-
-  # ===========================================================================
-  # BUILD STAGE (7 parallel jobs)
-  # ===========================================================================
 
   build-native-macos:
     name: Build Native (macOS arm64)
     needs: [download-sources]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Restore build cache
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: resources/darwin-aarch64/
           key: native-macos-${{ hashFiles('bb.edn', 'flake.nix', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
 
       - name: Download source archives
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: source-archives
           path: target/
@@ -76,14 +105,14 @@ jobs:
 
       - name: Setup Nix cache
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: DeterminateSystems/magic-nix-cache-action@v14
 
       - name: Build native libraries
         if: steps.cache.outputs.cache-hit != 'true'
         run: nix develop --command bb build --native
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-macos
           path: resources/darwin-aarch64/
@@ -94,18 +123,18 @@ jobs:
     needs: [download-sources]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Restore build cache
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: resources/linux-amd64/
           key: native-linux-amd64-${{ hashFiles('bb.edn', 'flake.nix', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
 
       - name: Download source archives
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: source-archives
           path: target/
@@ -118,14 +147,14 @@ jobs:
 
       - name: Setup Nix cache
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: DeterminateSystems/magic-nix-cache-action@v14
 
       - name: Build native libraries
         if: steps.cache.outputs.cache-hit != 'true'
         run: nix develop --command bb build --native
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-linux-amd64
           path: resources/linux-amd64/
@@ -136,34 +165,34 @@ jobs:
     needs: [download-sources]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Restore build cache
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: resources/linux-aarch64/
-          key: cross-linux-aarch64-${{ hashFiles('bb.edn', 'Containerfile', '.dockerignore', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
+          key: cross-linux-aarch64-${{ hashFiles('bb.edn', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
 
       - name: Install Babashka
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
 
       - name: Download source archives
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: source-archives
           path: target/
 
-      - name: Build via Docker + Containerfile
+      - name: Build cross-platform
         if: steps.cache.outputs.cache-hit != 'true'
         run: bb build --cross-platform linux/aarch64
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-linux-aarch64
           path: resources/linux-aarch64/
@@ -174,34 +203,34 @@ jobs:
     needs: [download-sources]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Restore build cache
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: resources/windows-amd64/
-          key: cross-windows-${{ hashFiles('bb.edn', 'Containerfile', '.dockerignore', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
+          key: cross-windows-${{ hashFiles('bb.edn', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
 
       - name: Install Babashka
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
 
       - name: Download source archives
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: source-archives
           path: target/
 
-      - name: Build via Docker + Containerfile
+      - name: Build cross-platform
         if: steps.cache.outputs.cache-hit != 'true'
         run: bb build --cross-platform windows/amd64
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-windows-amd64
           path: resources/windows-amd64/
@@ -212,11 +241,11 @@ jobs:
     needs: [download-sources]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Restore build cache
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             resources/proj.db
@@ -227,7 +256,7 @@ jobs:
 
       - name: Download source archives
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: source-archives
           path: target/
@@ -240,14 +269,14 @@ jobs:
 
       - name: Setup Nix cache
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: DeterminateSystems/magic-nix-cache-action@v14
 
       - name: Build WASM browser artifacts
         if: steps.cache.outputs.cache-hit != 'true'
         run: nix develop --command bb build --wasm-browser
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wasm-browser
           path: |
@@ -262,18 +291,18 @@ jobs:
     needs: [download-sources]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Restore build cache
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: resources/wasm/
           key: wasm-graal-${{ hashFiles('bb.edn', 'flake.nix', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
 
       - name: Download source archives
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: source-archives
           path: target/
@@ -286,44 +315,43 @@ jobs:
 
       - name: Setup Nix cache
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: DeterminateSystems/magic-nix-cache-action@v14
 
       - name: Build WASM graal artifacts
         if: steps.cache.outputs.cache-hit != 'true'
         run: nix develop --command bb build --wasm-graal
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wasm-graal
           path: resources/wasm/
           retention-days: 7
-
-  # ===========================================================================
-  # JAVA TEST STAGE (FFI, GraalVM, JAR - needs native + wasm-graal artifacts)
-  # ===========================================================================
 
   test-java-macos:
     name: Java Tests (macOS)
     needs: [build-native-macos, build-wasm-browser, build-wasm-graal]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - name: Setup Java (GraalVM CE 25)
+        uses: graalvm/setup-graalvm@v1.6.4
         with:
-          distribution: temurin
-          java-version: '21'
+          distribution: graalvm-community
+          # Pin the CE release whose libgraal matches the org.graalvm.* 25.2.4
+          # artifacts in deps.edn. Truffle requires the two to agree.
+          version: '25.2.4'
+          java-version: '25'
 
       - name: Install Clojure and Babashka
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
           cli: latest
 
       - name: Setup Clojure cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.m2
@@ -333,19 +361,19 @@ jobs:
           restore-keys: clojure-deps-macos-
 
       - name: Download native artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: native-macos
           path: resources/darwin-aarch64/
 
       - name: Download WASM browser artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-browser
           path: .
 
       - name: Download WASM graal artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-graal
           path: resources/wasm/
@@ -364,22 +392,25 @@ jobs:
     needs: [build-native-linux-amd64, build-wasm-browser, build-wasm-graal]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - name: Setup Java (GraalVM CE 25)
+        uses: graalvm/setup-graalvm@v1.6.4
         with:
-          distribution: temurin
-          java-version: '21'
+          distribution: graalvm-community
+          # Pin the CE release whose libgraal matches the org.graalvm.* 25.2.4
+          # artifacts in deps.edn. Truffle requires the two to agree.
+          version: '25.2.4'
+          java-version: '25'
 
       - name: Install Clojure and Babashka
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
           cli: latest
 
       - name: Setup Clojure cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.m2
@@ -389,19 +420,19 @@ jobs:
           restore-keys: clojure-deps-linux-amd64-
 
       - name: Download native artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: native-linux-amd64
           path: resources/linux-amd64/
 
       - name: Download WASM browser artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-browser
           path: .
 
       - name: Download WASM graal artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-graal
           path: resources/wasm/
@@ -420,22 +451,25 @@ jobs:
     needs: [build-cross-linux-aarch64, build-wasm-browser, build-wasm-graal]
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - name: Setup Java (GraalVM CE 25)
+        uses: graalvm/setup-graalvm@v1.6.4
         with:
-          distribution: temurin
-          java-version: '21'
+          distribution: graalvm-community
+          # Pin the CE release whose libgraal matches the org.graalvm.* 25.2.4
+          # artifacts in deps.edn. Truffle requires the two to agree.
+          version: '25.2.4'
+          java-version: '25'
 
       - name: Install Clojure and Babashka
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
           cli: latest
 
       - name: Setup Clojure cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.m2
@@ -445,19 +479,19 @@ jobs:
           restore-keys: clojure-deps-linux-aarch64-
 
       - name: Download native artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: native-linux-aarch64
           path: resources/linux-aarch64/
 
       - name: Download WASM browser artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-browser
           path: .
 
       - name: Download WASM graal artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-graal
           path: resources/wasm/
@@ -479,22 +513,25 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - name: Setup Java (GraalVM CE 25)
+        uses: graalvm/setup-graalvm@v1.6.4
         with:
-          distribution: temurin
-          java-version: '21'
+          distribution: graalvm-community
+          # Pin the CE release whose libgraal matches the org.graalvm.* 25.2.4
+          # artifacts in deps.edn. Truffle requires the two to agree.
+          version: '25.2.4'
+          java-version: '25'
 
       - name: Install Clojure and Babashka
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
           cli: latest
 
       - name: Setup Clojure cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.m2
@@ -504,19 +541,19 @@ jobs:
           restore-keys: clojure-deps-windows-
 
       - name: Download native artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: native-windows-amd64
           path: resources/windows-amd64/
 
       - name: Download WASM browser artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-browser
           path: .
 
       - name: Download WASM graal artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-graal
           path: resources/wasm/
@@ -534,38 +571,34 @@ jobs:
       - name: Run GraalVM tests
         run: bb test:graal
 
-  # ===========================================================================
-  # WASM TEST STAGE (Node.js, npm - needs wasm-browser artifact)
-  # ===========================================================================
-
   test-wasm-macos:
     name: WASM Tests (macOS)
     needs: [build-wasm-browser]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Babashka
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '26'
 
       - name: Download WASM browser artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-browser
           path: .
 
       - name: Build JS bundle
-        run: bb cherry
+        run: bb squint
 
       - name: Cache test/js node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: test/js/node_modules
           key: test-js-nm-macos-${{ hashFiles('test/js/package-lock.json') }}
@@ -585,29 +618,29 @@ jobs:
     needs: [build-wasm-browser]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Babashka
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '26'
 
       - name: Download WASM browser artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-browser
           path: .
 
       - name: Build JS bundle
-        run: bb cherry
+        run: bb squint
 
       - name: Cache test/js node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: test/js/node_modules
           key: test-js-nm-linux-amd64-${{ hashFiles('test/js/package-lock.json') }}
@@ -627,29 +660,29 @@ jobs:
     needs: [build-wasm-browser]
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Babashka
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '26'
 
       - name: Download WASM browser artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-browser
           path: .
 
       - name: Build JS bundle
-        run: bb cherry
+        run: bb squint
 
       - name: Cache test/js node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: test/js/node_modules
           key: test-js-nm-linux-aarch64-${{ hashFiles('test/js/package-lock.json') }}
@@ -672,29 +705,29 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Babashka
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '26'
 
       - name: Download WASM browser artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-browser
           path: .
 
       - name: Build JS bundle
-        run: bb cherry
+        run: bb squint
 
       - name: Cache test/js node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: test/js/node_modules
           key: test-js-nm-windows-${{ hashFiles('test/js/package-lock.json') }}
@@ -709,42 +742,38 @@ jobs:
       - name: Run npm tests
         run: bb test:npm
 
-  # ===========================================================================
-  # PLAYWRIGHT TEST STAGE (4 parallel jobs, only need WASM browser artifact)
-  # ===========================================================================
-
   test-playwright-macos:
     name: Playwright (macOS)
     needs: [build-wasm-browser]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Babashka
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '26'
 
       - name: Download WASM browser artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-browser
           path: .
 
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/Library/Caches/ms-playwright
           key: playwright-macos-${{ hashFiles('test/browser/package-lock.json') }}
 
       - name: Cache test/browser node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: test/browser/node_modules
           key: test-browser-nm-macos-${{ hashFiles('test/browser/package-lock.json') }}
@@ -758,7 +787,7 @@ jobs:
         run: cd test/browser && npx playwright install --with-deps
 
       - name: Build JS bundle
-        run: bb cherry
+        run: bb squint
 
       - name: Run Playwright tests
         run: bb test:playwright
@@ -768,33 +797,33 @@ jobs:
     needs: [build-wasm-browser]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Babashka
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '26'
 
       - name: Download WASM browser artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-browser
           path: .
 
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-linux-amd64-${{ hashFiles('test/browser/package-lock.json') }}
 
       - name: Cache test/browser node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: test/browser/node_modules
           key: test-browser-nm-linux-amd64-${{ hashFiles('test/browser/package-lock.json') }}
@@ -808,7 +837,7 @@ jobs:
         run: cd test/browser && npx playwright install --with-deps
 
       - name: Build JS bundle
-        run: bb cherry
+        run: bb squint
 
       - name: Run Playwright tests
         run: bb test:playwright
@@ -818,33 +847,33 @@ jobs:
     needs: [build-wasm-browser]
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Babashka
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '26'
 
       - name: Download WASM browser artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-browser
           path: .
 
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-linux-aarch64-${{ hashFiles('test/browser/package-lock.json') }}
 
       - name: Cache test/browser node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: test/browser/node_modules
           key: test-browser-nm-linux-aarch64-${{ hashFiles('test/browser/package-lock.json') }}
@@ -858,7 +887,7 @@ jobs:
         run: cd test/browser && npx playwright install --with-deps
 
       - name: Build JS bundle
-        run: bb cherry
+        run: bb squint
 
       - name: Run Playwright tests
         run: bb test:playwright
@@ -871,33 +900,33 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Babashka
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@13.6.1
         with:
           bb: latest
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '26'
 
       - name: Download WASM browser artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-browser
           path: .
 
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/AppData/Local/ms-playwright
           key: playwright-windows-${{ hashFiles('test/browser/package-lock.json') }}
 
       - name: Cache test/browser node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: test/browser/node_modules
           key: test-browser-nm-windows-${{ hashFiles('test/browser/package-lock.json') }}
@@ -911,14 +940,10 @@ jobs:
         run: cd test/browser && npx playwright install --with-deps
 
       - name: Build JS bundle
-        run: bb cherry
+        run: bb squint
 
       - name: Run Playwright tests
         run: bb test:playwright
-
-  # ===========================================================================
-  # FINAL STAGE
-  # ===========================================================================
 
   ci-pass:
     name: CI Pass

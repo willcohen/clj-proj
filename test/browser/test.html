@@ -6,9 +6,12 @@
     <script type="importmap">
     {
         "imports": {
-            "cherry-cljs/cljs.core.js": "https://cdn.jsdelivr.net/npm/cherry-cljs@0.4.30/lib/cljs.core.js",
-            "cherry-cljs/lib/clojure.string.js": "https://cdn.jsdelivr.net/npm/cherry-cljs@0.4.30/lib/clojure.string.js",
-            "resource-tracker": "https://cdn.jsdelivr.net/npm/resource-tracker@0.0.1-alpha1/resource.mjs",
+            "squint-cljs/core.js": "https://cdn.jsdelivr.net/npm/squint-cljs@0.14.206/core.js",
+            "squint-cljs/src/squint/string.js": "https://cdn.jsdelivr.net/npm/squint-cljs@0.14.206/src/squint/string.js",
+            "resource-tracker": "/src/cljc/net/willcohen/proj/dist/resource-tracker.mjs",
+            "worker-router": "/src/cljc/net/willcohen/proj/dist/worker-router.mjs",
+            "worker-router/worker-bootstrap": "/src/cljc/net/willcohen/proj/dist/worker-bootstrap.mjs",
+            "comlink": "/src/cljc/net/willcohen/proj/dist/comlink.mjs",
             "proj-wasm": "/src/cljc/net/willcohen/proj/dist/proj.mjs"
         }
     }
@@ -31,17 +34,16 @@
             
             try {
                 status.textContent = 'PROJ module loaded, ready for tests';
-                results.innerHTML += '<p>✅ Module loaded and available</p>';
+                results.innerHTML += '<p>Module loaded and available</p>';
                 console.log('PROJ module loaded and available for testing');
                 
             } catch (error) {
                 status.textContent = 'Error loading PROJ module!';
-                results.innerHTML += `<p>❌ Error: ${error.message}</p>`;
+                results.innerHTML += `<p>Error: ${error.message}</p>`;
                 console.error('Error loading PROJ module:', error);
             }
         }
-        
-        // Run setup on load
+
         runTests();
     </script>
 </body>

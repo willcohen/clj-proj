@@ -1,16 +1,20 @@
-;; This file contains the definitions of PROJ C API functions,
-;; used for generating bindings for different platforms (FFI, GraalVM, Emscripten).
+;; Copyright (c) 2024, 2025, 2026 Will Cohen
+;;
+;; Part of clj-proj, under the MIT License.
+;; See LICENSE for license information.
+;; SPDX-License-Identifier: MIT
+
+;; Definitions of PROJ C API functions. They generate the bindings for
+;; each platform (FFI, GraalVM, Emscripten).
 #?(:clj
-   (ns net.willcohen.proj.fndefs
-     (:require [clojure.string :as string]))
+   (ns net.willcohen.proj.fndefs)
    :cljs
-   (ns fndefs
-     (:require [cljs.string :as string])))
+   (ns fndefs))
+
+#?(:clj (set! *warn-on-reflection* true))
 
 (declare proj_context_errno)
 (declare proj_context_errno_string)
-
-;; -- Constants --
 
 (def ^{:tag 'long} PROJ_VERSION_MAJOR 9)
 (def ^{:tag 'long} PROJ_VERSION_MINOR 8)
@@ -174,78 +178,78 @@
 (def ^{:tag 'long} PJ_ELLPS3D_LONGITUDE_LATITUDE_HEIGHT 0)
 (def ^{:tag 'long} PJ_ELLPS3D_LATITUDE_LONGITUDE_HEIGHT 1)
 
-(def fndefs-raw
+(def fndefs
   {:proj_string_list_destroy {:rettype :void
-                              :argtypes [['list :pointer]]}
+                              :argtypes [[:list :pointer]]}
    :proj_context_set_autoclose_database {:rettype :void
-                                         :argtypes [['context :pointer]
-                                                    ['autoclose :int32]]}
+                                         :argtypes [[:context :pointer]
+                                                    [:autoclose :int32]]}
    :proj_context_set_database_path {:rettype :int32
-                                    :argtypes [['context :pointer]
-                                               ['db-path :string]
-                                               ['aux-db-paths :pointer] ; const char *const *auxDbPaths
-                                               ['options :pointer]]} ; const char *const *options
+                                    :argtypes [[:context :pointer]
+                                               [:db-path :string]
+                                               [:aux-db-paths :pointer?] ; const char *const *auxDbPaths (NULL = none)
+                                               [:options :pointer?]]} ; const char *const *options (NULL = none)
    :proj_context_set_enable_network {:rettype :int32
-                                     :argtypes [['context :pointer]
-                                                ['enabled :int32]]}
+                                     :argtypes [[:context :pointer]
+                                                [:enabled :int32]]}
    :proj_context_is_network_enabled {:rettype :int32
-                                     :argtypes [['context :pointer]]}
+                                     :argtypes [[:context :pointer]]}
    :proj_context_set_network_callbacks {:rettype :int32
-                                        :argtypes [['context :pointer]
-                                                   ['open_cbk :pointer]
-                                                   ['close_cbk :pointer]
-                                                   ['get_header_cbk :pointer]
-                                                   ['read_range_cbk :pointer]
-                                                   ['user_data :pointer]]}
+                                        :argtypes [[:context :pointer]
+                                                   [:open_cbk :pointer]
+                                                   [:close_cbk :pointer]
+                                                   [:get_header_cbk :pointer]
+                                                   [:read_range_cbk :pointer]
+                                                   [:user_data :pointer?]]}
    :proj_context_errno {:rettype :int32
-                        :argtypes [['context :pointer]]}
+                        :argtypes [[:context :pointer]]}
    :proj_context_errno_string {:rettype :string
-                               :argtypes [['err :int32]]}
+                               :argtypes [[:err :int32]]}
    :proj_context_get_database_path {:rettype :string
-                                    :argtypes [['context :pointer]]}
+                                    :argtypes [[:context :pointer]]}
    :proj_context_get_database_metadata {:rettype :string
-                                        :argtypes [['context :pointer]
-                                                   ['key :string]]}
+                                        :argtypes [[:context :pointer]
+                                                   [:key :string]]}
    :proj_context_get_database_structure {:rettype :pointer ; PROJ_STRING_LIST
-                                         :argtypes [['context :pointer]
-                                                    ['options :pointer]] ; const char *const *options 
+                                         :argtypes [[:context :pointer]
+                                                    [:options :pointer]] ; const char *const *options 
                                          :proj-returns :string-list}
    :proj_context_guess_wkt_dialect {:rettype :int32 ; PJ_GUESSED_WKT_DIALECT
-                                    :argtypes [['context :pointer]
-                                               ['wkt :string]]}
+                                    :argtypes [[:context :pointer]
+                                               [:wkt :string]]}
    :proj_create {:rettype :pointer ; PJ *
-                 :argtypes [['context :pointer]
-                            ['definition :string]]
+                 :argtypes [[:context :pointer]
+                            [:definition :string]]
                  :proj-returns :pj}
    :proj_create_from_wkt {:rettype :pointer ; PJ *
-                          :argtypes [['context :pointer]
-                                     ['wkt :string]
-                                     ['options :pointer?] ; const char *const *options, NULL ok
-                                     ['out_warnings :pointer?] ; PROJ_STRING_LIST *out_warnings, NULL ok
-                                     ['out_grammar_errors :pointer?]] ; PROJ_STRING_LIST *out_grammar_errors, NULL ok
+                          :argtypes [[:context :pointer]
+                                     [:wkt :string]
+                                     [:options :pointer?] ; const char *const *options, NULL ok
+                                     [:out_warnings :pointer?] ; PROJ_STRING_LIST *out_warnings, NULL ok
+                                     [:out_grammar_errors :pointer?]] ; PROJ_STRING_LIST *out_grammar_errors, NULL ok
                           :proj-returns :pj}
    :proj_create_from_database {:rettype :pointer ; PJ *
-                               :argtypes [['context :pointer]
-                                          ['auth_name :string]
-                                          ['code :string]
-                                          ['category :int32] ; PJ_CATEGORY
-                                          ['use-proj-alternative-grid-names :int32]
-                                          ['options :pointer?]] ; optional null pointer
-                               :argsemantics [['category :int32 :default PJ_CATEGORY_CRS] ; default to CRS
-                                              ['use-proj-alternative-grid-names :boolean :default false] ; pass 0 by default
-                                              ['options :string-array? :default nil]] ; NULL pointer
+                               :argtypes [[:context :pointer]
+                                          [:auth_name :string]
+                                          [:code :string]
+                                          [:category :int32] ; PJ_CATEGORY
+                                          [:use-proj-alternative-grid-names :int32]
+                                          [:options :pointer?]] ; optional null pointer
+                               :argsemantics [[:category :int32 :default PJ_CATEGORY_CRS]
+                                              [:use-proj-alternative-grid-names :boolean :default false]
+                                              [:options :string-array? :default nil]]
                                :proj-returns :pj}
    :proj_uom_get_info_from_database {:rettype :int32
                                      :proj-returns :out-params
                                      :out-fields [[:name :string]
                                                   [:conv-factor :double]
                                                   [:category :string]]
-                                     :argtypes [['context :pointer]
-                                                ['auth_name :string]
-                                                ['code :string]
-                                                ['out_name :pointer]
-                                                ['out_conv_factor :pointer]
-                                                ['out_category :pointer]]}
+                                     :argtypes [[:context :pointer]
+                                                [:auth_name :string]
+                                                [:code :string]
+                                                [:out_name :pointer]
+                                                [:out_conv_factor :pointer]
+                                                [:out_category :pointer]]}
    :proj_grid_get_info_from_database {:rettype :int32
                                       :proj-returns :out-params
                                       :out-fields [[:full-name :string]
@@ -254,71 +258,71 @@
                                                    [:direct-download :int]
                                                    [:open-license :int]
                                                    [:available :int]]
-                                      :argtypes [['context :pointer]
-                                                 ['grid_name :string]
-                                                 ['out_full_name :pointer]
-                                                 ['out_package_name :pointer]
-                                                 ['out_url :pointer]
-                                                 ['out_direct_download :pointer]
-                                                 ['out_open_license :pointer]
-                                                 ['out_available :pointer]]}
+                                      :argtypes [[:context :pointer]
+                                                 [:grid_name :string]
+                                                 [:out_full_name :pointer]
+                                                 [:out_package_name :pointer]
+                                                 [:out_url :pointer]
+                                                 [:out_direct_download :pointer]
+                                                 [:out_open_license :pointer]
+                                                 [:out_available :pointer]]}
    :proj_log_level {:rettype :int32 ; PJ_LOG_LEVEL
-                    :argtypes [['context :pointer]
-                               ['level :int32]]} ; PJ_LOG_LEVEL
+                    :argtypes [[:context :pointer]
+                               [:level :int32]]} ; PJ_LOG_LEVEL
    :proj_log_func {:rettype :void
-                   :argtypes [['context :pointer]
-                              ['app_data :pointer]
-                              ['logf :pointer]]} ; PJ_LOG_FUNC callback
+                   :argtypes [[:context :pointer]
+                              [:app_data :pointer?] ; nullable user_data
+                              [:logf :pointer]]} ; PJ_LOG_FUNC callback
    :proj_clone {:rettype :pointer ; PJ *
-                :argtypes [['context :pointer]
-                           ['p :pointer]] ; const PJ *p
+                :argtypes [[:context :pointer]
+                           [:p :pointer]] ; const PJ *p
                 :proj-returns :pj}
    :proj_create_from_name {:rettype :pointer ; PJ_OBJ_LIST *
-                           :argtypes [['context :pointer]
-                                      ['auth_name :string]
-                                      ['searchedName :string]
-                                      ['types :pointer] ; const PJ_TYPE *types
-                                      ['typesCount :size-t]
-                                      ['approximateMatch :int32]
-                                      ['limitResultCount :size-t]
-                                      ['options :pointer]] ; const char *const *options
+                           :argtypes [[:context :pointer]
+                                      [:auth_name :string]
+                                      [:searchedName :string]
+                                      [:types :pointer] ; const PJ_TYPE *types
+                                      [:typesCount :size-t]
+                                      [:approximateMatch :int32]
+                                      [:limitResultCount :size-t]
+                                      [:options :pointer]] ; const char *const *options
                            :proj-returns :pj-list}
    :proj_get_type {:rettype :int32 ; PJ_TYPE
-                   :argtypes [['obj :pointer]]} ; const PJ *obj
+                   :argtypes [[:obj :pointer]]} ; const PJ *obj
    :proj_is_deprecated {:rettype :int32
-                        :argtypes [['obj :pointer]]} ; const PJ *obj
+                        :argtypes [[:obj :pointer]]} ; const PJ *obj
    :proj_get_non_deprecated {:rettype :pointer ; PJ_OBJ_LIST *
-                             :argtypes [['context :pointer]
-                                        ['obj :pointer]] ; const PJ *obj
+                             :argtypes [[:context :pointer]
+                                        [:obj :pointer]] ; const PJ *obj
                              :proj-returns :pj-list}
    :proj_is_equivalent_to {:rettype :int32
-                           :argtypes [['obj :pointer] ; const PJ *obj
-                                      ['other :pointer] ; const PJ *other
-                                      ['criterion :int32]]} ; PJ_COMPARISON_CRITERION
+                           :argtypes [[:obj :pointer] ; const PJ *obj
+                                      [:other :pointer] ; const PJ *other
+                                      [:criterion :int32]]} ; PJ_COMPARISON_CRITERION
    :proj_is_equivalent_to_with_ctx {:rettype :int32
-                                    :argtypes [['context :pointer]
-                                               ['obj :pointer] ; const PJ *obj
-                                               ['other :pointer] ; const PJ *other
-                                               ['criterion :int32]]} ; PJ_COMPARISON_CRITERION
+                                    :argtypes [[:context :pointer]
+                                               [:obj :pointer] ; const PJ *obj
+                                               [:other :pointer] ; const PJ *other
+                                               [:criterion :int32]]} ; PJ_COMPARISON_CRITERION
    :proj_is_crs {:rettype :int32
-                 :argtypes [['obj :pointer]]} ; const PJ *obj
+                 :argtypes [[:obj :pointer]]} ; const PJ *obj
    :proj_get_name {:rettype :string
-                   :argtypes [['obj :pointer]]} ; const PJ *obj
+                   :argtypes [[:obj :pointer]]} ; const PJ *obj
    :proj_get_id_auth_name {:rettype :string
-                           :argtypes [['obj :pointer] ; const PJ *obj
-                                      ['index :int32]]}
+                           :argtypes [[:obj :pointer] ; const PJ *obj
+                                      [:index :int32]]}
    :proj_get_id_code {:rettype :string
-                      :argtypes [['obj :pointer] ; const PJ *obj
-                                 ['index :int32]]}
+                      :argtypes [[:obj :pointer] ; const PJ *obj
+                                 [:index :int32]]}
    :proj_get_remarks {:rettype :string
-                      :argtypes [['obj :pointer]]} ; const PJ *obj
+                      :argtypes [[:obj :pointer]]} ; const PJ *obj
    :proj_get_domain_count {:rettype :int32
-                           :argtypes [['obj :pointer]]} ; const PJ *obj
+                           :argtypes [[:obj :pointer]]} ; const PJ *obj
    :proj_get_scope {:rettype :string
-                    :argtypes [['obj :pointer]]} ; const PJ *obj
+                    :argtypes [[:obj :pointer]]} ; const PJ *obj
    :proj_get_scope_ex {:rettype :string
-                       :argtypes [['obj :pointer] ; const PJ *obj
-                                  ['domainIdx :int32]]}
+                       :argtypes [[:obj :pointer] ; const PJ *obj
+                                  [:domainIdx :int32]]}
    :proj_get_area_of_use {:rettype :int32
                           :proj-returns :out-params
                           :out-fields [[:west-lon-degree :double]
@@ -326,13 +330,13 @@
                                        [:east-lon-degree :double]
                                        [:north-lat-degree :double]
                                        [:area-name :string]]
-                          :argtypes [['context :pointer]
-                                     ['obj :pointer]
-                                     ['out_west_lon_degree :pointer]
-                                     ['out_south_lat_degree :pointer]
-                                     ['out_east_lon_degree :pointer]
-                                     ['out_north_lat_degree :pointer]
-                                     ['out_area_name :pointer]]}
+                          :argtypes [[:context :pointer]
+                                     [:obj :pointer]
+                                     [:out_west_lon_degree :pointer]
+                                     [:out_south_lat_degree :pointer]
+                                     [:out_east_lon_degree :pointer]
+                                     [:out_north_lat_degree :pointer]
+                                     [:out_area_name :pointer]]}
    :proj_get_area_of_use_ex {:rettype :int32
                              :proj-returns :out-params
                              :out-fields [[:west-lon-degree :double]
@@ -340,98 +344,102 @@
                                           [:east-lon-degree :double]
                                           [:north-lat-degree :double]
                                           [:area-name :string]]
-                             :argtypes [['context :pointer]
-                                        ['obj :pointer]
-                                        ['domainIdx :int32]
-                                        ['out_west_lon_degree :pointer]
-                                        ['out_south_lat_degree :pointer]
-                                        ['out_east_lon_degree :pointer]
-                                        ['out_north_lat_degree :pointer]
-                                        ['out_area_name :pointer]]}
+                             :argtypes [[:context :pointer]
+                                        [:obj :pointer]
+                                        [:domainIdx :int32]
+                                        [:out_west_lon_degree :pointer]
+                                        [:out_south_lat_degree :pointer]
+                                        [:out_east_lon_degree :pointer]
+                                        [:out_north_lat_degree :pointer]
+                                        [:out_area_name :pointer]]}
    :proj_as_wkt {:rettype :string
-                 :argtypes [['context :pointer]
-                            ['pj :pointer] ; const PJ *obj
-                            ['type :int32] ; PJ_WKT_TYPE,
-                            ['options :pointer?]]
-                 :argsemantics [['options :string-array? :default nil]
-                                ['type :int32 :default PJ_WKT2_2019]]} ; const char *const *options
+                 :argtypes [[:context :pointer]
+                            [:pj :pointer] ; const PJ *obj
+                            [:type :int32] ; PJ_WKT_TYPE,
+                            [:options :pointer?]]
+                 :argsemantics [[:options :string-array? :default nil]
+                                [:type :int32 :default PJ_WKT2_2019]]} ; const char *const *options
    :proj_as_proj_string {:rettype :string
-                         :argtypes [['context :pointer]
-                                    ['pj :pointer] ; const PJ *obj
-                                    ['type :int32] ; PJ_PROJ_STRING_TYPE
-                                    ['options :pointer?]]
-                         :argsemantics [['options :string-array? :default nil]]} ; const char *const *options
+                         :argtypes [[:context :pointer]
+                                    [:pj :pointer] ; const PJ *obj
+                                    [:type :int32] ; PJ_PROJ_STRING_TYPE
+                                    [:options :pointer?]]
+                         :argsemantics [[:options :string-array? :default nil]]} ; const char *const *options
    :proj_as_projjson {:rettype :string
-                      :argtypes [['context :pointer]
-                                 ['pj :pointer] ; const PJ *obj
-                                 ['options :pointer?]]
-                      :argsemantics [['options :string-array? :default nil]]} ; const char *const *options
+                      :argtypes [[:context :pointer]
+                                 [:pj :pointer] ; const PJ *obj
+                                 [:options :pointer?]]
+                      :argsemantics [[:options :string-array? :default nil]]} ; const char *const *options
    :proj_get_source_crs {:rettype :pointer ; PJ *
-                         :argtypes [['context :pointer]
-                                    ['pj :pointer]] ; const PJ *obj
+                         :argtypes [[:context :pointer]
+                                    [:pj :pointer]] ; const PJ *obj
                          :proj-returns :pj}
    :proj_get_target_crs {:rettype :pointer ; PJ *
-                         :argtypes [['context :pointer]
-                                    ['pj :pointer]] ; const PJ *obj
+                         :argtypes [[:context :pointer]
+                                    [:pj :pointer]] ; const PJ *obj
                          :proj-returns :pj}
    :proj_context_create {:rettype :pointer ; PJ_CONTEXT *
                          :argtypes [],
                          :proj-returns :pj-context,
                          :is-context-fn false}
+   :proj_context_clone {:rettype :pointer ; PJ_CONTEXT *
+                        :argtypes [[:ctx :pointer]] ; PJ_CONTEXT *ctx
+                        :proj-returns :pj-context
+                        :is-context-fn false}
    :proj_context_destroy {:rettype :void
-                          :argtypes [['context :pointer]], ; PJ_CONTEXT *ctx
+                          :argtypes [[:context :pointer]], ; PJ_CONTEXT *ctx
                           :is-context-fn false}
    :proj_identify {:rettype :pointer ; PJ_OBJ_LIST *
-                   :argtypes [['context :pointer]
-                              ['obj :pointer] ; const PJ *obj
-                              ['auth_name :string]
-                              ['options :pointer] ; const char *const *options
-                              ['out_confidence :pointer]] ; int **out_confidence
+                   :argtypes [[:context :pointer]
+                              [:obj :pointer] ; const PJ *obj
+                              [:auth_name :string]
+                              [:options :pointer] ; const char *const *options
+                              [:out_confidence :pointer]] ; int **out_confidence
                    :proj-returns :pj-list}
    :proj_get_geoid_models_from_database {:rettype :pointer ; PROJ_STRING_LIST
-                                         :argtypes [['context :pointer]
-                                                    ['auth_name :string]
-                                                    ['code :string]
-                                                    ['options :pointer]] ; const char *const *options 
+                                         :argtypes [[:context :pointer]
+                                                    [:auth_name :string]
+                                                    [:code :string]
+                                                    [:options :pointer]] ; const char *const *options 
                                          :proj-returns :string-list}
    :proj_int_list_destroy {:rettype :void
-                           :argtypes [['list :pointer]]} ; int *list
+                           :argtypes [[:list :pointer]]} ; int *list
    :proj_cs_get_type {:rettype :int32 ; PJ_COORDINATE_SYSTEM_TYPE
-                      :argtypes [['context :pointer]
-                                 ['cs :pointer]]} ; const PJ *cs
+                      :argtypes [[:context :pointer]
+                                 [:cs :pointer]]} ; const PJ *cs
    :proj_destroy {:rettype :pointer ; PJ *
-                  :argtypes [['pj :pointer]]} ; PJ *P
+                  :argtypes [[:pj :pointer]]} ; PJ *P
    :proj_get_authorities_from_database {:rettype :pointer ; PROJ_STRING_LIST
-                                        :argtypes [['context :pointer]]
+                                        :argtypes [[:context :pointer]]
                                         :proj-returns :string-list}
    :proj_get_codes_from_database {:rettype :pointer ; PROJ_STRING_LIST
-                                  :argtypes [['context :pointer]
-                                             ['auth_name :string]
-                                             ['type :int32 :default PJ_TYPE_CRS] ; PJ_TYPE, default to CRS
-                                             ['allow_deprecated :int32 :default 1]]
+                                  :argtypes [[:context :pointer]
+                                             [:auth_name :string]
+                                             [:type :int32 :default PJ_TYPE_CRS] ; PJ_TYPE
+                                             [:allow_deprecated :int32 :default 1]]
                                   :proj-returns :string-list}
    :proj_get_celestial_body_list_from_database {:rettype :pointer ; PROJ_CELESTIAL_BODY_INFO **
-                                                :argtypes [['context :pointer]
-                                                           ['auth_name :string]
-                                                           ['out_result_count :pointer]] ; int *out_result_count
+                                                :argtypes [[:context :pointer]
+                                                           [:auth_name :string]
+                                                           [:out_result_count :pointer]] ; int *out_result_count
                                                 :proj-returns :struct-list
                                                 :struct-def :proj-celestial-body-info
                                                 :struct-fields [[:auth-name :string 0]
                                                                 [:name :string 4]]
                                                 :struct-destroy-fn "proj_celestial_body_list_destroy"
-                                                :count-arg-name 'out_result_count}
+                                                :count-arg-name :out_result_count}
    :proj_celestial_body_list_destroy {:rettype :void
-                                      :argtypes [['list :pointer]]} ; PROJ_CELESTIAL_BODY_INFO **list
+                                      :argtypes [[:list :pointer]]} ; PROJ_CELESTIAL_BODY_INFO **list
    :proj_get_crs_list_parameters_create {:rettype :pointer ; PROJ_CRS_LIST_PARAMETERS *
                                          :argtypes []
                                          :proj-returns :pj-crs-list-parameters}
    :proj_get_crs_list_parameters_destroy {:rettype :void
-                                          :argtypes [['params :pointer]]} ; PROJ_CRS_LIST_PARAMETERS *params
+                                          :argtypes [[:params :pointer]]} ; PROJ_CRS_LIST_PARAMETERS *params
    :proj_get_crs_info_list_from_database {:rettype :pointer ; PROJ_CRS_INFO **
-                                          :argtypes [['context :pointer]
-                                                     ['auth_name :string]
-                                                     ['params :pointer] ; const PROJ_CRS_LIST_PARAMETERS *params
-                                                     ['out_result_count :pointer]] ; int *out_result_count
+                                          :argtypes [[:context :pointer]
+                                                     [:auth_name :string]
+                                                     [:params :pointer] ; const PROJ_CRS_LIST_PARAMETERS *params
+                                                     [:out_result_count :pointer]] ; int *out_result_count
                                           :proj-returns :struct-list
                                           :struct-def :proj-crs-info
                                           :struct-fields [[:auth-name :string 0]
@@ -450,15 +458,15 @@
                                           :struct-destroy-fn "proj_crs_info_list_destroy"
                                           :struct-params-create "proj_get_crs_list_parameters_create"
                                           :struct-params-destroy "proj_get_crs_list_parameters_destroy"
-                                          :count-arg-name 'out_result_count}
+                                          :count-arg-name :out_result_count}
    :proj_crs_info_list_destroy {:rettype :void
-                                :argtypes [['list :pointer]]} ; PROJ_CRS_INFO **list
+                                :argtypes [[:list :pointer]]} ; PROJ_CRS_INFO **list
    :proj_get_units_from_database {:rettype :pointer ; PROJ_UNIT_INFO **
-                                  :argtypes [['context :pointer]
-                                             ['auth_name :string]
-                                             ['category :string]
-                                             ['allow_deprecated :int32]
-                                             ['out_result_count :pointer]] ; int *out_result_count
+                                  :argtypes [[:context :pointer]
+                                             [:auth_name :string]
+                                             [:category :string]
+                                             [:allow_deprecated :int32]
+                                             [:out_result_count :pointer]] ; int *out_result_count
                                   :proj-returns :struct-list
                                   :struct-def :proj-unit-info
                                   :struct-fields [[:auth-name :string 0]
@@ -469,194 +477,207 @@
                                                   [:proj-short-name :string 24]
                                                   [:deprecated :boolean 28]]
                                   :struct-destroy-fn "proj_unit_list_destroy"
-                                  :count-arg-name 'out_result_count}
+                                  :count-arg-name :out_result_count}
    :proj_unit_list_destroy {:rettype :void
-                            :argtypes [['list :pointer]]} ; PROJ_UNIT_INFO **list
+                            :argtypes [[:list :pointer]]} ; PROJ_UNIT_INFO **list
    :proj_insert_object_session_create {:rettype :pointer ; PJ_INSERT_SESSION *
-                                       :argtypes [['context :pointer]]
+                                       :argtypes [[:context :pointer]]
                                        :proj-returns :pj-insert-session}
    :proj_insert_object_session_destroy {:rettype :void
-                                        :argtypes [['context :pointer]
-                                                   ['session :pointer]]} ; PJ_INSERT_SESSION *session
+                                        :argtypes [[:context :pointer]
+                                                   [:session :pointer]]} ; PJ_INSERT_SESSION *session
    :proj_get_insert_statements {:rettype :pointer ; PROJ_STRING_LIST
-                                :argtypes [['context :pointer]
-                                           ['session :pointer] ; PJ_INSERT_SESSION *session
-                                           ['object :pointer] ; const PJ *object
-                                           ['authority :string]
-                                           ['code :string]
-                                           ['numeric_codes :int32]
-                                           ['allowed_authorities :pointer] ; const char *const *allowed_authorities
-                                           ['options :pointer]] ; const char *const *options 
+                                :argtypes [[:context :pointer]
+                                           [:session :pointer] ; PJ_INSERT_SESSION *session
+                                           [:object :pointer] ; const PJ *object
+                                           [:authority :string]
+                                           [:code :string]
+                                           [:numeric_codes :int32]
+                                           [:allowed_authorities :pointer] ; const char *const *allowed_authorities
+                                           [:options :pointer]] ; const char *const *options 
                                 :proj-returns :string-list}
    :proj_suggests_code_for {:rettype :string
-                            :argtypes [['context :pointer]
-                                       ['object :pointer] ; const PJ *object
-                                       ['authority :string]
-                                       ['numeric_code :int32]
-                                       ['options :pointer]]} ; const char *const *options
+                            :argtypes [[:context :pointer]
+                                       [:object :pointer] ; const PJ *object
+                                       [:authority :string]
+                                       [:numeric_code :int32]
+                                       [:options :pointer]]} ; const char *const *options
    :proj_string_destroy {:rettype :void
-                         :argtypes [['str :string]]} ; char *str
+                         :argtypes [[:str :string]]} ; char *str
    :proj_create_operation_factory_context {:rettype :pointer ; PJ_OPERATION_FACTORY_CONTEXT *
-                                           :argtypes [['context :pointer]
-                                                      ['authority :string]] ; NULL or "" = any authority
+                                           :argtypes [[:context :pointer]
+                                                      [:authority :string]] ; NULL or "" = any authority
                                            :proj-returns :pj-operation-factory-context}
    :proj_operation_factory_context_destroy {:rettype :void ; takes a context, but is a destroy fn
-                                            :argtypes [['ctx :pointer]], ; PJ_OPERATION_FACTORY_CONTEXT *ctx
+                                            :argtypes [[:ctx :pointer]], ; PJ_OPERATION_FACTORY_CONTEXT *ctx
                                             :is-context-fn false}
    :proj_operation_factory_context_set_desired_accuracy {:rettype :void
-                                                         :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                                    ['factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
-                                                                    ['accuracy :float64]]}
+                                                         :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                                    [:factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
+                                                                    [:accuracy :float64]]}
    :proj_operation_factory_context_set_area_of_interest {:rettype :void
-                                                         :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                                    ['factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
-                                                                    ['west_lon_degree :float64]
-                                                                    ['south_lat_degree :float64]
-                                                                    ['east_lon_degree :float64]
-                                                                    ['north_lat_degree :float64]]}
+                                                         :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                                    [:factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
+                                                                    [:west_lon_degree :float64]
+                                                                    [:south_lat_degree :float64]
+                                                                    [:east_lon_degree :float64]
+                                                                    [:north_lat_degree :float64]]}
    :proj_operation_factory_context_set_area_of_interest_name {:rettype :void
-                                                              :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                                         ['factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
-                                                                         ['area_name :string]]}
+                                                              :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                                         [:factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
+                                                                         [:area_name :string]]}
    :proj_operation_factory_context_set_crs_extent_use {:rettype :void
-                                                       :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                                  ['factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
-                                                                  ['use :int32]]} ; PROJ_CRS_EXTENT_USE
+                                                       :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                                  [:factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
+                                                                  [:use :int32]]} ; PROJ_CRS_EXTENT_USE
    :proj_operation_factory_context_set_spatial_criterion {:rettype :void
-                                                          :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                                     ['factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
-                                                                     ['criterion :int32]]} ; PROJ_SPATIAL_CRITERION
+                                                          :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                                     [:factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
+                                                                     [:criterion :int32]]} ; PROJ_SPATIAL_CRITERION
    :proj_operation_factory_context_set_grid_availability_use {:rettype :void
-                                                              :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                                         ['factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
-                                                                         ['use :int32]]} ; PROJ_GRID_AVAILABILITY_USE
+                                                              :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                                         [:factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
+                                                                         [:use :int32]]} ; PROJ_GRID_AVAILABILITY_USE
    :proj_operation_factory_context_set_use_proj_alternative_grid_names {:rettype :void
-                                                                        :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                                                   ['factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
-                                                                                   ['usePROJNames :int32]]}
+                                                                        :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                                                   [:factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
+                                                                                   [:usePROJNames :int32]]}
    :proj_operation_factory_context_set_allow_use_intermediate_crs {:rettype :void
-                                                                   :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                                              ['factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
-                                                                              ['use :int32]]} ; PROJ_INTERMEDIATE_CRS_USE
+                                                                   :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                                              [:factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
+                                                                              [:use :int32]]} ; PROJ_INTERMEDIATE_CRS_USE
    :proj_operation_factory_context_set_allowed_intermediate_crs {:rettype :void
-                                                                 :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                                            ['factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
-                                                                            ['list_of_auth_name_codes :pointer]]} ; const char *const *list_of_auth_name_codes
+                                                                 :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                                            [:factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
+                                                                            [:list_of_auth_name_codes :pointer]]} ; const char *const *list_of_auth_name_codes
    :proj_operation_factory_context_set_discard_superseded {:rettype :void
-                                                           :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                                      ['factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
-                                                                      ['discard :int32]]}
+                                                           :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                                      [:factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
+                                                                      [:discard :int32]]}
    :proj_operation_factory_context_set_allow_ballpark_transformations {:rettype :void
-                                                                       :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                                                  ['factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
-                                                                                  ['allow :int32]]}
+                                                                       :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                                                  [:factory_ctx :pointer] ; PJ_OPERATION_FACTORY_CONTEXT *factory_ctx
+                                                                                  [:allow :int32]]}
    :proj_create_operations {:rettype :pointer ; PJ_OBJ_LIST *
-                            :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                       ['source_crs :pointer] ; const PJ *source_crs
-                                       ['target_crs :pointer] ; const PJ *target_crs
-                                       ['operationContext :pointer]] ; const PJ_OPERATION_FACTORY_CONTEXT *operationContext
+                            :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                       [:source_crs :pointer] ; const PJ *source_crs
+                                       [:target_crs :pointer] ; const PJ *target_crs
+                                       [:operationContext :pointer]] ; const PJ_OPERATION_FACTORY_CONTEXT *operationContext
                             :proj-returns :pj-list}
    :proj_list_get_count {:rettype :int32
-                         :argtypes [['result :pointer]]} ; const PJ_OBJ_LIST *result
+                         :argtypes [[:result :pointer]]} ; const PJ_OBJ_LIST *result
    :proj_list_get {:rettype :pointer ; PJ *
-                   :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                              ['result :pointer] ; const PJ_OBJ_LIST *result
-                              ['index :int32]]
+                   :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                              [:result :pointer] ; const PJ_OBJ_LIST *result
+                              [:index :int32]]
                    :proj-returns :pj}
    :proj_list_destroy {:rettype :void
-                       :argtypes [['result :pointer]]} ; PJ_OBJ_LIST *result
+                       :argtypes [[:result :pointer]]} ; PJ_OBJ_LIST *result
    :proj_get_suggested_operation {:rettype :int32
-                                  :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                             ['operations :pointer] ; PJ_OBJ_LIST *operations
-                                             ['direction :int32] ; PJ_DIRECTION
-                                             ['coord :pointer]]} ; PJ_COORD coord
+                                  :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                             [:operations :pointer] ; PJ_OBJ_LIST *operations
+                                             [:direction :int32] ; PJ_DIRECTION
+                                             [:coord :pointer]]} ; PJ_COORD coord
    :proj_crs_is_derived {:rettype :int32
-                         :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                    ['crs :pointer]]} ; const PJ *crs
+                         :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                    [:crs :pointer]]} ; const PJ *crs
    :proj_crs_get_geodetic_crs {:rettype :pointer ; PJ *
-                               :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                          ['crs :pointer]] ; const PJ *crs
+                               :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                          [:crs :pointer]] ; const PJ *crs
                                :proj-returns :pj}
    :proj_crs_get_horizontal_datum {:rettype :pointer ; PJ *
-                                   :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                              ['crs :pointer]] ; const PJ *crs
+                                   :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                              [:crs :pointer]] ; const PJ *crs
                                    :proj-returns :pj}
    :proj_crs_get_sub_crs {:rettype :pointer ; PJ *
-                          :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                     ['crs :pointer] ; const PJ *crs
-                                     ['index :int32]]
+                          :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                     [:crs :pointer] ; const PJ *crs
+                                     [:index :int32]]
                           :proj-returns :pj}
    :proj_crs_get_datum {:rettype :pointer ; PJ *
-                        :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                   ['crs :pointer]] ; const PJ *crs
+                        :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                   [:crs :pointer]] ; const PJ *crs
                         :proj-returns :pj}
    :proj_crs_get_datum_ensemble {:rettype :pointer ; PJ *
-                                 :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                            ['crs :pointer]] ; const PJ *crs
+                                 :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                            [:crs :pointer]] ; const PJ *crs
                                  :proj-returns :pj}
    :proj_crs_get_datum_forced {:rettype :pointer ; PJ *
-                               :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                          ['crs :pointer]] ; const PJ *crs
+                               :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                          [:crs :pointer]] ; const PJ *crs
                                :proj-returns :pj}
    :proj_crs_has_point_motion_operation {:rettype :int32
-                                         :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                    ['crs :pointer]]} ; const PJ *crs
+                                         :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                    [:crs :pointer]]} ; const PJ *crs
    :proj_datum_ensemble_get_member_count {:rettype :int32
-                                          :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                     ['datum_ensemble :pointer]]} ; const PJ *datum_ensemble
+                                          :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                     [:datum_ensemble :pointer]]} ; const PJ *datum_ensemble
    :proj_datum_ensemble_get_accuracy {:rettype :float64
-                                      :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                 ['datum_ensemble :pointer]]} ; const PJ *datum_ensemble
+                                      :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                 [:datum_ensemble :pointer]]} ; const PJ *datum_ensemble
    :proj_datum_ensemble_get_member {:rettype :pointer ; PJ *
-                                    :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                               ['datum_ensemble :pointer] ; const PJ *datum_ensemble
-                                               ['member_index :int32]]
+                                    :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                               [:datum_ensemble :pointer] ; const PJ *datum_ensemble
+                                               [:member_index :int32]]
                                     :proj-returns :pj}
    :proj_dynamic_datum_get_frame_reference_epoch {:rettype :float64
-                                                  :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                             ['datum :pointer]]} ; const PJ *datum
+                                                  :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                             [:datum :pointer]]} ; const PJ *datum
    :proj_crs_get_coordinate_system {:rettype :pointer ; PJ *
-                                    :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                               ['crs :pointer]] ; const PJ *crs
+                                    :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                               [:crs :pointer]] ; const PJ *crs
                                     :proj-returns :pj}
    :proj_xy_dist {:rettype :float64
-                  :argtypes [['a :pointer] ; PJ_COORD a
-                             ['b :pointer]]} ; PJ_COORD b
+                  :argtypes [[:a :pointer] ; PJ_COORD a
+                             [:b :pointer]]} ; PJ_COORD b
    :proj_coord {:rettype :pointer ; PJ_COORD
-                :argtypes [['x :float64]
-                           ['y :float64]
-                           ['z :float64]
-                           ['t :float64]]}
+                :argtypes [[:x :float64]
+                           [:y :float64]
+                           [:z :float64]
+                           [:t :float64]]}
    :proj_create_crs_to_crs {:rettype :pointer ; PJ *
-                            :argtypes [['context :pointer]
-                                       ['source_crs :string]
-                                       ['target_crs :string]
-                                       ['area :pointer?]]
-                            :argsemantics [['area :pj-area :default 0]]
-                            :proj-returns :pj}
+                            :argtypes [[:context :pointer]
+                                       [:source_crs :string]
+                                       [:target_crs :string]
+                                       [:area :pointer?]]
+                            :argsemantics [[:area :pj-area :default 0]]
+                            :proj-returns :pj
+                            ;; Selects the context-isolator hook of clj-native
+                            ;; dispatch: each call gets a fresh
+                            ;; proj_context_clone, so the factory/sqlite cache
+                            ;; state does not accumulate on the consumer's
+                            ;; context. wasm.cljc registers the isolator.
+                            :isolate-context? true}
    :proj_create_crs_to_crs_from_pj {:rettype :pointer ; PJ *
-                                    :argtypes [['context :pointer]
-                                               ['source_crs :pointer] ; const PJ *source_crs
-                                               ['target_crs :pointer] ; const PJ *target_crs
-                                               ['area :pointer?] ; PJ_AREA *area
-                                               ['options :pointer?]] ; const char *const *options
-                                    :argsemantics [['area :pj-area :default 0]
-                                                   ['options :string-array? :default nil]]
+                                    :argtypes [[:context :pointer]
+                                               [:source_crs :pointer] ; const PJ *source_crs
+                                               [:target_crs :pointer] ; const PJ *target_crs
+                                               [:area :pointer?] ; PJ_AREA *area
+                                               [:options :pointer?]] ; const char *const *options
+                                    :argsemantics [[:area :pj-area :default 0]
+                                                   [:options :string-array? :default nil]]
                                     :proj-returns :pj}
    :proj_normalize_for_visualization {:rettype :pointer ; PJ *
-                                      :argtypes [['context :pointer]
-                                                 ['obj :pointer]] ; const PJ *obj
+                                      :argtypes [[:context :pointer]
+                                                 [:obj :pointer]] ; const PJ *obj
                                       :proj-returns :pj}
    :proj_trans_array {:rettype :int32
-                      :argtypes [['p :pointer] ; PJ *P
-                                 ['direction :int32] ; PJ_DIRECTION
-                                 ['n :size-t]
-                                 ['coord :pointer]] ; PJ_COORD *coord
-                      :argsemantics [['coord :coord-array]
-                                     ['n :coord-count]]}
+                      :argtypes [[:p :pointer] ; PJ *P
+                                 [:direction :int32] ; PJ_DIRECTION
+                                 [:n :size-t]
+                                 [:coord :pointer]] ; PJ_COORD *coord
+                      :argsemantics [[:coord :coord-array]
+                                     [:n :coord-count]]}
+   :proj_trans_generic {:rettype :size-t
+                        :argtypes [[:p :pointer] ; PJ *P
+                                   [:direction :int32] ; PJ_DIRECTION
+                                   [:x :pointer] [:sx :size-t] [:nx :size-t] ; double *x, size_t sx, size_t nx
+                                   [:y :pointer] [:sy :size-t] [:ny :size-t] ; double *y, size_t sy, size_t ny
+                                   [:z :pointer?] [:sz :size-t] [:nz :size-t] ; double *z (NULL ok), size_t sz, size_t nz
+                                   [:t :pointer?] [:st :size-t] [:nt :size-t]]} ; double *t (NULL ok), size_t st, size_t nt
    :proj_cs_get_axis_count {:rettype :int32
-                            :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                       ['cs :pointer]]} ; const PJ *cs
+                            :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                       [:cs :pointer]]} ; const PJ *cs
    :proj_cs_get_axis_info {:rettype :int32
                            :proj-returns :out-params
                            :out-fields [[:name :string]
@@ -666,19 +687,19 @@
                                         [:unit-name :string]
                                         [:unit-auth-name :string]
                                         [:unit-code :string]]
-                           :argtypes [['ctx :pointer]
-                                      ['cs :pointer]
-                                      ['index :int32]
-                                      ['out_name :pointer]
-                                      ['out_abbrev :pointer]
-                                      ['out_direction :pointer]
-                                      ['out_unit_conv_factor :pointer]
-                                      ['out_unit_name :pointer]
-                                      ['out_unit_auth_name :pointer]
-                                      ['out_unit_code :pointer]]}
+                           :argtypes [[:ctx :pointer]
+                                      [:cs :pointer]
+                                      [:index :int32]
+                                      [:out_name :pointer]
+                                      [:out_abbrev :pointer]
+                                      [:out_direction :pointer]
+                                      [:out_unit_conv_factor :pointer]
+                                      [:out_unit_name :pointer]
+                                      [:out_unit_auth_name :pointer]
+                                      [:out_unit_code :pointer]]}
    :proj_get_ellipsoid {:rettype :pointer ; PJ *
-                        :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                   ['obj :pointer]] ; const PJ *obj
+                        :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                   [:obj :pointer]] ; const PJ *obj
                         :proj-returns :pj}
    :proj_ellipsoid_get_parameters {:rettype :int32
                                    :proj-returns :out-params
@@ -686,59 +707,59 @@
                                                 [:semi-minor-metre :double]
                                                 [:is-semi-minor-computed :int]
                                                 [:inv-flattening :double]]
-                                   :argtypes [['ctx :pointer]
-                                              ['ellipsoid :pointer]
-                                              ['out_semi_major_metre :pointer]
-                                              ['out_semi_minor_metre :pointer]
-                                              ['out_is_semi_minor_computed :pointer]
-                                              ['out_inv_flattening :pointer]]}
+                                   :argtypes [[:ctx :pointer]
+                                              [:ellipsoid :pointer]
+                                              [:out_semi_major_metre :pointer]
+                                              [:out_semi_minor_metre :pointer]
+                                              [:out_is_semi_minor_computed :pointer]
+                                              [:out_inv_flattening :pointer]]}
    :proj_get_celestial_body_name {:rettype :string
-                                  :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                             ['obj :pointer]]} ; const PJ *obj
+                                  :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                             [:obj :pointer]]} ; const PJ *obj
    :proj_get_prime_meridian {:rettype :pointer ; PJ *
-                             :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                        ['obj :pointer]] ; const PJ *obj
+                             :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                        [:obj :pointer]] ; const PJ *obj
                              :proj-returns :pj}
    :proj_prime_meridian_get_parameters {:rettype :int32
                                         :proj-returns :out-params
                                         :out-fields [[:longitude :double]
                                                      [:unit-conv-factor :double]
                                                      [:unit-name :string]]
-                                        :argtypes [['ctx :pointer]
-                                                   ['prime_meridian :pointer]
-                                                   ['out_longitude :pointer]
-                                                   ['out_unit_conv_factor :pointer]
-                                                   ['out_unit_name :pointer]]}
+                                        :argtypes [[:ctx :pointer]
+                                                   [:prime_meridian :pointer]
+                                                   [:out_longitude :pointer]
+                                                   [:out_unit_conv_factor :pointer]
+                                                   [:out_unit_name :pointer]]}
    :proj_crs_get_coordoperation {:rettype :pointer ; PJ *
-                                 :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                            ['crs :pointer]] ; const PJ *crs
+                                 :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                            [:crs :pointer]] ; const PJ *crs
                                  :proj-returns :pj}
    :proj_coordoperation_get_method_info {:rettype :int32
                                          :proj-returns :out-params
                                          :out-fields [[:method-name :string]
                                                       [:method-auth-name :string]
                                                       [:method-code :string]]
-                                         :argtypes [['ctx :pointer]
-                                                    ['coordoperation :pointer]
-                                                    ['out_method_name :pointer]
-                                                    ['out_method_auth_name :pointer]
-                                                    ['out_method_code :pointer]]}
+                                         :argtypes [[:ctx :pointer]
+                                                    [:coordoperation :pointer]
+                                                    [:out_method_name :pointer]
+                                                    [:out_method_auth_name :pointer]
+                                                    [:out_method_code :pointer]]}
    :proj_coordoperation_is_instantiable {:rettype :int32
-                                         :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                    ['coordoperation :pointer]]} ; const PJ *coordoperation
+                                         :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                    [:coordoperation :pointer]]} ; const PJ *coordoperation
    :proj_coordoperation_has_ballpark_transformation {:rettype :int32
-                                                     :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                                ['coordoperation :pointer]]} ; const PJ *coordoperation
+                                                     :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                                [:coordoperation :pointer]]} ; const PJ *coordoperation
    :proj_coordoperation_requires_per_coordinate_input_time {:rettype :int32
-                                                            :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                                       ['coordoperation :pointer]]} ; const PJ *coordoperation
+                                                            :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                                       [:coordoperation :pointer]]} ; const PJ *coordoperation
    :proj_coordoperation_get_param_count {:rettype :int32
-                                         :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                    ['coordoperation :pointer]]} ; const PJ *coordoperation
+                                         :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                    [:coordoperation :pointer]]} ; const PJ *coordoperation
    :proj_coordoperation_get_param_index {:rettype :int32
-                                         :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                    ['coordoperation :pointer] ; const PJ *coordoperation
-                                                    ['name :string]]}
+                                         :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                    [:coordoperation :pointer] ; const PJ *coordoperation
+                                                    [:name :string]]}
    :proj_coordoperation_get_param {:rettype :int32
                                    :proj-returns :out-params
                                    :out-fields [[:name :string]
@@ -751,22 +772,22 @@
                                                 [:unit-auth-name :string]
                                                 [:unit-code :string]
                                                 [:unit-category :string]]
-                                   :argtypes [['ctx :pointer]
-                                              ['coordoperation :pointer]
-                                              ['index :int32]
-                                              ['out_name :pointer]
-                                              ['out_auth_name :pointer]
-                                              ['out_code :pointer]
-                                              ['out_value :pointer]
-                                              ['out_value_string :pointer]
-                                              ['out_unit_conv_factor :pointer]
-                                              ['out_unit_name :pointer]
-                                              ['out_unit_auth_name :pointer]
-                                              ['out_unit_code :pointer]
-                                              ['out_unit_category :pointer]]}
+                                   :argtypes [[:ctx :pointer]
+                                              [:coordoperation :pointer]
+                                              [:index :int32]
+                                              [:out_name :pointer]
+                                              [:out_auth_name :pointer]
+                                              [:out_code :pointer]
+                                              [:out_value :pointer]
+                                              [:out_value_string :pointer]
+                                              [:out_unit_conv_factor :pointer]
+                                              [:out_unit_name :pointer]
+                                              [:out_unit_auth_name :pointer]
+                                              [:out_unit_code :pointer]
+                                              [:out_unit_category :pointer]]}
    :proj_coordoperation_get_grid_used_count {:rettype :int32
-                                             :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                        ['coordoperation :pointer]]} ; const PJ *coordoperation
+                                             :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                        [:coordoperation :pointer]]} ; const PJ *coordoperation
    :proj_coordoperation_get_grid_used {:rettype :int32
                                        :proj-returns :out-params
                                        :out-fields [[:short-name :string]
@@ -776,280 +797,273 @@
                                                     [:direct-download :int]
                                                     [:open-license :int]
                                                     [:available :int]]
-                                       :argtypes [['ctx :pointer]
-                                                  ['coordoperation :pointer]
-                                                  ['index :int32]
-                                                  ['out_short_name :pointer]
-                                                  ['out_full_name :pointer]
-                                                  ['out_package_name :pointer]
-                                                  ['out_url :pointer]
-                                                  ['out_direct_download :pointer]
-                                                  ['out_open_license :pointer]
-                                                  ['out_available :pointer]]}
+                                       :argtypes [[:ctx :pointer]
+                                                  [:coordoperation :pointer]
+                                                  [:index :int32]
+                                                  [:out_short_name :pointer]
+                                                  [:out_full_name :pointer]
+                                                  [:out_package_name :pointer]
+                                                  [:out_url :pointer]
+                                                  [:out_direct_download :pointer]
+                                                  [:out_open_license :pointer]
+                                                  [:out_available :pointer]]}
    :proj_coordoperation_get_accuracy {:rettype :float64
-                                      :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                 ['obj :pointer]]} ; const PJ *obj
+                                      :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                 [:obj :pointer]]} ; const PJ *obj
    :proj_coordoperation_get_towgs84_values {:rettype :int32
                                             :proj-returns :out-params
                                             :out-fields [[:values :double-array :count-arg :value_count]]
-                                            :argtypes [['ctx :pointer]
-                                                       ['coordoperation :pointer]
-                                                       ['out_values :pointer]
-                                                       ['value_count :int32]
-                                                       ['emit_error_if_incompatible :int32]]}
+                                            :argtypes [[:ctx :pointer]
+                                                       [:coordoperation :pointer]
+                                                       [:out_values :pointer]
+                                                       [:value_count :int32]
+                                                       [:emit_error_if_incompatible :int32]]}
    :proj_coordoperation_create_inverse {:rettype :pointer ; PJ *
-                                        :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                   ['obj :pointer]] ; const PJ *obj
+                                        :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                   [:obj :pointer]] ; const PJ *obj
                                         :proj-returns :pj}
    :proj_concatoperation_get_step_count {:rettype :int32
-                                         :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                    ['concatoperation :pointer]]} ; const PJ *concatoperation
+                                         :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                    [:concatoperation :pointer]]} ; const PJ *concatoperation
    :proj_concatoperation_get_step {:rettype :pointer ; PJ *
-                                   :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                              ['concatoperation :pointer] ; const PJ *concatoperation
-                                              ['i_step :int32]]
+                                   :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                              [:concatoperation :pointer] ; const PJ *concatoperation
+                                              [:i_step :int32]]
                                    :proj-returns :pj}
    :proj_coordinate_metadata_create {:rettype :pointer ; PJ *
-                                     :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                ['crs :pointer] ; const PJ *crs
-                                                ['epoch :float64]]
+                                     :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                [:crs :pointer] ; const PJ *crs
+                                                [:epoch :float64]]
                                      :proj-returns :pj}
    :proj_coordinate_metadata_get_epoch {:rettype :float64
-                                        :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                   ['obj :pointer]]} ; const PJ *obj
+                                        :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                   [:obj :pointer]]} ; const PJ *obj
    :proj_create_cs {:rettype :pointer ; PJ *
-                    :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                               ['type :int32] ; PJ_COORDINATE_SYSTEM_TYPE
-                               ['axis_count :int32]
-                               ['axis :pointer]] ; const PJ_AXIS_DESCRIPTION *axis
+                    :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                               [:type :int32] ; PJ_COORDINATE_SYSTEM_TYPE
+                               [:axis_count :int32]
+                               [:axis :pointer]] ; const PJ_AXIS_DESCRIPTION *axis
                     :proj-returns :pj}
    :proj_create_cartesian_2D_cs {:rettype :pointer ; PJ *
-                                 :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                            ['type :int32] ; PJ_CARTESIAN_CS_2D_TYPE
-                                            ['unit_name :string]
-                                            ['unit_conv_factor :float64]]
+                                 :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                            [:type :int32] ; PJ_CARTESIAN_CS_2D_TYPE
+                                            [:unit_name :string]
+                                            [:unit_conv_factor :float64]]
                                  :proj-returns :pj}
    :proj_create_ellipsoidal_2D_cs {:rettype :pointer ; PJ *
-                                   :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                              ['type :int32] ; PJ_ELLIPSOIDAL_CS_2D_TYPE
-                                              ['unit_name :string]
-                                              ['unit_conv_factor :float64]]
+                                   :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                              [:type :int32] ; PJ_ELLIPSOIDAL_CS_2D_TYPE
+                                              [:unit_name :string]
+                                              [:unit_conv_factor :float64]]
                                    :proj-returns :pj}
    :proj_create_ellipsoidal_3D_cs {:rettype :pointer ; PJ *
-                                   :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                              ['type :int32] ; PJ_ELLIPSOIDAL_CS_3D_TYPE
-                                              ['horizontal_angular_unit_name :string]
-                                              ['horizontal_angular_unit_conv_factor :float64]
-                                              ['vertical_linear_unit_name :string]
-                                              ['vertical_linear_unit_conv_factor :float64]]
+                                   :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                              [:type :int32] ; PJ_ELLIPSOIDAL_CS_3D_TYPE
+                                              [:horizontal_angular_unit_name :string]
+                                              [:horizontal_angular_unit_conv_factor :float64]
+                                              [:vertical_linear_unit_name :string]
+                                              [:vertical_linear_unit_conv_factor :float64]]
                                    :proj-returns :pj}
    :proj_query_geodetic_crs_from_datum {:rettype :pointer ; PJ_OBJ_LIST *
-                                        :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                   ['crs_auth_name :string]
-                                                   ['datum_auth_name :string]
-                                                   ['datum_code :string]
-                                                   ['crs_type :string]]
+                                        :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                   [:crs_auth_name :string]
+                                                   [:datum_auth_name :string]
+                                                   [:datum_code :string]
+                                                   [:crs_type :string]]
                                         :proj-returns :pj-list}
    :proj_create_geographic_crs {:rettype :pointer ; PJ *
-                                :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                           ['crs_name :string]
-                                           ['datum_name :string]
-                                           ['ellps_name :string]
-                                           ['semi_major_metre :float64]
-                                           ['inv_flattening :float64]
-                                           ['prime_meridian_name :string]
-                                           ['prime_meridian_offset :float64]
-                                           ['pm_angular_units :string]
-                                           ['pm_units_conv :float64]
-                                           ['ellipsoidal_cs :pointer]] ; const PJ *ellipsoidal_cs
+                                :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                           [:crs_name :string]
+                                           [:datum_name :string]
+                                           [:ellps_name :string]
+                                           [:semi_major_metre :float64]
+                                           [:inv_flattening :float64]
+                                           [:prime_meridian_name :string]
+                                           [:prime_meridian_offset :float64]
+                                           [:pm_angular_units :string]
+                                           [:pm_units_conv :float64]
+                                           [:ellipsoidal_cs :pointer]] ; const PJ *ellipsoidal_cs
                                 :proj-returns :pj}
    :proj_create_geographic_crs_from_datum {:rettype :pointer ; PJ *
-                                           :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                      ['crs_name :string]
-                                                      ['datum_or_datum_ensemble :pointer] ; const PJ *datum_or_datum_ensemble
-                                                      ['ellipsoidal_cs :pointer]] ; const PJ *ellipsoidal_cs
+                                           :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                      [:crs_name :string]
+                                                      [:datum_or_datum_ensemble :pointer] ; const PJ *datum_or_datum_ensemble
+                                                      [:ellipsoidal_cs :pointer]] ; const PJ *ellipsoidal_cs
                                            :proj-returns :pj}
    :proj_create_geocentric_crs {:rettype :pointer ; PJ *
-                                :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                           ['crs_name :string]
-                                           ['datum_name :string]
-                                           ['ellps_name :string]
-                                           ['semi_major_metre :float64]
-                                           ['inv_flattening :float64]
-                                           ['prime_meridian_name :string]
-                                           ['prime_meridian_offset :float64]
-                                           ['angular_units :string]
-                                           ['angular_units_conv :float64]
-                                           ['linear_units :string]
-                                           ['linear_units_conv :float64]]
+                                :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                           [:crs_name :string]
+                                           [:datum_name :string]
+                                           [:ellps_name :string]
+                                           [:semi_major_metre :float64]
+                                           [:inv_flattening :float64]
+                                           [:prime_meridian_name :string]
+                                           [:prime_meridian_offset :float64]
+                                           [:angular_units :string]
+                                           [:angular_units_conv :float64]
+                                           [:linear_units :string]
+                                           [:linear_units_conv :float64]]
                                 :proj-returns :pj}
    :proj_create_geocentric_crs_from_datum {:rettype :pointer ; PJ *
-                                           :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                      ['crs_name :string]
-                                                      ['datum_or_datum_ensemble :pointer] ; const PJ *datum_or_datum_ensemble
-                                                      ['linear_units :string]
-                                                      ['linear_units_conv :float64]]
+                                           :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                      [:crs_name :string]
+                                                      [:datum_or_datum_ensemble :pointer] ; const PJ *datum_or_datum_ensemble
+                                                      [:linear_units :string]
+                                                      [:linear_units_conv :float64]]
                                            :proj-returns :pj}
    :proj_create_derived_geographic_crs {:rettype :pointer ; PJ *
-                                        :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                   ['crs_name :string]
-                                                   ['base_geographic_crs :pointer] ; const PJ *base_geographic_crs
-                                                   ['conversion :pointer] ; const PJ *conversion
-                                                   ['ellipsoidal_cs :pointer]] ; const PJ *ellipsoidal_cs
+                                        :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                   [:crs_name :string]
+                                                   [:base_geographic_crs :pointer] ; const PJ *base_geographic_crs
+                                                   [:conversion :pointer] ; const PJ *conversion
+                                                   [:ellipsoidal_cs :pointer]] ; const PJ *ellipsoidal_cs
                                         :proj-returns :pj}
    :proj_is_derived_crs {:rettype :int32
-                         :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                    ['crs :pointer]]} ; const PJ *crs
+                         :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                    [:crs :pointer]]} ; const PJ *crs
    :proj_alter_name {:rettype :pointer ; PJ *
-                     :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                ['obj :pointer] ; const PJ *obj
-                                ['name :string]]
+                     :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                [:obj :pointer] ; const PJ *obj
+                                [:name :string]]
                      :proj-returns :pj}
    :proj_alter_id {:rettype :pointer ; PJ *
-                   :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                              ['obj :pointer] ; const PJ *obj
-                              ['auth_name :string]
-                              ['code :string]]
+                   :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                              [:obj :pointer] ; const PJ *obj
+                              [:auth_name :string]
+                              [:code :string]]
                    :proj-returns :pj}
    :proj_crs_alter_geodetic_crs {:rettype :pointer ; PJ *
-                                 :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                            ['obj :pointer] ; const PJ *obj
-                                            ['new_geod_crs :pointer]] ; const PJ *new_geod_crs
+                                 :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                            [:obj :pointer] ; const PJ *obj
+                                            [:new_geod_crs :pointer]] ; const PJ *new_geod_crs
                                  :proj-returns :pj}
    :proj_crs_alter_cs_angular_unit {:rettype :pointer ; PJ *
-                                    :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                               ['obj :pointer] ; const PJ *obj
-                                               ['angular_units :string]
-                                               ['angular_units_conv :float64]
-                                               ['unit_auth_name :string]
-                                               ['unit_code :string]]
+                                    :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                               [:obj :pointer] ; const PJ *obj
+                                               [:angular_units :string]
+                                               [:angular_units_conv :float64]
+                                               [:unit_auth_name :string]
+                                               [:unit_code :string]]
                                     :proj-returns :pj}
    :proj_crs_alter_cs_linear_unit {:rettype :pointer ; PJ *
-                                   :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                              ['obj :pointer] ; const PJ *obj
-                                              ['linear_units :string]
-                                              ['linear_units_conv :float64]
-                                              ['unit_auth_name :string]
-                                              ['unit_code :string]]
+                                   :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                              [:obj :pointer] ; const PJ *obj
+                                              [:linear_units :string]
+                                              [:linear_units_conv :float64]
+                                              [:unit_auth_name :string]
+                                              [:unit_code :string]]
                                    :proj-returns :pj}
    :proj_crs_alter_parameters_linear_unit {:rettype :pointer ; PJ *
-                                           :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                      ['obj :pointer] ; const PJ *obj
-                                                      ['linear_units :string]
-                                                      ['linear_units_conv :float64]
-                                                      ['unit_auth_name :string]
-                                                      ['unit_code :string]
-                                                      ['convert_to_new_unit :int32]]
+                                           :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                      [:obj :pointer] ; const PJ *obj
+                                                      [:linear_units :string]
+                                                      [:linear_units_conv :float64]
+                                                      [:unit_auth_name :string]
+                                                      [:unit_code :string]
+                                                      [:convert_to_new_unit :int32]]
                                            :proj-returns :pj}
    :proj_crs_promote_to_3D {:rettype :pointer ; PJ *
-                            :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                       ['crs_3D_name :string]
-                                       ['crs_2D :pointer]] ; const PJ *crs_2D
+                            :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                       [:crs_3D_name :string]
+                                       [:crs_2D :pointer]] ; const PJ *crs_2D
                             :proj-returns :pj}
    :proj_crs_create_projected_3D_crs_from_2D {:rettype :pointer ; PJ *
-                                              :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                         ['crs_name :string]
-                                                         ['projected_2D_crs :pointer] ; const PJ *projected_2D_crs
-                                                         ['geog_3D_crs :pointer]] ; const PJ *geog_3D_crs
+                                              :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                         [:crs_name :string]
+                                                         [:projected_2D_crs :pointer] ; const PJ *projected_2D_crs
+                                                         [:geog_3D_crs :pointer]] ; const PJ *geog_3D_crs
                                               :proj-returns :pj}
    :proj_crs_demote_to_2D {:rettype :pointer ; PJ *
-                           :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                      ['crs_2D_name :string]
-                                      ['crs_3D :pointer]] ; const PJ *crs_3D
+                           :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                      [:crs_2D_name :string]
+                                      [:crs_3D :pointer]] ; const PJ *crs_3D
                            :proj-returns :pj}
    :proj_create_engineering_crs {:rettype :pointer ; PJ *
-                                 :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                            ['crsName :string]]
+                                 :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                            [:crsName :string]]
                                  :proj-returns :pj}
    :proj_create_vertical_crs {:rettype :pointer ; PJ *
-                              :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                         ['crs_name :string]
-                                         ['datum_name :string]
-                                         ['linear_units :string]
-                                         ['linear_units_conv :float64]]
+                              :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                         [:crs_name :string]
+                                         [:datum_name :string]
+                                         [:linear_units :string]
+                                         [:linear_units_conv :float64]]
                               :proj-returns :pj}
    :proj_create_vertical_crs_ex {:rettype :pointer ; PJ *
-                                 :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                            ['crs_name :string]
-                                            ['datum_name :string]
-                                            ['datum_auth_name :string]
-                                            ['datum_code :string]
-                                            ['linear_units :string]
-                                            ['linear_units_conv :float64]
-                                            ['geoid_model_name :string]
-                                            ['geoid_model_auth_name :string]
-                                            ['geoid_model_code :string]
-                                            ['geoid_geog_crs :pointer] ; const PJ *geoid_geog_crs
-                                            ['options :pointer]] ; const char *const *options
+                                 :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                            [:crs_name :string]
+                                            [:datum_name :string]
+                                            [:datum_auth_name :string]
+                                            [:datum_code :string]
+                                            [:linear_units :string]
+                                            [:linear_units_conv :float64]
+                                            [:geoid_model_name :string]
+                                            [:geoid_model_auth_name :string]
+                                            [:geoid_model_code :string]
+                                            [:geoid_geog_crs :pointer] ; const PJ *geoid_geog_crs
+                                            [:options :pointer]] ; const char *const *options
                                  :proj-returns :pj}
    :proj_create_compound_crs {:rettype :pointer ; PJ *
-                              :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                         ['crs_name :string]
-                                         ['horiz_crs :pointer] ; const PJ *horiz_crs
-                                         ['vert_crs :pointer]] ; const PJ *vert_crs
+                              :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                         [:crs_name :string]
+                                         [:horiz_crs :pointer] ; const PJ *horiz_crs
+                                         [:vert_crs :pointer]] ; const PJ *vert_crs
                               :proj-returns :pj}
    :proj_create_conversion {:rettype :pointer ; PJ *
-                            :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                       ['name :string]
-                                       ['auth_name :string]
-                                       ['code :string]
-                                       ['method_name :string]
-                                       ['method_auth_name :string]
-                                       ['method_code :string]
-                                       ['param_count :int32]
-                                       ['params :pointer]] ; const PJ_PARAM_DESCRIPTION *params
+                            :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                       [:name :string]
+                                       [:auth_name :string]
+                                       [:code :string]
+                                       [:method_name :string]
+                                       [:method_auth_name :string]
+                                       [:method_code :string]
+                                       [:param_count :int32]
+                                       [:params :pointer]] ; const PJ_PARAM_DESCRIPTION *params
                             :proj-returns :pj}
    :proj_create_transformation {:rettype :pointer ; PJ *
-                                :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                           ['name :string]
-                                           ['auth_name :string]
-                                           ['code :string]
-                                           ['source_crs :pointer] ; const PJ *source_crs
-                                           ['target_crs :pointer] ; const PJ *target_crs
-                                           ['interpolation_crs :pointer] ; const PJ *interpolation_crs
-                                           ['method_name :string]
-                                           ['method_auth_name :string]
-                                           ['method_code :string]
-                                           ['param_count :int32]
-                                           ['params :pointer] ; const PJ_PARAM_DESCRIPTION *params
-                                           ['accuracy :float64]]
+                                :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                           [:name :string]
+                                           [:auth_name :string]
+                                           [:code :string]
+                                           [:source_crs :pointer] ; const PJ *source_crs
+                                           [:target_crs :pointer] ; const PJ *target_crs
+                                           [:interpolation_crs :pointer] ; const PJ *interpolation_crs
+                                           [:method_name :string]
+                                           [:method_auth_name :string]
+                                           [:method_code :string]
+                                           [:param_count :int32]
+                                           [:params :pointer] ; const PJ_PARAM_DESCRIPTION *params
+                                           [:accuracy :float64]]
                                 :proj-returns :pj}
    :proj_convert_conversion_to_other_method {:rettype :pointer ; PJ *
-                                             :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                        ['conversion :pointer] ; const PJ *conversion
-                                                        ['new_method_epsg_code :int32]
-                                                        ['new_method_name :string]]
+                                             :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                        [:conversion :pointer] ; const PJ *conversion
+                                                        [:new_method_epsg_code :int32]
+                                                        [:new_method_name :string]]
                                              :proj-returns :pj}
    :proj_create_projected_crs {:rettype :pointer ; PJ *
-                               :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                          ['crs_name :string]
-                                          ['geodetic_crs :pointer] ; const PJ *geodetic_crs
-                                          ['conversion :pointer] ; const PJ *conversion
-                                          ['coordinate_system :pointer]] ; const PJ *coordinate_system
+                               :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                          [:crs_name :string]
+                                          [:geodetic_crs :pointer] ; const PJ *geodetic_crs
+                                          [:conversion :pointer] ; const PJ *conversion
+                                          [:coordinate_system :pointer]] ; const PJ *coordinate_system
                                :proj-returns :pj}
    :proj_crs_create_bound_crs {:rettype :pointer ; PJ *
-                               :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                          ['base_crs :pointer] ; const PJ *base_crs
-                                          ['hub_crs :pointer] ; const PJ *hub_crs
-                                          ['transformation :pointer]] ; const PJ *transformation
+                               :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                          [:base_crs :pointer] ; const PJ *base_crs
+                                          [:hub_crs :pointer] ; const PJ *hub_crs
+                                          [:transformation :pointer]] ; const PJ *transformation
                                :proj-returns :pj}
    :proj_crs_create_bound_crs_to_WGS84 {:rettype :pointer ; PJ *
-                                        :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                   ['crs :pointer] ; const PJ *crs
-                                                   ['options :pointer]] ; const char *const *options
+                                        :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                   [:crs :pointer] ; const PJ *crs
+                                                   [:options :pointer]] ; const char *const *options
                                         :proj-returns :pj}
    :proj_crs_create_bound_vertical_crs {:rettype :pointer ; PJ *
-                                        :argtypes [['ctx :pointer] ; PJ_CONTEXT *ctx
-                                                   ['vert_crs :pointer] ; const PJ *vert_crs
-                                                   ['hub_geographic_3D_crs :pointer] ; const PJ *hub_geographic_3D_crs
-                                                   ['grid_name :string]]
+                                        :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                                   [:vert_crs :pointer] ; const PJ *vert_crs
+                                                   [:hub_geographic_3D_crs :pointer] ; const PJ *hub_geographic_3D_crs
+                                                   [:grid_name :string]]
                                         :proj-returns :pj}})
 
-;; Keep fn-defs as Clojure map for macro expansion, convert to JS when needed at runtime
-;; For ClojureScript, export as a plain JavaScript object that can be accessed
-;; via normal property access. Cherry persistent data structures are not
-;; accessible from the compiled JavaScript runtime.
-(def fndefs
-  #?(:clj fndefs-raw
-     :cljs (clj->js fndefs-raw)))
 

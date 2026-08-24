@@ -1,14 +1,9 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
 
-// Tests CDN-style loading where module is in a subdirectory relative to HTML page
+// CDN-style: the module loads from a subdirectory relative to the HTML page.
 test.describe('CDN-Style Loading Tests', () => {
-  test('can initialize PROJ and verify worker mode', async ({ page, baseURL }) => {
-    // Determine expected mode based on server port
-    const isSharedMode = (baseURL || '').includes('8081');
-    const expectedMode = isSharedMode ? 'pthreads' : 'single-threaded';
-
-    // Capture console logs and errors
+  test('can initialize PROJ with CDN-style loading', async ({ page }) => {
     const consoleLogs = [];
     const consoleErrors = [];
 
@@ -23,13 +18,9 @@ test.describe('CDN-Style Loading Tests', () => {
       console.log('Browser error:', error.message);
     });
 
-    // Navigate to the cdn-style test page
     await page.goto('/test/browser/cdn-style/index.html');
-
-    // Wait for PROJ module to be available
     await page.waitForFunction(() => window.proj !== undefined, { timeout: 30000 });
 
-    // Initialize and verify mode
     const result = await page.evaluate(async () => {
       const proj = window.proj;
 
@@ -44,15 +35,9 @@ test.describe('CDN-Style Loading Tests', () => {
         await initFunction();
         console.log('PROJ initialized successfully');
 
-        // Get worker mode
-        const mode = proj.get_worker_mode ? proj.get_worker_mode() : 'unknown';
-        console.log('Worker mode:', mode);
-
-        // Check crossOriginIsolated status
         const crossOriginIsolated = self.crossOriginIsolated || false;
         console.log('crossOriginIsolated:', crossOriginIsolated);
 
-        // Verify we can create a context (async in worker mode)
         const context = await proj.context_create();
         if (!context) {
           return { success: false, error: 'Failed to create context after init' };
@@ -60,7 +45,6 @@ test.describe('CDN-Style Loading Tests', () => {
 
         return {
           success: true,
-          mode,
           crossOriginIsolated
         };
       } catch (error) {
@@ -72,7 +56,6 @@ test.describe('CDN-Style Loading Tests', () => {
       }
     });
 
-    // Check for 404 errors in console
     const has404Errors = consoleLogs.some(log =>
       log.text.includes('404') ||
       log.text.includes('Failed to fetch resources')
@@ -87,14 +70,9 @@ test.describe('CDN-Style Loading Tests', () => {
 
     expect(has404Errors).toBe(false);
     expect(result.success).toBe(true);
-
-    // Verify the correct mode based on server configuration
-    console.log(`Expected mode: ${expectedMode}, Actual mode: ${result.mode}`);
-    expect(result.mode).toBe(expectedMode);
   });
 
   test('can perform coordinate transformation with CDN-style loading', async ({ page }) => {
-    // Capture errors
     page.on('console', msg => console.log('Browser console:', msg.type(), msg.text()));
     page.on('pageerror', error => console.log('Browser error:', error.message));
 
@@ -105,14 +83,11 @@ test.describe('CDN-Style Loading Tests', () => {
       const proj = window.proj;
 
       try {
-        // Initialize
         const initFunction = proj.init_BANG_ || proj['init!'] || proj.init;
         await initFunction();
 
-        // Create context (async)
         const context = await proj.context_create();
 
-        // Create transformer (async)
         const transformer = await proj.proj_create_crs_to_crs({
           source_crs: "EPSG:4326",
           target_crs: "EPSG:2249",
@@ -123,15 +98,12 @@ test.describe('CDN-Style Loading Tests', () => {
           return { success: false, error: 'Failed to create transformer' };
         }
 
-        // Create coordinate array (async)
         const coordArray = await proj.coord_array(1);
 
-        // Set coordinates (async)
         await proj.set_coords_BANG_(coordArray, [[42.3603222, -71.0579667, 0, 0]]);
 
         const PJ_FWD = proj.PJ_FWD || 1;
 
-        // Transform (async)
         await proj.proj_trans_array({
           p: transformer,
           direction: PJ_FWD,
@@ -139,12 +111,11 @@ test.describe('CDN-Style Loading Tests', () => {
           coord: coordArray
         });
 
-        // Get transformed coordinates (async)
         const coords = await proj.get_coord_array(coordArray, 0);
         const x = coords[0];
         const y = coords[1];
 
-        // Boston City Hall should be approximately X: 775,200 ft, Y: 2,956,400 ft
+        // Boston City Hall: approximately X 775,200 ft, Y 2,956,400 ft
         const xInRange = x > 775000 && x < 776000;
         const yInRange = y > 2956000 && y < 2957000;
 
@@ -194,7 +165,6 @@ test.describe('CDN-Style Loading Tests', () => {
         const originalLon = -71.0579667;
         const PJ_FWD = proj.PJ_FWD || 1;
 
-        // Test 1: Network OFF
         const ctxOff = await proj.context_create({ network: false });
         await proj.proj_context_set_enable_network({ context: ctxOff, enabled: 0 });
 
@@ -222,7 +192,6 @@ test.describe('CDN-Style Loading Tests', () => {
         const xOff = coordsOff[0];
         const yOff = coordsOff[1];
 
-        // Test 2: Network ON (default)
         const ctxOn = await proj.context_create();
 
         const transformerOn = await proj.proj_create_crs_to_crs({

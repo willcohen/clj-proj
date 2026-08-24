@@ -1,0 +1,10 @@
+{
+  "name": "clj-proj-cljs-tests",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ffi-wasm": "0.0.1",
+    "proj-wasm": "file:../../src/cljc/net/willcohen/proj",
+    "squint-cljs": "^0.14.206"
+  }
+}

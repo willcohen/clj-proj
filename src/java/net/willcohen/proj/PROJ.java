@@ -1,3 +1,9 @@
+// Copyright (c) 2024, 2025, 2026 Will Cohen
+//
+// Part of clj-proj, under the MIT License.
+// See LICENSE for license information.
+// SPDX-License-Identifier: MIT
+
 package net.willcohen.proj;
 
 import clojure.java.api.Clojure;
@@ -13,10 +19,10 @@ import java.util.Map;
 import java.util.HashMap;
 
 /**
- * Java API for PROJ coordinate transformation library.
+ * Java API for the PROJ coordinate transformation library.
  *
- * This class provides a Java-friendly wrapper around the Clojure clj-proj library,
- * which itself wraps the PROJ C library for coordinate reference system transformations.
+ * This class wraps the Clojure clj-proj library, which wraps the
+ * PROJ C library for coordinate reference system transformations.
  *
  * Example usage:
  * <pre>
@@ -38,7 +44,6 @@ public class PROJ {
     private static final String NS = "net.willcohen.proj.proj";
     private static boolean nsLoaded = false;
 
-    // Clojure function references (lazily loaded)
     private static IFn initFn;
     private static IFn forceGraalFn;
     private static IFn forceFfiFn;
@@ -63,7 +68,6 @@ public class PROJ {
     private static IFn getCoordsFn;
     private static IFn errorCodeToStringFn;
 
-    // Generated PROJ functions (most commonly used)
     private static IFn createFn;
     private static IFn createCrsToCrsFn;
     private static IFn createCrsToCrsFromPjFn;
@@ -117,11 +121,9 @@ public class PROJ {
         return PersistentHashMap.create(kvs);
     }
 
-    // --- Initialization ---
-
     /**
-     * Initialize PROJ library. Auto-selects the best available backend:
-     * native FFI if platform libraries are available, otherwise GraalVM WASM.
+     * Initialize the PROJ library. Selects the best available backend:
+     * native FFI when platform libraries are available, otherwise GraalVM WASM.
      */
     public static void init() {
         if (initFn == null) initFn = getVar("init!");
@@ -129,7 +131,7 @@ public class PROJ {
     }
 
     /**
-     * Force use of GraalVM WASM backend even if native libraries are available.
+     * Force the GraalVM WASM backend, even when native libraries are available.
      */
     public static void forceGraal() {
         if (forceGraalFn == null) forceGraalFn = getVar("force-graal!");
@@ -137,7 +139,7 @@ public class PROJ {
     }
 
     /**
-     * Force use of native FFI backend.
+     * Force the native FFI backend.
      */
     public static void forceFfi() {
         if (forceFfiFn == null) forceFfiFn = getVar("force-ffi!");
@@ -152,11 +154,9 @@ public class PROJ {
         toggleGraalFn.invoke();
     }
 
-    // --- Implementation checks ---
-
     /**
-     * Check if currently using native FFI backend.
-     * @return true if using FFI
+     * Returns true when the native FFI backend is active.
+     * @return true when FFI is active
      */
     public static boolean isFfi() {
         if (isFfiFn == null) isFfiFn = getVar("ffi?");
@@ -164,8 +164,8 @@ public class PROJ {
     }
 
     /**
-     * Check if currently using GraalVM WASM backend.
-     * @return true if using GraalVM
+     * Returns true when the GraalVM WASM backend is active.
+     * @return true when GraalVM is active
      */
     public static boolean isGraal() {
         if (isGraalFn == null) isGraalFn = getVar("graal?");
@@ -173,18 +173,16 @@ public class PROJ {
     }
 
     /**
-     * Check if currently using Node.js backend (not applicable on JVM).
-     * @return true if using Node.js
+     * Returns true when the Node.js backend is active. Not applicable on the JVM.
+     * @return true when Node.js is active
      */
     public static boolean isNode() {
         if (isNodeFn == null) isNodeFn = getVar("node?");
         return (Boolean) isNodeFn.invoke();
     }
 
-    // --- Context management ---
-
     /**
-     * Create a new PROJ context. Contexts provide thread-safe isolation.
+     * Create a new PROJ context. Contexts give thread-safe isolation.
      * @return opaque context object
      */
     public static Object contextCreate() {
@@ -214,9 +212,9 @@ public class PROJ {
     }
 
     /**
-     * Check if an object is a PROJ context.
-     * @param obj the object to check
-     * @return true if it's a context
+     * Returns true when the object is a PROJ context.
+     * @param obj the object to examine
+     * @return true when the object is a context
      */
     public static boolean isContext(Object obj) {
         if (isContextFn == null) isContextFn = getVar("is-context?");
@@ -241,8 +239,6 @@ public class PROJ {
         if (contextSetDatabasePathFn == null) contextSetDatabasePathFn = getVar("context-set-database-path");
         contextSetDatabasePathFn.invoke(context, dbPath);
     }
-
-    // --- Coordinate arrays ---
 
     /**
      * Allocate a coordinate array for n coordinates with 4 dimensions (x, y, z, t).
@@ -277,13 +273,12 @@ public class PROJ {
 
     /**
      * Set coordinates in a coordinate array.
-     * Coordinates are padded to 4 dimensions (x, y, z, t) with zeros if needed.
+     * The method pads each coordinate to 4 dimensions (x, y, z, t) with zeros.
      * @param coordArray the coordinate array
      * @param coords array of coordinates, each as [x, y] or [x, y, z] or [x, y, z, t]
      */
     public static void setCoords(Object coordArray, double[][] coords) {
         if (setCoordsFn == null) setCoordsFn = getVar("set-coords!");
-        // Convert to Clojure vector of vectors, padding to 4 dimensions
         Object[] outer = new Object[coords.length];
         for (int i = 0; i < coords.length; i++) {
             Double[] padded = new Double[4];
@@ -297,7 +292,7 @@ public class PROJ {
 
     /**
      * Set a single coordinate in a coordinate array at the given index.
-     * Coordinate is padded to 4 dimensions (x, y, z, t) with zeros if needed.
+     * The method pads the coordinate to 4 dimensions (x, y, z, t) with zeros.
      * @param coordArray the coordinate array
      * @param index the index (0-based)
      * @param coord the coordinate values
@@ -363,8 +358,7 @@ public class PROJ {
     }
 
     /**
-     * Get coordinates from a coordinate array at the given index.
-     * Returns [x, y, z, t] for the coordinate at the specified index.
+     * Get the [x, y, z, t] values from a coordinate array at the given index.
      * @param coordArray the coordinate array
      * @param index the index (0-based)
      * @return array of [x, y, z, t] doubles
@@ -386,8 +380,6 @@ public class PROJ {
         return null;
     }
 
-    // --- Error handling ---
-
     /**
      * Convert a PROJ error code to a human-readable string.
      * @param errorCode the error code
@@ -399,13 +391,11 @@ public class PROJ {
         return result != null ? result.toString() : null;
     }
 
-    // --- Core PROJ operations (from generated functions) ---
-
     /**
      * Create a transformation between two coordinate reference systems.
      * @param context the PROJ context
-     * @param sourceCrs source CRS (e.g., "EPSG:4326")
-     * @param targetCrs target CRS (e.g., "EPSG:2249")
+     * @param sourceCrs source CRS (for example "EPSG:4326")
+     * @param targetCrs target CRS (for example "EPSG:2249")
      * @return transformation object
      */
     public static Object createCrsToCrs(Object context, String sourceCrs, String targetCrs) {
@@ -418,9 +408,9 @@ public class PROJ {
     }
 
     /**
-     * Create a transformation between two coordinate reference systems using default context.
-     * @param sourceCrs source CRS (e.g., "EPSG:4326")
-     * @param targetCrs target CRS (e.g., "EPSG:2249")
+     * Create a transformation between two coordinate reference systems with the default context.
+     * @param sourceCrs source CRS (for example "EPSG:4326")
+     * @param targetCrs target CRS (for example "EPSG:2249")
      * @return transformation object
      */
     public static Object createCrsToCrs(String sourceCrs, String targetCrs) {
@@ -433,8 +423,8 @@ public class PROJ {
 
     /**
      * Create a transformation between two CRS objects (PJ pointers).
-     * This is the same as createCrsToCrs() except that the source and target CRS
-     * are passed as PJ objects rather than string identifiers.
+     * Same as createCrsToCrs(), but the CRS arguments are PJ objects,
+     * not string identifiers.
      * @param context the PROJ context
      * @param sourceCrs source CRS object (from createFromDatabase or similar)
      * @param targetCrs target CRS object (from createFromDatabase or similar)
@@ -450,7 +440,7 @@ public class PROJ {
     }
 
     /**
-     * Create a transformation between two CRS objects using default context.
+     * Create a transformation between two CRS objects with the default context.
      * @param sourceCrs source CRS object
      * @param targetCrs target CRS object
      * @return transformation object
@@ -466,7 +456,7 @@ public class PROJ {
     /**
      * Create a PROJ object from a definition string (PROJ string, WKT, or pipeline).
      * @param context the PROJ context
-     * @param definition the definition string (e.g., "+proj=robin", "EPSG:4326", pipeline)
+     * @param definition the definition string (for example "+proj=robin", "EPSG:4326", or a pipeline)
      * @return PJ object
      */
     public static Object create(Object context, String definition) {
@@ -478,7 +468,7 @@ public class PROJ {
     }
 
     /**
-     * Create a PROJ object from a definition string using default context.
+     * Create a PROJ object from a definition string with the default context.
      * @param definition the definition string
      * @return PJ object
      */
@@ -492,8 +482,8 @@ public class PROJ {
     /**
      * Create a CRS object from the database by authority and code.
      * @param context the PROJ context
-     * @param authName authority name (e.g., "EPSG")
-     * @param code the code (e.g., "4326")
+     * @param authName authority name (for example "EPSG")
+     * @param code the code (for example "4326")
      * @return CRS object (PJ pointer)
      */
     public static Object createFromDatabase(Object context, String authName, String code) {
@@ -507,9 +497,9 @@ public class PROJ {
     }
 
     /**
-     * Create a CRS object from the database using default context.
-     * @param authName authority name (e.g., "EPSG")
-     * @param code the code (e.g., "4326")
+     * Create a CRS object from the database with the default context.
+     * @param authName authority name (for example "EPSG")
+     * @param code the code (for example "4326")
      * @return CRS object (PJ pointer)
      */
     public static Object createFromDatabase(String authName, String code) {
@@ -554,7 +544,7 @@ public class PROJ {
     /**
      * Get list of available authorities from the PROJ database.
      * @param context the PROJ context
-     * @return list of authority names (e.g., ["EPSG", "ESRI", "PROJ"])
+     * @return list of authority names (for example ["EPSG", "ESRI", "PROJ"])
      */
     @SuppressWarnings("unchecked")
     public static List<String> getAuthoritiesFromDatabase(Object context) {
@@ -564,7 +554,7 @@ public class PROJ {
     }
 
     /**
-     * Get list of available authorities from the PROJ database using default context.
+     * Get list of available authorities from the PROJ database with the default context.
      * @return list of authority names
      */
     @SuppressWarnings("unchecked")
@@ -577,7 +567,7 @@ public class PROJ {
     /**
      * Get list of CRS codes from the PROJ database for an authority.
      * @param context the PROJ context
-     * @param authName authority name (e.g., "EPSG")
+     * @param authName authority name (for example "EPSG")
      * @return list of codes
      */
     @SuppressWarnings("unchecked")
@@ -591,8 +581,8 @@ public class PROJ {
     }
 
     /**
-     * Get list of CRS codes from the PROJ database for an authority using default context.
-     * @param authName authority name (e.g., "EPSG")
+     * Get list of CRS codes from the PROJ database for an authority with the default context.
+     * @param authName authority name (for example "EPSG")
      * @return list of codes
      */
     @SuppressWarnings("unchecked")
@@ -608,7 +598,7 @@ public class PROJ {
      * west-lon-degree, south-lat-degree, east-lon-degree, north-lat-degree,
      * area-name, projection-method-name, celestial-body-name.
      * @param context the PROJ context
-     * @param authName authority name filter (e.g., "EPSG"), or null for all authorities
+     * @param authName authority name filter (for example "EPSG"), or null for all authorities
      * @return list of CRS info maps with String keys
      */
     @SuppressWarnings("unchecked")
@@ -635,8 +625,8 @@ public class PROJ {
      * Get unit information from PROJ's database.
      * Each map has keys: auth-name, code, name, category, conv-factor, proj-short-name, deprecated.
      * @param context the PROJ context (optional, pass null to auto-create)
-     * @param authName authority name filter (e.g., "EPSG"), or null for all
-     * @param category unit category filter (e.g., "linear", "angular"), or null for all
+     * @param authName authority name filter (for example "EPSG"), or null for all
+     * @param category unit category filter (for example "linear" or "angular"), or null for all
      * @param allowDeprecated whether to include deprecated units
      * @return list of unit info maps with String keys
      */
@@ -687,8 +677,6 @@ public class PROJ {
         return getCelestialBodyListFromDatabase(context, null);
     }
 
-    // --- CRS Decomposition ---
-
     public static String getName(Object obj) {
         if (getNameFn == null) getNameFn = getVar("proj-get-name");
         return (String) getNameFn.invoke(map(kw("obj"), obj));
@@ -731,8 +719,6 @@ public class PROJ {
         Object result = coordoperationGetGridUsedCountFn.invoke(map(kw("ctx"), context, kw("coordoperation"), coordoperation));
         return ((Number) result).intValue();
     }
-
-    // --- Out-param functions (return Maps with String keys) ---
 
     @SuppressWarnings("unchecked")
     public static Map<String, Object> getAreaOfUse(Object context, Object obj) {
@@ -812,10 +798,8 @@ public class PROJ {
         return result != null ? convertKeywordMap((Map<Keyword, Object>) result) : null;
     }
 
-    // --- Cleanup (usually not needed due to automatic resource tracking) ---
-
     /**
-     * Destroy a PROJ context. Usually not needed as resources are automatically tracked.
+     * Destroy a PROJ context. Usually not necessary, because the library tracks resources automatically.
      * @param context the context to destroy
      */
     public static void contextDestroy(Object context) {
@@ -824,7 +808,7 @@ public class PROJ {
     }
 
     /**
-     * Destroy a PROJ object. Usually not needed as resources are automatically tracked.
+     * Destroy a PROJ object. Usually not necessary, because the library tracks resources automatically.
      * @param pj the PROJ object to destroy
      */
     public static void destroy(Object pj) {
@@ -832,16 +816,12 @@ public class PROJ {
         destroyFn.invoke(map(kw("pj"), pj));
     }
 
-    // --- Direction constants ---
-
     /** Forward transformation direction */
     public static final int PJ_FWD = 1;
     /** Identity (no-op) transformation direction */
     public static final int PJ_IDENT = 0;
     /** Inverse transformation direction */
     public static final int PJ_INV = -1;
-
-    // --- Category constants ---
 
     /** Ellipsoid category */
     public static final int PJ_CATEGORY_ELLIPSOID = 0;
@@ -855,8 +835,6 @@ public class PROJ {
     public static final int PJ_CATEGORY_COORDINATE_OPERATION = 4;
     /** Datum ensemble category */
     public static final int PJ_CATEGORY_DATUM_ENSEMBLE = 5;
-
-    // --- Helper methods ---
 
     private static Double[] box(double[] arr) {
         Double[] result = new Double[arr.length];

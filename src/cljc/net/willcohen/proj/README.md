@@ -1,11 +1,11 @@
 # proj-wasm
 
-A transpiled WebAssembly version of [PROJ](https://github.com/OSGeo/PROJ), made
-available for use via JavaScript.
+A transpiled WebAssembly version of [PROJ](https://github.com/OSGeo/PROJ),
+available for use from JavaScript.
 
-Part of the [clj-proj](https://github.com/willcohen/clj-proj) project, and is
-still experimental. Please see that project's
-[README](https://github.com/willcohen/clj-proj/blob/main/README.md) for further
+This package is part of the [clj-proj](https://github.com/willcohen/clj-proj)
+project and is experimental. See that project's
+[README](https://github.com/willcohen/clj-proj/blob/main/README.md) for more
 details.
 
 ## Installation
@@ -54,7 +54,7 @@ console.log(`Transformed coordinates: [${x}, ${y}]`);
 
 ### Naming Conventions
 
-All functions are available in both camelCase and snake_case:
+All functions are available in camelCase and snake_case:
 
 | camelCase | snake_case |
 |-----------|------------|
@@ -64,24 +64,23 @@ All functions are available in both camelCase and snake_case:
 | `setCoords(coords, values)` | `set_coords_BANG_(coords, values)` |
 | `projTransArray(options)` | `proj_trans_array(options)` |
 | `getCoords(coords, idx)` | `get_coords(coords, idx)` |
-| `getWorkerMode()` | `get_worker_mode()` |
 | `getWorkerCount()` | `get_worker_count()` |
 
-The snake_case names match the underlying PROJ C API. The `_BANG_` suffix in
-snake_case corresponds to Clojure's `!` convention for mutating functions;
-camelCase aliases omit it.
+The snake_case names agree with the PROJ C API names. The `_BANG_` suffix in
+snake_case is Clojure's `!` convention for mutating functions. The camelCase
+aliases do not have it.
 
 ## API Reference
 
 ### Core Functions
 
-- `init()` - Initialize the PROJ library (must be called first)
-- `contextCreate(options?)` - Create a new PROJ context (optional; auto-created when omitted)
-  - `options.network` - Enable/disable network grid fetching (default: `true`)
+- `init()` - Initialize the PROJ library (call this function first)
+- `contextCreate(options?)` - Create a new PROJ context (optional, auto-created when omitted)
+  - `options.network` - Turn network grid fetching on or off (default: `true`)
 - `projCreateCrsToCrs(options)` - Create a transformation between two coordinate reference systems
-  - `options.context` - PROJ context (optional; auto-created if omitted)
-  - `options.source_crs` - Source CRS (e.g., "EPSG:4326")
-  - `options.target_crs` - Target CRS (e.g., "EPSG:3857")
+  - `options.context` - PROJ context (optional, auto-created if omitted)
+  - `options.source_crs` - Source CRS (for example, "EPSG:4326")
+  - `options.target_crs` - Target CRS (for example, "EPSG:3857")
 
 ### Coordinate Handling
 
@@ -95,12 +94,11 @@ camelCase aliases omit it.
   - `options.n` - Number of coordinates
   - `options.coord` - The coordinate array object
 - `getCoords(coords, idx)` - Read the coordinate at index `idx` from the array
-- `getWorkerMode()` - Returns `'pthreads'` or `'single-threaded'`
 - `getWorkerCount()` - Returns the number of workers in the pool
 
 ### CRS Introspection
 
-Functions that inspect CRS structure return plain objects with typed fields. C output parameters are handled automatically -- no heap management needed. Return keys match the calling convention: camelCase aliases return camelCase keys, snake_case aliases return snake_case keys.
+Functions that examine CRS structure return plain objects with typed fields. The library reads C output parameters automatically. No heap management is necessary. Return keys agree with the calling convention: camelCase aliases return camelCase keys, and snake_case aliases return snake_case keys.
 
 - `projGetAreaOfUse(options)` / `proj_get_area_of_use(options)` - Get area of use for any PJ object
   - Returns `{ westLonDegree, southLatDegree, eastLonDegree, northLatDegree, areaName }` (camelCase) or `{ west_lon_degree, south_lat_degree, east_lon_degree, north_lat_degree, area_name }` (snake_case), or `null`
@@ -116,6 +114,37 @@ Functions that inspect CRS structure return plain objects with typed fields. C o
   - Returns `{ name, convFactor, category }` or `null`
 - `projGridGetInfoFromDatabase(options)` - Get grid file info
   - Returns `{ fullName, packageName, url, directDownload, openLicense, available }` or `null`
+
+### CRS Catalog
+
+`projGetCrsInfoListFromDatabase` returns the CRS catalog as an array of plain
+objects. An empty `auth_name` gives every authority, approximately 12000
+entries.
+
+```javascript
+await proj.init();
+const ctx = await proj.contextCreate();
+const entries = await proj.projGetCrsInfoListFromDatabase({
+  context: ctx,
+  auth_name: ""
+});
+```
+
+Each entry has camelCase keys: `authName`, `code`, `name`, `type`,
+`deprecated`, `bboxValid`, `westLonDegree`, `southLatDegree`, `eastLonDegree`,
+`northLatDegree`, `areaName`, `projectionMethodName`, `celestialBodyName`.
+
+There is no server-side type filter. To select one kind of CRS, compare
+`entry.type` with an exported `PJ_TYPE_*` constant, for example
+`proj.PJ_TYPE_PROJECTED_CRS` (15):
+
+```javascript
+const projected = entries.filter(e => e.type === proj.PJ_TYPE_PROJECTED_CRS);
+```
+
+This module exposes the PROJ C API plus the camelCase aliases above. It has no
+wrapper object with methods (for example, `getCrsInfoListFromDatabase({types})`).
+Call the exported functions directly.
 
 ### Accessing Results
 
@@ -159,7 +188,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --
 
 This project uses code from [PROJ](https://github.com/OSGeo/PROJ), which is
-distributed under the following terms:
+distributed under these terms:
 
 ```
 All source, data files and other contents of the PROJ package are 
@@ -200,7 +229,7 @@ Copyright information can be found in source files.
 --
  
 This project uses code from [libtiff](https://gitlab.com/libtiff/libtiff),
-which distributed under the following terms:
+which is distributed under these terms:
 
 ``` 
 Copyright © 1988-1997 Sam Leffler
@@ -234,7 +263,7 @@ This project bundles SQLite, which is in the public domain. See
 
 --
 
-This project uses [zlib](https://zlib.net), which is distributed under the following terms:
+This project uses [zlib](https://zlib.net), which is distributed under these terms:
 
 ```
 Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler
