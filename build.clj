@@ -2,7 +2,7 @@
   (:require [clojure.tools.build.api :as b]))
 
 (def lib 'net.willcohen/proj)
-(def version "0.1.0-alpha8")
+(def version "0.1.0-alpha9")
 (def class-dir "target/classes")
 (def jar-file (format "target/%s-%s.jar" (name lib) version))
 
@@ -68,6 +68,8 @@
   (b/delete {:path "target/classes/net/willcohen/proj/proj-emscripten.wasm"})
   ;; Delete clj-kondo exports
   (b/delete {:path "target/classes/clj-kondo.exports"})
+  ;; Build-time input for `bb gen-handler`, read from the repo, not the classpath
+  (b/delete {:path "target/classes/proj-handler-classification.edn"})
   ;; Delete duplicate/misplaced files
   (b/delete {:path "target/classes/.keep"})
   (b/delete {:path "target/classes/net/willcohen/proj/proj"})  ; duplicate proj.db

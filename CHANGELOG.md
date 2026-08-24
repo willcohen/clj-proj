@@ -4,6 +4,8 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.0-alpha9] - 2026-08-24
+
 ### Added
 - `handler.cljc`: per-worker init and destroy for the clj-native workload-pool `:proj` handler, plus `proj/transform-batch`, which reuses a cached transformer against the per-worker PROJ Context
 - New `init!` options: `:pool` adopts a caller-supplied worker-router pool, and `:debug-level` and `:debug-categories` select worker logging. `:max-live-ctxs` (default 128) and `:min-age-ms` (default 100) bound the live-context set, and `getPoolDetail()` reports why the pool can or cannot evict each entry
@@ -238,7 +240,8 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - Initial proof-of-concept functionality, released to NPM and Clojars.
 
-[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha8...HEAD
+[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha9...HEAD
+[0.1.0-alpha9]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha8...0.1.0-alpha9
 [0.1.0-alpha8]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha7...0.1.0-alpha8
 [0.1.0-alpha7]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha6...0.1.0-alpha7
 [0.1.0-alpha6]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha5...0.1.0-alpha6
