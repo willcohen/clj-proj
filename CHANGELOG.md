@@ -6,47 +6,41 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ### Added
 - `handler.cljc`: per-worker init and destroy for the clj-native workload-pool `:proj` handler, plus `proj/transform-batch`, which reuses a cached transformer against the per-worker PROJ Context
-- Bounded live-context cap for the JS worker pool. `init!` accepts `:max-live-ctxs` (default 128) and `:min-age-ms` (default 100). `getPoolDetail()` reports why the pool can or cannot evict each entry
-- `init!` accepts `:pool` to adopt a caller-supplied worker-router pool, `:debug-level`, and `:debug-categories`
+- New `init!` options: `:pool` adopts a caller-supplied worker-router pool, and `:debug-level` and `:debug-categories` select worker logging. `:max-live-ctxs` (default 128) and `:min-age-ms` (default 100) bound the live-context set, and `getPoolDetail()` reports why the pool can or cannot evict each entry
 - Exported clj-kondo hooks under `resources/clj-kondo.exports`, so consumers resolve the generated PROJ surface. `bb kondo:fndefs` regenerates the hook copy of fndefs, and `bb lint` fails when it is stale
-- cljs.test suites for the LRU helpers, the worker-router handler, and resource tracking
+- Test suites for the LRU helpers, the worker-router handler, resource tracking, the FFI-to-GraalVM fallback, the Truffle runtime, and the Java-to-Clojure binding
 
 ### Changed
 - CLJS compiler: cherry → squint. `macros.clj` and `macros.cljs` collapse into one `macros.cljc`
-- JS workers now run on worker-router. clj-native's generator makes `proj-handler.mjs` from the hand-written `proj-handler-overrides.mjs`, and worker-router owns the call protocol. This replaces the hand-rolled `proj-worker.mjs`, `fetch-worker.mjs`, and postMessage ID table
+- JS workers now run on worker-router (`npm:@wcohen/worker-router@^0.0.2`). clj-native's generator makes `proj-handler.mjs` from the hand-written `proj-handler-overrides.mjs`, and worker-router owns the call protocol. This replaces the hand-rolled `proj-worker.mjs`, `fetch-worker.mjs`, and postMessage ID table
 - Native FFI now goes through dtype-next on the JDK Panama FFM backend. clj-native dropped JNA
-- Minimum JDK is 25. CI runs GraalVM CE 25.2.4, which matches the org.graalvm.* artifact pins
-- Platform detection, library extraction, dispatch, and WASM glue move to clj-native. `native.clj` and `wasm.cljc` keep only the PROJ-specific parts
+- Platform detection, library extraction, dispatch, and WASM glue move to clj-native (Clojars `net.willcohen/native` 0.0.1, npm `ffi-wasm` 0.0.1). `native.clj` and `wasm.cljc` keep only the PROJ-specific parts, and the Nix flake takes clj-native as an input
 - One single-threaded WASM build serves the browser, Node.js, and GraalVM. Browsers need no Cross-Origin Isolation headers, so the demo no longer ships `coi-serviceworker.js`
-- Internal refactor of the `proj.cljc` and `wasm.cljc` dispatch system: decomposed `extract-args`, `dispatch-proj-fn`, `context-create`, and `process-return-value-with-tracking` into smaller helpers. Extracted shared `first-arg-kw`. Made `cs` and `heapf64` simpler
-- `proj.cljc` defines an `await` identity macro on the JVM, so a call site whose only cross-platform difference was the await is now one shared form instead of a two-arm reader conditional. The compiled `proj.mjs` is byte-identical
-- `proj-handler-overrides.mjs`: extracted `prepareCallArgs` from the `ccall` prologue, mirroring the existing `decodeCallResult` epilogue
-- `wasm/ensure-proj-initialized!` tested the `p` atom on both platforms. In ClojureScript `p` is never set, because each worker owns its own Emscripten module, so the test re-entered `init-proj` on every native call. The ClojureScript branch now tests the pool
-- Removed dead code: old JS string-building helpers, unused FS/array/type-check fns, leftover stubs, passthrough wrappers, and unused forward declarations
-- Removed unused `:exclude` parameter from `define-all-proj-public-fns` macro
-- Made `deps.edn` smaller. Dropped the unused ClojureScript dependency, because the JS side compiles with squint and the Closure compiler subtree no longer reaches consumers. Removed redundant classpath roots, the inert top-level `:jvm-opts`, and the diverged `:nrepl` alias (use `bb nrepl`). Scoped `:test` to `test/cljc` with native access in the alias, and pinned `deps-deploy`
-- `bb clojars-deploy` computes the deploy artifact from `build.clj` instead of a hand-bumped path
-- The Node.js suite moved from `test/js/proj.test.mjs` to cljs.test files under `test/cljc`. One `proj_test.cljc` now runs on the JVM and under squint plus Node. `test/js` keeps only `benchmark.test.mjs`
+- Minimum JDK is 25. GraalVM artifacts move to 25.2.4 with the optimizing `truffle-runtime` added, dtype-next to 11.025, and CI runs GraalVM CE 25.2.4 to match the artifact pins
+- The Clojars jar no longer ships the worker JS or the WASM debug map. The npm package lists its shipped files explicitly and adds a `./proj-handler` export
+- Slimmed `deps.edn`: dropped the unused ClojureScript dependency, redundant classpath roots, the inert top-level `:jvm-opts`, and the diverged `:nrepl` alias (use `bb nrepl`). Scoped `:test` to `test/cljc` and pinned `deps-deploy`
+- The version has one source: `def version` in `build.clj`. The bb tasks read it, and `bb version-bump` rewrites the other files from it
+- CI adds a lint job that runs `bb lint` on a fresh clone. All actions move to their current major versions, and Node.js moves from 20 to 26
+- The Node.js suite moved from `test/js/proj.test.mjs` to cljs.test files under `test/cljc`. One `proj_test.cljc` now runs on the JVM and under squint plus Node
 
 ### Removed
-- `Containerfile`. Cross builds run in a container from the Containerfile that clj-native supplies, and `.dockerignore` stays to trim that build context. `bb test:linux` pulls a public image
+- `Containerfile`. Cross builds run in the container that clj-native supplies, and `bb test:linux` pulls a public image
 - `spec.cljc`. The clojure.spec definitions had no callers
-- `test-downstream-user/`. Nothing invoked it; `bb test:jar` runs the downstream checks inline
+- `test-downstream-user/`. Nothing invoked it, and `bb test:jar` runs the downstream checks inline
 - `src/c/proj_network_stubs.c`. The GraalVM network callbacks now install through `Module.addFunction`, so the WASM build carries no C stubs
-- ClojureScript `get-value` and `pointer->string`, and the ClojureScript branch of `string-array-pointer->strs`. All three read an Emscripten module from the main-thread `p` atom, which the worker pool never sets, so they threw or returned an empty result. The string-list path already returns the value the worker decoded
-- ClojureScript branches of `wasm/malloc`, `wasm/heapf64`, `wasm/alloc-coord-array`, and `wasm/set-coord-array`, unreachable for the same reason. The four are now JVM-only
-- `dispatch-to-platform-with-args`, a pure passthrough to `call-native`
-- Unused `impl.native` aliases `get-os`, `get-arch`, `init-ffi!`, and `reset-proj`
+- ClojureScript code that read the Emscripten module from the main-thread `p` atom, which the worker pool never sets: `get-value`, `pointer->string`, and the CLJS branches of `string-array-pointer->strs`, `wasm/malloc`, `wasm/heapf64`, `wasm/alloc-coord-array`, and `wasm/set-coord-array` (the wasm functions are now JVM-only)
+- Unused vars: `dispatch-to-platform-with-args`, a pure passthrough to `call-native`, and the `impl.native` aliases `get-os`, `get-arch`, `init-ffi!`, and `reset-proj`
 
 ### Fixed
-- CLJS context-bearing PROJ calls were misrouted: the context predicate misclassified the argtype shape. The cljs branch passed the wrong arg shape into the wasm wrapper, and cross-worker calls trapped inside `pj_vlog`
-- CLJS `extract-args` silently dropped `skip-first?`. This caused off-by-one ccall arg counts on opt-in callsites
+- CLJS context-bearing PROJ calls were misrouted: the context predicate misclassified the argtype shape, and cross-worker calls trapped inside `pj_vlog`
+- CLJS `extract-args` silently dropped `skip-first?`. This caused off-by-one ccall arg counts on opt-in call sites
 - JVM struct-list dispatch (`proj_get_units_from_database`, `proj_get_celestial_body_list_from_database`, `proj_get_crs_info_list_from_database`) silently returned null because the special-argtype detector mishandled keyword first-elements
-- FFI network callbacks were registered again for each PROJ context, and only the newest set stayed reachable. Every earlier context then held function pointers to upcall stubs that the collector was free to take. One registration now serves every context: the callbacks read their state from the `handles` atom and ignore the ctx argument
-- The FFI log callback used a check-then-`reset!`, so two threads creating contexts at the same time could drop the instance whose pointer the other had just installed on a context. It now registers through `swap!`
-- The FFI `get_header` callback held the C string it returns in one shared slot. A concurrent grid fetch on another worker thread could drop a buffer before PROJ read it. The slot is now per thread
-- ClojureScript `attach-context-to-result` returned nil for a result that is not a JS object, which dropped the value. It now passes such a result through, which is what the JVM branch does
-- ClojureScript context objects declared their destroy-fn beside the object it disposes. That is the shape `build-pj-destroy-fn` exists to avoid: V8 puts the two in one function-activation scope, so the FinalizationRegistry heldValue pins its own target and the WeakRef sweep never sees the owner collected. The builder is now top-level, as on the PJ path
+- ClojureScript entered `init-proj` again on every native call: `wasm/ensure-proj-initialized!` tested the `p` atom, which is never set when each worker owns its own Emscripten module. It now tests the pool
+- FFI network callbacks were registered again for each PROJ context, and only the newest set stayed GC-reachable. One registration now serves every context
+- The FFI log callback used a check-then-`reset!` that raced concurrent context creation. It now registers through `swap!`
+- The FFI `get_header` callback kept its returned C string in one shared slot, which a concurrent grid fetch could drop before PROJ read it. The slot is now per thread
+- ClojureScript `attach-context-to-result` returned nil for a result that is not a JS object, which dropped the value. It now passes such a result through, like the JVM branch
+- ClojureScript context destroy-fns were declared beside the object they dispose, so the FinalizationRegistry heldValue pinned its own target and contexts never finalized. The builder is now top-level, as on the PJ path
 
 ## [0.1.0-alpha8] - 2026-04-14
 
