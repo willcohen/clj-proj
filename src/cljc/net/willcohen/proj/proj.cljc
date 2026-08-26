@@ -94,23 +94,27 @@
    (defn set-coord-array
      "Set coordinate values in the Float64Array buffer of a JS-side coord array."
      [coord-array allocated]
-     (let [flattened (cond
-                       (and (array? coord-array)
-                            (every? number? coord-array))
-                       coord-array
+     (let [^js buf (.-buffer allocated)]
+       (cond
+         (and (array? coord-array)
+              (every? number? coord-array))
+         (.set buf coord-array 0)
 
-                       (and (array? coord-array)
-                            (array? (aget coord-array 0)))
-                       (let [result #js []]
-                         (dotimes [i (.-length coord-array)]
-                           (let [inner (aget coord-array i)]
-                             (dotimes [j (.-length inner)]
-                               (.push result (aget inner j)))))
-                         result)
+         (and (array? coord-array)
+              (array? (aget coord-array 0)))
+         (loop [i 0
+                off 0]
+           (when (< i (.-length coord-array))
+             (let [inner (aget coord-array i)
+                   len (.-length inner)]
+               (when (> (+ off len) (.-length buf))
+                 (throw (js/RangeError. "coords exceed coord-array capacity")))
+               (dotimes [j len]
+                 (aset buf (+ off j) (aget inner j)))
+               (recur (inc i) (+ off len)))))
 
-                       :else
-                       (into-array (flatten coord-array)))]
-       (.set (.-buffer allocated) (vec flattened) 0)
+         :else
+         (.set buf (into-array (flatten coord-array)) 0))
        allocated)))
 
 #?(:cljs

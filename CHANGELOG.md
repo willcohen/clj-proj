@@ -4,6 +4,10 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- Coordinate batches cross dispatch and the worker boundary as `Float64Array`
+  instead of boxed plain arrays; `set-coord-array` fills the buffer in place
+
 ## [0.1.0-alpha9] - 2026-08-24
 
 ### Added
