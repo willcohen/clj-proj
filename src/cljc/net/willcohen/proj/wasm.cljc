@@ -561,7 +561,10 @@
            (let [ca-info (nth coord-arrays i)
                  original-arg (nth args (:argIdx ca-info))
                  new-data (aget returned-data i)]
-             (.set (.-buffer original-arg) (js/Float64Array.from new-data)))))
+
+             
+             
+             (.set (.-buffer original-arg) new-data))))
        (.-result result))))
 
 #?(:cljs
@@ -589,8 +592,14 @@
                     (seq coord-arrays)
                     (assoc :coordArrays
                            (mapv (fn [ca]
+                                   ;; structured clone of a view copies its
+                                   ;; whole backing buffer
                                    {:argIdx (:argIdx ca)
-                                    :data (js/Array.from (:data ca))
+                                    :data (let [^js data (:data ca)
+                                                n (:numFloats ca)]
+                                            (if (= (.-length data) n)
+                                              data
+                                              (.slice data 0 n)))
                                     :numFloats (:numFloats ca)})
                                  coord-arrays)))]
        {:args (if (seq coord-arrays)

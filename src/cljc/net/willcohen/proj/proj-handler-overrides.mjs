@@ -334,7 +334,7 @@ function readCoordDataAndFree(mod, coordAllocations) {
   const coordData = [];
   for (const alloc of coordAllocations) {
     coordData.push(
-      Array.from(mod.HEAPF64.subarray(alloc.heapOffset, alloc.heapOffset + alloc.numFloats)),
+      mod.HEAPF64.slice(alloc.heapOffset, alloc.heapOffset + alloc.numFloats),
     );
     mod._free(alloc.mallocPtr);
   }
