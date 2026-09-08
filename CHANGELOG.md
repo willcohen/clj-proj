@@ -7,6 +7,8 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Changed
 - Coordinate batches cross dispatch and the worker boundary as `Float64Array`
   instead of boxed plain arrays; `set-coord-array` fills the buffer in place
+- squint-cljs moves from 0.14.206 to 0.14.208; the browser test importmaps
+  load the same version
 
 ## [0.1.0-alpha9] - 2026-08-24
 
