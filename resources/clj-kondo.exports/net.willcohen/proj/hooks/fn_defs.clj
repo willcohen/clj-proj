@@ -14,8 +14,8 @@
 (declare proj_context_errno_string)
 
 (def ^{:tag 'long} PROJ_VERSION_MAJOR 9)
-(def ^{:tag 'long} PROJ_VERSION_MINOR 8)
-(def ^{:tag 'long} PROJ_VERSION_PATCH 1)
+(def ^{:tag 'long} PROJ_VERSION_MINOR 9)
+(def ^{:tag 'long} PROJ_VERSION_PATCH 0)
 
 ;; PJ_CATEGORY
 (def ^{:tag 'long} PJ_CATEGORY_ELLIPSOID 0)
@@ -576,6 +576,9 @@
                                              [:direction :int32] ; PJ_DIRECTION
                                              [:coord :pointer]]} ; PJ_COORD coord
    :proj_crs_is_derived {:rettype :int32
+                         :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
+                                    [:crs :pointer]]} ; const PJ *crs
+   :proj_crs_is_dynamic {:rettype :int32 ; new in PROJ 9.9
                          :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
                                     [:crs :pointer]]} ; const PJ *crs
    :proj_crs_get_geodetic_crs {:rettype :pointer ; PJ *

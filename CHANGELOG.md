@@ -9,6 +9,14 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
   instead of boxed plain arrays; `set-coord-array` fills the buffer in place
 - squint-cljs moves from 0.14.206 to 0.14.208; the browser test importmaps
   load the same version
+- PROJ 9.9.0 (was 9.8.1)
+
+### Added
+
+- Binding for `proj_crs_is_dynamic`, new in PROJ 9.9.
+  `proj_create_linear_3D_affine_parametric_conversion` is temporarily
+  unbound pending a different way to pass arguments: its 38 exceed the
+  20-parameter cap on a dt-ffi wrapper
 
 ## [0.1.0-alpha9] - 2026-08-24
 
