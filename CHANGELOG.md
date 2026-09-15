@@ -4,6 +4,8 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.0-alpha10] - 2026-09-15
+
 ### Changed
 - Coordinate batches cross dispatch and the worker boundary as `Float64Array`
   instead of boxed plain arrays; `set-coord-array` fills the buffer in place
@@ -254,7 +256,8 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - Initial proof-of-concept functionality, released to NPM and Clojars.
 
-[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha9...HEAD
+[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha10...HEAD
+[0.1.0-alpha10]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha9...0.1.0-alpha10
 [0.1.0-alpha9]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha8...0.1.0-alpha9
 [0.1.0-alpha8]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha7...0.1.0-alpha8
 [0.1.0-alpha7]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha6...0.1.0-alpha7
