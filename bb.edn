@@ -542,7 +542,16 @@ benchmark_test.cljc lives here, and its one placeholder deftest passes.
 
   test:npm {:doc "Run the test suite of the built npm package."
             :depends [squint]
+            :requires ([cheshire.core :as json])
             :task (do
+                    (let [packed (-> (tasks/shell {:dir "src/cljc/net/willcohen/proj" :out :string}
+                                                  "npm" "pack" "--dry-run" "--json")
+                                     :out json/parse-string first (get "files"))
+                          paths (set (map (fn [f] (get f "path")) packed))]
+                      (doseq [f ["LICENSE" "dist/THIRD-PARTY-NOTICES.md"]]
+                        (when-not (contains? paths f)
+                          (println (str "The npm package does not contain " f))
+                          (System/exit 1))))
                     (println "Testing built npm package...")
                     (tasks/shell {:dir "test-npm-package"} "npm" "install")
                     (tasks/shell {:dir "test-npm-package"} "npm" "test"))}
@@ -681,6 +690,20 @@ benchmark_test.cljc lives here, and its one placeholder deftest passes.
                     (println "Testing JAR as downstream dependency...")
                     (println)
 
+                    (println "0. Checking the clj-kondo exports and the notices in the JAR...")
+                    (let [entries (set (str/split-lines
+                                        (:out (tasks/shell {:out :string} "jar" "tf" jar-path))))]
+                      (doseq [e ["clj-kondo.exports/net.willcohen/proj/config.edn"
+                                 "clj-kondo.exports/net.willcohen/proj/hooks/proj.clj"
+                                 "clj-kondo.exports/net.willcohen/proj/hooks/fn_defs.clj"
+                                 "META-INF/LICENSE"
+                                 "META-INF/THIRD-PARTY-NOTICES.md"]]
+                        (when-not (contains? entries e)
+                          (println (str "The JAR does not contain " e))
+                          (System/exit 1)))
+                      (println "   OK clj-kondo exports and notices"))
+
+                    (println)
                     (println "1. Testing FFI mode from JAR...")
                     (run-from-jar!
                      "FFI test" []
@@ -1686,7 +1709,8 @@ hand-written half lives in proj-handler-overrides.mjs."
                     (println "Copying WASM resources to dist...")
                     (let [dist-dir (fs/path proj-dir "dist")]
                       (fs/copy (fs/path "resources" "proj.db") (fs/path dist-dir "proj.db") {:replace-existing true})
-                      (fs/copy (fs/path "resources" "proj.ini") (fs/path dist-dir "proj.ini") {:replace-existing true}))
+                      (fs/copy (fs/path "resources" "proj.ini") (fs/path dist-dir "proj.ini") {:replace-existing true})
+                      (fs/copy "THIRD-PARTY-NOTICES.md" (fs/path dist-dir "THIRD-PARTY-NOTICES.md") {:replace-existing true}))
 
                     (println "Bundle complete! Distribution in dist/")))}
 

@@ -4,9 +4,20 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- THIRD-PARTY-NOTICES.md holds the license notices of the code and data in
+  the jar and the npm package, with the Emscripten runtime of the wasm.
+
 ### Changed
 - clj-native 0.0.2 (`net.willcohen/native`, npm `ffi-wasm`). On the GraalVM
   backend, a PROJ exception makes the call throw.
+
+### Fixed
+- The jar contains the clj-kondo exports. The 0.1.0-alpha9 and 0.1.0-alpha10
+  jars did not.
+- The jar contains `META-INF/LICENSE` and `META-INF/THIRD-PARTY-NOTICES.md`,
+  and the npm package contains `dist/THIRD-PARTY-NOTICES.md`. The jar had no
+  license text.
 
 ## [0.1.0-alpha10] - 2026-09-15
 

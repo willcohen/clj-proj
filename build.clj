@@ -40,6 +40,9 @@
             :javac-opts ["--release" "25"]})
   (b/copy-dir {:src-dirs ["src/clj" "src/cljc" "resources"]
                :target-dir class-dir})
+  (b/copy-file {:src "LICENSE" :target (str class-dir "/META-INF/LICENSE")})
+  (b/copy-file {:src "THIRD-PARTY-NOTICES.md"
+                :target (str class-dir "/META-INF/THIRD-PARTY-NOTICES.md")})
   ;; Delete npm/node related files that shouldn't be in the jar
   (b/delete {:path "target/classes/net/willcohen/proj/node_modules"})
   (b/delete {:path "target/classes/net/willcohen/proj/dist"})
@@ -66,8 +69,6 @@
   ;; Delete WASM files (they should be in resources/wasm if needed)
   (b/delete {:path "target/classes/net/willcohen/proj/proj-emscripten.js"})
   (b/delete {:path "target/classes/net/willcohen/proj/proj-emscripten.wasm"})
-  ;; Delete clj-kondo exports
-  (b/delete {:path "target/classes/clj-kondo.exports"})
   ;; Build-time input for `bb gen-handler`, read from the repo, not the classpath
   (b/delete {:path "target/classes/proj-handler-classification.edn"})
   ;; Delete duplicate/misplaced files

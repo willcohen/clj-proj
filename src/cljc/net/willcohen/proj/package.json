@@ -20,6 +20,7 @@
     "dist/proj-emscripten.wasm",
     "dist/proj.db",
     "dist/proj.ini",
+    "dist/THIRD-PARTY-NOTICES.md",
     "README.md",
     "LICENSE"
   ],
