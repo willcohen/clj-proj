@@ -19,20 +19,51 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
   runtime of the GraalVM backend needs a GraalVM CE 25.3.4.1 JVM.
 - squint-cljs 0.14.210.
 
+### Removed
+- The `shutdown` method of the proj-wasm worker handler. To stop the fetch
+  worker, terminate the pool.
+
 ### Fixed
 - The jar contains the clj-kondo exports. The 0.1.0-alpha9 and 0.1.0-alpha10
   jars did not.
 - SQLite in the wasm, and SQLite and libtiff in the Linux libs, built with no
   optimization. They now build with `-O2`.
+- GraalVM backend: when a second wasm library such as clj-gdal was loaded,
+  calls with a coordinate array or a string list threw.
 - The Linux libs of 0.1.0-alpha8 to 0.1.0-alpha10 did not load on older glibc.
   linux-amd64 needed glibc 2.38 and did not load on Debian 12 or Ubuntu 22.04.
   linux-aarch64, a musl build, needed glibc 2.33, and on a glibc host its
   mutexes had the wrong size. Both libs had a run path into the build
   directories.
 - The macOS lib had a run path into the build directory.
+- FFI backend: a string-list function that returned NULL, for example
+  `proj-get-codes-from-database` with `:type 0`, threw "Pointer value is
+  zero!". It now returns an empty list.
+- GraalVM backend: each call with a string-list argument, for example
+  `proj-as-wkt` with `:options`, did not free its block of wasm memory.
+- ClojureScript: when `proj-create-crs-to-crs` failed or returned no PJ, for
+  example on an invalid CRS, it left a PROJ context on its worker.
+- ClojureScript: the pool tracked contexts by an id that repeats across
+  workers. It could count a context on the wrong worker, and then send new
+  contexts to a worker that already had more.
+- JVM: a PJ or a context that a call returned stayed in native memory after
+  it became unreachable, until an explicit release or the end of the process.
 - The jar contains `META-INF/LICENSE` and `META-INF/THIRD-PARTY-NOTICES.md`,
   and the npm package contains `dist/THIRD-PARTY-NOTICES.md`. The jar had no
   license text.
+- JVM: when two threads used one context at the same time, a PROJ call could
+  run two times, and the result of the first run leaked.
+- The list of a string-list function, for example
+  `proj-get-authorities-from-database`, was never freed.
+- ClojureScript: `proj-destroy` and `proj-context-destroy` freed a tracked PJ or
+  context, but did not release its tracking. A later release, for example
+  `Symbol.dispose`, freed it again. `proj-context-destroy` of a tracked context
+  now returns at once, and the worker frees the context after its PJs.
+- ClojureScript: a call with PJ arguments on two workers makes a copy of each
+  argument on one worker. The call did not free the copies, and wrote them
+  into the options of the caller.
+- GraalVM backend and ClojureScript: the `get_header` network callback did not
+  free its strings, three for each grid file that PROJ opened.
 
 ## [0.1.0-alpha10] - 2026-09-15
 

@@ -4,7 +4,7 @@ import { makeHandler, byteLengthFingerprint } from 'ffi-wasm/handler-runtime';
 import * as overrides from './proj-handler-overrides.mjs';
 
 const busyMethods = ["context_create", "set_log_level", "ccall", "malloc", "heapf64_set", "heapf64_get", "read_string_array", "heapu8_set", "heapu8_get", "string_to_utf8", "utf8_to_string"];
-const destroyMethods = ["context_destroy", "free", "shutdown"];
+const destroyMethods = ["context_destroy", "free"];
 
 // C fnNames from the fndefs :destroy? flags. Nothing reads this.
 const destroyFns = ["proj_celestial_body_list_destroy", "proj_context_destroy", "proj_crs_info_list_destroy", "proj_destroy", "proj_get_crs_list_parameters_destroy", "proj_insert_object_session_destroy", "proj_int_list_destroy", "proj_list_destroy", "proj_operation_factory_context_destroy", "proj_string_destroy", "proj_string_list_destroy", "proj_unit_list_destroy"];
@@ -23,7 +23,6 @@ const methods = {
   heapu8_get: overrides.methods.heapu8_get,
   string_to_utf8: overrides.methods.string_to_utf8,
   utf8_to_string: overrides.methods.utf8_to_string,
-  shutdown: overrides.methods.shutdown,
 };
 
 const fingerprint = byteLengthFingerprint(

@@ -50,6 +50,19 @@
 (defn- close-handle! [id]
   (swap! handles dissoc id))
 
+(defn- keep-header-ptr!
+  "Record wasm string `ptr` under handle `id`, for free-header-ptrs!."
+  [id ptr]
+  (swap! handles (fn [hs] (if (contains? hs id)
+                            (update-in hs [id :header-ptrs] (fnil conj []) ptr)
+                            hs))))
+
+(defn- free-header-ptrs!
+  "Free on `module` each get_header string of handle `id`."
+  [module id]
+  (doseq [ptr (get-in @handles [id :header-ptrs])]
+    (nw/module-execute module "_free" [ptr])))
+
 (defn- make-range-request
   "Delegate the HTTP range GET to net.willcohen.native.http. Adapt its
   {:status :headers :body-bytes} shape to the {:status :headers :body}
@@ -100,12 +113,16 @@
           (log/error e "GRAAL-NET: open failed")
           0)))))
 
-(defn- create-close-callback []
+(defn- create-close-callback
+  "Create the 'close' ProxyExecutable. It frees the get_header strings of
+  the handle on `module`, the module of its get_header callback."
+  [module]
   (reify ProxyExecutable
     (execute [_ args]
       (try
         (let [handle-id (nw/value->int (aget args 1))]
           (log/debug "GRAAL-NET: close" {:id handle-id})
+          (free-header-ptrs! module handle-id)
           (close-handle! handle-id)
           nil)
         (catch Exception e
@@ -117,8 +134,9 @@
   It reads the header name from WASM memory through UTF8ToString, looks
   up the value in the handle's stored headers (from the initial open or
   the most recent read_range), and writes the result string to WASM
-  through stringToNewUTF8. That allocates on the WASM heap, and the
-  caller frees it."
+  through stringToNewUTF8. PROJ reads the string after the callback
+  returns, so the string lives until the close of the handle, as the
+  strings of PROJ's own callbacks do."
   [module]
   (reify ProxyExecutable
     (execute [_ args]
@@ -131,7 +149,9 @@
               header-value (get-in handle [:headers header-name-lower])]
           (log/debug "GRAAL-NET: getHeader" {:handle handle-id :name header-name :value header-value})
           (if header-value
-            (nw/module-execute module "stringToNewUTF8" [header-value] :int)
+            (let [ptr (nw/module-execute module "stringToNewUTF8" [header-value] :int)]
+              (keep-header-ptr! handle-id ptr)
+              ptr)
             0))
         (catch Exception e
           (log/error e "GRAAL-NET: getHeader failed")
@@ -209,7 +229,7 @@
         _ (when (nil? module)
             (throw (ex-info "PROJ module not initialized - call proj/init! first" {})))
         callbacks {:open       (create-open-callback module)
-                   :close      (create-close-callback)
+                   :close      (create-close-callback module)
                    :get-header (create-get-header-callback module)
                    :read-range (create-read-range-callback module)}
         pointers (mapv (fn [[k sig]] (add-function! module (callbacks k) sig))

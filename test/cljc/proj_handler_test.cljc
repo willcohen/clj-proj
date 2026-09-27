@@ -30,8 +30,10 @@
      ;; raw Windows absolute path as a URL with protocol "d:".
      (def handler-path
        (.-href (pathToFileURL (resolve __dirname "../../src/cljc/net/willcohen/proj/proj-handler.mjs"))))
+     (def overrides-path
+       (.-href (pathToFileURL (resolve __dirname "../../src/cljc/net/willcohen/proj/proj-handler-overrides.mjs"))))
 
-     (def state (atom {:create nil :db-bytes nil :ini-bytes nil}))
+     (def state (atom {:create nil :destroy nil :db-bytes nil :ini-bytes nil}))
 
 ;; cljs.test has no `before` hook, so each test calls init-once!
 ;; first.
@@ -40,6 +42,7 @@
          (let [mod (await (js/import handler-path))]
            (swap! state assoc
                   :create   (.-create mod)
+                  :destroy  (.-destroy mod)
                   :db-bytes (readFileSync (resolve dist-dir "proj.db"))
                   :ini-bytes (readFileSync (resolve dist-dir "proj.ini"))))))
 
@@ -73,11 +76,10 @@
            (doseq [name ["context_create" "set_log_level" "context_destroy"
                          "ccall" "malloc" "free"
                          "heapf64_set" "heapf64_get" "read_string_array"
-                         "heapu8_set" "heapu8_get" "string_to_utf8" "utf8_to_string"
-                         "shutdown"]]
+                         "heapu8_set" "heapu8_get" "string_to_utf8" "utf8_to_string"]]
              (is (= "function" (js* "typeof ~{}" (aget handler name)))
                  (str "handler." name " must be a function")))
-           (finally (await (.shutdown handler))))))
+           (finally (await ((:destroy @state)))))))
 
      (deftest ^:async context-create-returns-a-positive-integer-ctxId
        (await (init-once!))
@@ -90,7 +92,7 @@
              (is (= "number" (js* "typeof ~{}" (.-ptr r))))
              (is (> (.-ptr r) 0) "ptr must be non-zero")
              (await (.context_destroy handler (.-ctxId r))))
-           (finally (await (.shutdown handler))))))
+           (finally (await ((:destroy @state)))))))
 
      (deftest ^:async malloc-returns-nonzero-ptr-free-succeeds
        (await (init-once!))
@@ -102,7 +104,7 @@
              (is (not= 0 ptr) "malloc(8) must return nonzero ptr")
              (let [free (await (.free handler ptr))]
                (is (= true (.-ok free)))))
-           (finally (await (.shutdown handler))))))
+           (finally (await ((:destroy @state)))))))
 
      (deftest ^:async IdempotentInit-re-create-with-same-args-preserves-state
        (await (init-once!))
@@ -119,12 +121,12 @@
                       ") > r1.ctxId (" (.-ctxId r1) ")"))
              (await (.context_destroy handler2 (.-ctxId r2)))
              (await (.context_destroy handler1 (.-ctxId r1))))
-           (finally (await (.shutdown handler1))))))
+           (finally (await ((:destroy @state)))))))
 
      (deftest ^:async IdempotentInit-re-create-with-different-args-throws
        (await (init-once!))
        (let [{:keys [create db-bytes ini-bytes]} @state
-             handler (await (create #js {:dbBytes db-bytes :iniBytes ini-bytes :logLevel 0}))]
+             _ (await (create #js {:dbBytes db-bytes :iniBytes ini-bytes :logLevel 0}))]
          (try
            (try
              (await (create #js {:dbBytes db-bytes :iniBytes ini-bytes :logLevel 2}))
@@ -132,7 +134,7 @@
              (catch :default err
                (is (re-find #"(?i)different|already initiali[sz]ed|init args" (str (.-message err)))
                    "second create with different args must throw")))
-           (finally (await (.shutdown handler))))))
+           (finally (await ((:destroy @state)))))))
 
      (deftest ^:async parallel-mallocs-return-distinct-nonzero-pointers
   ;; The workerQueue in makeHandler serializes ccall bodies, so no
@@ -155,7 +157,7 @@
              (await
               (js/Promise.all
                (.map ptrs (fn [p] (.free handler p))))))
-           (finally (await (.shutdown handler))))))
+           (finally (await ((:destroy @state)))))))
 
      ;; URL for the same Windows reason as handler-path above.
      (def spec-module-path
@@ -204,11 +206,45 @@
                  (let [r (await (.context_create handler #js {}))]
                    (is (> (.-ctxId r) 0)
                        "spec module + default args boot a live PROJ context"))
-                 (finally (await (.shutdown handler))))))
+                 (finally (await ((:destroy @state)))))))
            (finally
              (rmSync db-dst)
              (rmSync ini-dst)))))
 
-     ;; Each deftest calls (.shutdown handler) in a finally, so no
+     ;; PROJ allocates a string list for the caller, so the worker frees it
+     ;; after the decode.
+     (deftest ^:async string-list-result-is-freed
+       (let [overrides (await (js/import overrides-path))
+             calls #js []
+             mod #js {:getValue (fn [_ _] 0)
+                      :UTF8ToString (fn [_] "")
+                      :ccall (fn [c-name _ _ args] (.push calls #js [c-name (aget args 0)]))}
+             result ((.-decodeCallResult overrides) mod 1234 #js {:projReturns "string-list"})]
+         (is (= 0 (.-length result)))
+         (is (= 1 (.-length calls)) "one ccall after the decode")
+         (is (= "proj_string_list_destroy" (aget (aget calls 0) 0)))
+         (is (= 1234 (aget (aget calls 0) 1)))))
+
+     ;; netGetHeader copied each header value into a new block with
+     ;; stringToNewUTF8, and nothing freed it: three blocks for each grid file
+     ;; that PROJ opened.
+     (deftest ^:async network-header-strings-are-freed-at-close
+       (let [overrides (await (js/import overrides-path))
+             allocated #js []
+             freed #js []
+             mod #js {:stringToNewUTF8 (fn [_] (let [p (+ 100 (.-length allocated))]
+                                                 (.push allocated p)
+                                                 p))
+                      :_free (fn [p] (.push freed p))}
+             entry #js {:url "https://example.invalid/g.tif"
+                        :headers #js {"content-range" "bytes 0-9/100"}}]
+         (dotimes [_ 3]
+           (is (pos? ((.-headerValuePtr overrides) mod entry "Content-Range"))))
+         (is (= 0 ((.-headerValuePtr overrides) mod entry "ETag")) "no header gives NULL")
+         (is (= 0 (.-length freed)) "PROJ can read each string until the close")
+         ((.-releaseHandleStrings overrides) mod entry)
+         (is (= (vec allocated) (vec freed)) "the close frees each string of the handle")))
+
+     ;; Each deftest calls the module destroy in a finally, so no
      ;; global teardown is necessary.
      (run_tests_and_exit_BANG_)))

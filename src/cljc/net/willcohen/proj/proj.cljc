@@ -223,26 +223,29 @@
        (:wc (wp/current-context-or-nil :proj)))))
 
 #?(:clj
-   (defn- on-worker-context
-     "Run f with the pooled WasmContext bound when this thread has one.
-      No lock on any path: the nw primitives lock per-module, and a
-      pooled Context is single-threaded by pool contract. Dispatch calls
-      go through graal-call-scope instead, which keeps the global lock on
-      the default path for compound atomicity."
+   (defn- graal-heap-scope
+     "Run heap thunk f in this thread's graal scope: under the pooled
+      WasmContext binding when one applies, else under a proj-context
+      binding. Without a binding, the nw heap primitives use the one
+      registered WasmContext, and they throw when a second library, for
+      example clj-gdal, registers another. No lock on any path: the nw
+      primitives lock per-module, and a pooled Context is single-threaded
+      by pool contract. Dispatch calls go through graal-call-scope
+      instead, which keeps the global lock on the default path for
+      compound atomicity."
      [f]
-     (if-let [wc (pooled-wc)]
-       (nw/with-wasm-context wc (f))
-       (f))))
+     (nw/with-wasm-context (or (pooled-wc) wasm/proj-context) (f))))
 
 #?(:clj
    (defn- graal-call-scope
      "Run dispatch thunk f in this thread's graal scope: under the pooled
       WasmContext binding when one applies, else under the global lock of
-      the shared default Context."
+      the shared default Context, with proj-context bound for the heap
+      primitives (refer to graal-heap-scope)."
      [f]
      (if-let [wc (pooled-wc)]
        (nw/with-wasm-context wc (f))
-       (with-graal-lock (f)))))
+       (with-graal-lock (nw/with-wasm-context wasm/proj-context (f))))))
 
 (defn- pad-coords
   "Widen each coordinate in coords to width by appending 0.0.
@@ -285,7 +288,7 @@
                     (dt-t/mset! ca coords)
                     :else
                     (dt-t/mset! ca (dt-t/reshape coords (dt/shape ca)))))
-       :graal (on-worker-context #(wasm/set-coord-array coords ca)))
+       :graal (graal-heap-scope #(wasm/set-coord-array coords ca)))
      :cljs (await (set-coord-array (pad-coords 4 coords) ca))))
 
 (defn get-coords
@@ -296,7 +299,7 @@
      (case @implementation
        :ffi [(dt-t/mget ca idx 0) (dt-t/mget ca idx 1)
              (dt-t/mget ca idx 2) (dt-t/mget ca idx 3)]
-       :graal (on-worker-context #(wasm/get-coord-array ca idx)))
+       :graal (graal-heap-scope #(wasm/get-coord-array ca idx)))
      :cljs
      (get-coord-array ca idx)))
 
@@ -307,9 +310,10 @@
 (defn cs
   "Call f with the context as its first argument.
 
-   On the JVM this is what makes a context operation atomic: the call runs
-   inside a swap! on the context atom, so two threads cannot use one PROJ
-   context at the same time, and the op counter advances with it.
+   On the JVM the call runs under a lock on the context atom, because a PROJ
+   context is not thread-safe, and the op counter advances after it. A
+   swap! cannot hold the call: a concurrent change of the atom would make
+   it run the call again.
 
    ClojureScript needs no such guard and gets none. The context there is an
    immutable routing object with no counters, and worker-router already
@@ -317,17 +321,15 @@
    shared state across workers."
   [context f args]
   #?(:clj
-     (:result
-      (swap!
-       context (fn [a]
-                 (let [ptr (:ptr a)]
-                   (when-not ptr (throw (ex-info (str "Pointer in context is nil for fn " f) {:f f :context-val a})))
-                   (assoc a
-                          :ptr ptr
-                          :op (inc (:op a))
-                          :result (case @implementation
-                                    :ffi (apply f (cons ptr args))
-                                    :graal (graal-call-scope #(apply f (cons ptr args)))))))))
+     (locking context
+       (let [a @context
+             ptr (:ptr a)]
+         (when-not ptr (throw (ex-info (str "Pointer in context is nil for fn " f) {:f f :context-val a})))
+         (let [result (case @implementation
+                        :ffi (apply f (cons ptr args))
+                        :graal (graal-call-scope #(apply f (cons ptr args))))]
+           (swap! context update :op inc)
+           result)))
      :cljs
      ;; f is the dispatch-context-fn wrapper. Pass the context OBJECT, and
      ;; not the bare ptr, as the first arg. Dispatch's worker-idx-from-args
@@ -346,13 +348,16 @@
 ;; through. Nothing on the main thread can read that memory.
 #?(:clj
    (defn string-array-pointer->strs
-     "Convert a pointer to a NULL-terminated array of string pointers into a Clojure vector of strings."
+     "Convert a pointer to a NULL-terminated array of string pointers into a
+      Clojure vector of strings. NULL gives []. On FFI, NULL comes back as a
+      Pointer at address 0, which ptr-value? reads as 0."
      [ptr _runtime-log-level]
-     (case @implementation
-       :ffi (ffi-mem/read-string-array (ffi-mem/ptr-addr ptr))
-       :graal (if (nps/null-ptr? ptr)
-                []
-                (nw/string-array-pointer->strs (nw/address-as-int ptr))))))
+     (if (nps/null-ptr? ptr)
+       []
+       (case @implementation
+         :ffi (ffi-mem/read-string-array (dt-ptr/ptr-value? ptr))
+         :graal (graal-heap-scope
+                 #(nw/string-array-pointer->strs (nw/address-as-int ptr)))))))
 
 ;; Defined below. squint hoists the compiled `var`, so the calls above
 ;; resolve at runtime. The declare only satisfies the reader.
@@ -431,7 +436,7 @@
            ;; release and free the parent ctx under a pending proj_destroy.
            (let [p (.catch (wasm/destroy-context! ctx-pool worker-idx ctx-id)
                            wasm/ignore-pool-terminated)]
-             (wasm/untrack-context! ctx-id)
+             (wasm/untrack-context! worker-idx ctx-id)
              p))))))
 
 #?(:cljs
@@ -455,7 +460,7 @@
      "Create a PROJ context on the JVM, then wire its database path,
       logging, and network callbacks. Returns the context atom."
      [enable-network?]
-     (let [a (atom {:ptr (proj-context-create {}) :op (long 0) :result nil})]
+     (let [a (atom {:ptr (proj-context-create {}) :op (long 0)})]
        (context-set-database-path a)
        (when (ffi?)
          (proj-logging/setup-logging! (:ptr @a)))
@@ -611,7 +616,7 @@
                (init!))
              (case @implementation
                :ffi (coord-array n dims :native-heap :auto)
-               :graal (on-worker-context #(wasm/alloc-coord-array n dims))
+               :graal (graal-heap-scope #(wasm/alloc-coord-array n dims))
                (throw (ex-info "Unknown implementation" {:impl @implementation}))))
       :cljs (coord-array n dims {})))
   #?@(:clj
@@ -637,7 +642,7 @@
                       len (count coord)]
                   (reduce #(dt-t/mset! %1 0 %2 (dt-t/mget coord %2)) coord-array (range len)))
                 (coord->coord-array (dt-t/->tensor coord)))
-         :graal (on-worker-context #(wasm/set-coord-array coord (coord-array 1)))))
+         :graal (graal-heap-scope #(wasm/set-coord-array coord (coord-array 1)))))
      :cljs
      (case @implementation
        (:node :browser) (set-coord-array coord (coord-array 1)))))
@@ -710,6 +715,39 @@
 
 (declare lib)
 
+#?(:clj
+   (def ^:dynamic ^:private *backend*
+     "When bound, the JVM backend of call-native in place of the
+      implementation atom. A GC release binds the backend that made its
+      result: the atom can change first, and it is nil while init! runs."
+     nil))
+
+#?(:clj (declare backend-libs))
+
+;; The wasm heap block of a :string-array? arg on GraalVM. coerce-arg
+;; allocates it, and call-native frees it after the call. dispatch passes a
+;; record with :address as the address.
+#?(:clj
+   (defrecord StringArrayBlock [address]))
+
+#?(:clj
+   (defn- free-string-array-blocks!
+     [args]
+     (doseq [a args]
+       (when (instance? StringArrayBlock a)
+         (nw/free-on-heap (:address a))))))
+
+#?(:cljs
+   (defn dispatch-call
+     "dispatch/call! of fn-key on the library value, with the opts of call!,
+      :pool included. When the call rejects, destroy the context clone of an
+      isolated call, which no result owns."
+     [fn-key args opts]
+     (.catch (dispatch/call! lib fn-key args opts)
+             (fn [e]
+               (wasm/release-unowned-clone! args)
+               (throw e)))))
+
 (defn call-native
   "The single leaf for every PROJ native call.
 
@@ -726,7 +764,9 @@
    ignores it.
 
    with-graal-lock locks the same Context monitor that call! locks. locking
-   is reentrant, so call!'s own acquisition nests."
+   is reentrant, so call!'s own acquisition nests.
+
+   On GraalVM it frees each StringArrayBlock arg after the call."
   ([fn-key args] (call-native fn-key nil args nil))
   ([fn-key fn-def args] (call-native fn-key fn-def args nil))
   ;; Only the :cljs branch reads force-worker-idx, so clj-kondo's :clj
@@ -734,10 +774,13 @@
   #_{:clj-kondo/ignore [:unused-binding]}
   ([fn-key _fn-def args force-worker-idx]
    #?(:clj
-      (if (graal?)
-        (do (wasm/ensure-proj-initialized!)
-            (graal-call-scope #(dispatch/call! lib fn-key args)))
-        (dispatch/call! lib fn-key args))
+      (let [l (if *backend* (get @backend-libs *backend*) lib)]
+        (if (= :graal (or *backend* @implementation))
+          (do (wasm/ensure-proj-initialized!)
+              (graal-call-scope
+               #(try (dispatch/call! l fn-key args)
+                     (finally (free-string-array-blocks! args)))))
+          (dispatch/call! l fn-key args)))
       :cljs
       (do
         (wasm/ensure-proj-initialized!)
@@ -746,10 +789,10 @@
         ;; tracked PJ carries type "pj". A context wrapper also has a ctx_id.
         (let [pj-arg (first (filter (fn [a] (and (object? a) (= "pj" (.-type a)))) args))
               primary-handle (when pj-arg (.-ctx_id pj-arg))]
-          (dispatch/call! lib fn-key args
-                          #js {:pool (wasm/current-pool)
-                               :primary-handle primary-handle
-                               :force-worker-idx force-worker-idx}))))))
+          (dispatch-call fn-key args
+                         #js {:pool (wasm/current-pool)
+                              :primary-handle primary-handle
+                              :force-worker-idx force-worker-idx}))))))
 
 (defn ensure-initialized!
   "Make sure that PROJ is initialized before dispatch"
@@ -815,7 +858,9 @@
          (sequential? provided-val)
          (= :string-array? (:semantic-type semantics-for-arg)))
     #?(:clj (if (graal?)
-              (wasm/string-list-to-native-array provided-val)
+              (->StringArrayBlock
+               (nw/address-as-int
+                (graal-heap-scope #(wasm/string-list-to-native-array provided-val))))
               (ffi-mem/strings->c-array provided-val))
        :cljs (wasm/string-list-to-native-array provided-val))
 
@@ -986,14 +1031,19 @@
 
 #?(:clj
    (defn release-tracked!
-     "Release a tracked PROJ pointer through `wp/release-once!`. Returns
-      true if the native destructor fired on this call, false if a
-      prior caller (or the GC) already released it. `destroy-fn-name`
+     "Release a tracked PROJ pointer. Returns true if the native destructor
+      fired on this call, false if a prior caller (or the GC) already
+      released it. A pointer that a PROJ call returned carries its release
+      fn under ::release in its metadata, which the GC release shares. Any
+      other pointer goes through `wp/release-once!`. `destroy-fn-name`
       matches the strings in `proj-type->destroy-fn`
       (\"proj_destroy\", \"proj_context_destroy\", ...)."
      [pointer destroy-fn-name]
-     (wp/release-once! pointer proj-destroy-lock
-                       #(do-native-destroy! pointer destroy-fn-name))))
+     (boolean
+      (if-let [release! (::release (meta pointer))]
+        (release!)
+        (wp/release-once! pointer proj-destroy-lock
+                          #(do-native-destroy! pointer destroy-fn-name))))))
 
 #?(:cljs
    (defn- register-pj-handle!
@@ -1019,7 +1069,7 @@
        (pool/bounded-create-handle!
         :net.willcohen.proj
         (fn []
-          (let [parent-key (when parent-ctx-id (str worker-idx ":" parent-ctx-id))]
+          (let [parent-key (when parent-ctx-id (wasm/ctx-key worker-idx parent-ctx-id))]
             (pool/register-handle! :net.willcohen.proj pj-ctx-id worker-idx
                                    destroy-fn result parent-key))))
        (catch :default e
@@ -1073,30 +1123,57 @@
 
 #?(:clj
    (defn- track-jvm-result!
-     "Track a pointer return for release at GC. Routes through the
-      release-once sentinel so a racing explicit release (for example,
-      workload-pool handler.destroy) cannot double-free this pointer."
+     "Track a pointer return for release at GC, and return it with its
+      release fn under ::release in its metadata. release-tracked! calls the
+      same fn, so an explicit release and the GC release free the pointer
+      once. The fn closes over the address and not the pointer:
+      tech.resource cannot collect an object that its dispose-fn holds. A
+      result frees through the backend that made it, a result of a pooled
+      GraalVM Context frees under that Context, and a PJ frees before the
+      context it carries in its metadata."
      [result destroy-fn-name]
-     (resource/track
-      result
-      {:dispose-fn (fn []
-                     (try
-                       (wp/release-once! result proj-destroy-lock
-                                         #(do-native-destroy! result destroy-fn-name))
-                       (catch Throwable t
-                         (log/warn t "proj/dispose-fn: native destroy failed"))))
-       :track-type :auto})
-     result))
+     (let [backend (if (graal?) :graal :ffi)
+           addr (if (= :graal backend) (nw/address-as-int result) (dt-ptr/ptr-value? result))
+           wc (when (= :graal backend) (pooled-wc))
+           owner-ctx (:proj-context (meta result))
+           fired (java.util.concurrent.atomic.AtomicBoolean. false)
+           release! (fn []
+                      (when (.compareAndSet fired false true)
+                        (locking proj-destroy-lock
+                          (binding [*backend* backend]
+                            (let [p (if (= :graal backend)
+                                      (nw/->TrackablePointer addr)
+                                      (tech.v3.datatype.ffi.Pointer. (long addr)))]
+                              (if wc
+                                (nw/with-wasm-context wc (do-native-destroy! p destroy-fn-name))
+                                (do-native-destroy! p destroy-fn-name)))))
+                        ;; PROJ reads the context of a PJ when it frees the
+                        ;; PJ. The fence keeps the context reachable, and so
+                        ;; unreleased, until then.
+                        (java.lang.ref.Reference/reachabilityFence owner-ctx)
+                        true))
+           tracked (vary-meta result assoc ::release release!)]
+       (resource/track
+        tracked
+        {:dispose-fn #(try
+                        (release!)
+                        (catch Throwable t
+                          (log/warn t "proj/dispose-fn: native destroy failed")))
+         :track-type :auto})
+       tracked)))
 
 (defn process-return-value-with-tracking
   "Process the return value by proj-returns type and apply resource tracking"
   [result fn-def]
   (let [proj-returns (:proj-returns fn-def)]
     (if (= :string-list proj-returns)
-      ;; CLJS: the worker owns the module and already decoded the
-      ;; string-list. CLJ: convert the pointer to strings.
+      ;; CLJS: the worker owns the module, and it decodes and frees the
+      ;; list. CLJ: decode the list, then free it.
       #?(:cljs result
-         :clj (string-array-pointer->strs result nil))
+         :clj (let [strs (string-array-pointer->strs result nil)]
+                (when-not (nps/null-ptr? result)
+                  (call-native :proj_string_list_destroy [result]))
+                strs))
       (let [destroy-fn-name (get proj-type->destroy-fn proj-returns)]
         (if (and destroy-fn-name result)
           #?(:cljs
@@ -1193,13 +1270,27 @@
                  result))))
 
 #?(:cljs
+   (defn- ^:async destroy-temporaries!
+     "Destroy each PJ of temps on its worker, with the context clone that it
+      owns. temps holds untracked PJs, so no other release frees them."
+     [temps]
+     (doseq [pj temps]
+       (when (object? pj)
+         (await ((build-pj-destroy-fn (wasm/current-pool) (.-worker_idx pj) (.-ptr pj)
+                                      "proj_destroy"
+                                      (.-_ephemeral_context_ptr pj)
+                                      (.-_ephemeral_context_worker_idx pj))))))))
+
+#?(:cljs
    (defn- ^:async reconcile-cross-worker-args!
      "When PJ/context args come from different workers, recreate mismatched
-      ones on the target worker through a PROJJSON roundtrip."
+      ones on the target worker through a PROJJSON roundtrip. Returns
+      [opts temps]: a copy of opts with the recreated args, and the PJs that
+      the recreation made, which the caller destroys after its call."
      [fn-def opts]
      (let [worker-count (wasm/get-worker-count)]
        (if (or (nil? worker-count) (<= worker-count 1))
-         opts
+         [opts nil]
          (let [pj-args (into []
                              (keep (fn [[arg-spec _]]
                                      (let [arg-name (str arg-spec)
@@ -1213,34 +1304,42 @@
                              (:argtypes fn-def))
                worker-indices (into #{} (map :worker-idx) pj-args)]
            (if (<= (count worker-indices) 1)
-             opts
+             [opts nil]
              (let [target-worker (.-worker_idx (:value (first (filter #(= (:type %) "pj") pj-args))))
                    desc (str "proj-wasm: PJ args are on different workers ("
                              (string/join ", " (map #(str (:arg-name %) " on worker " (:worker-idx %)) pj-args))
-                             "). Recreating on worker " target-worker ". For better performance, use an explicit context.")]
+                             "). Recreating on worker " target-worker ". For better performance, use an explicit context.")
+                   opts (js/Object.assign #js {} opts)
+                   temps #js []]
                (js/console.warn desc)
                (let [target-ctx (or (some (fn [{:keys [value worker-idx type]}]
                                             (when (and (= worker-idx target-worker) (= type "pj"))
                                               (.-_proj_context value)))
                                           pj-args)
                                     (await (context-create {:worker target-worker})))]
-                 (doseq [{:keys [arg-name value worker-idx type]} pj-args]
-                   (when (and (not= worker-idx target-worker) (= type "pj"))
-                     (let [src-ctx (or (.-_proj_context value) (await (context-create {:worker worker-idx})))
-                           projjson (await (call-native :proj_as_projjson [src-ctx value 0]))]
-                       (when (or (nil? projjson) (= projjson ""))
-                         (throw (js/Error. (str "Cannot reconcile " arg-name " across workers: PROJJSON export failed. Use an explicit context."))))
-                       (let [identity-op (await (call-native :proj_create_crs_to_crs nil
-                                                             [target-ctx projjson projjson 0]
-                                                             target-worker))
-                             new-pj (await (call-native :proj_get_source_crs nil
-                                                        [target-ctx identity-op]
-                                                        target-worker))]
-                         (aset new-pj "_proj_context" target-ctx)
-                         (aset opts arg-name new-pj))))
-                   (when (and (not= worker-idx target-worker) (= type "proj-context"))
-                     (aset opts arg-name target-ctx)))
-                 opts))))))))
+                 (try
+                   (doseq [{:keys [arg-name value worker-idx type]} pj-args]
+                     (when (and (not= worker-idx target-worker) (= type "pj"))
+                       (let [src-ctx (or (.-_proj_context value) (await (context-create {:worker worker-idx})))
+                             projjson (await (call-native :proj_as_projjson [src-ctx value 0]))]
+                         (when (or (nil? projjson) (= projjson ""))
+                           (throw (js/Error. (str "Cannot reconcile " arg-name " across workers: PROJJSON export failed. Use an explicit context."))))
+                         (let [identity-op (await (call-native :proj_create_crs_to_crs nil
+                                                               [target-ctx projjson projjson 0]
+                                                               target-worker))
+                               _ (.push temps identity-op)
+                               new-pj (await (call-native :proj_get_source_crs nil
+                                                          [target-ctx identity-op]
+                                                          target-worker))]
+                           (.push temps new-pj)
+                           (aset new-pj "_proj_context" target-ctx)
+                           (aset opts arg-name new-pj))))
+                     (when (and (not= worker-idx target-worker) (= type "proj-context"))
+                       (aset opts arg-name target-ctx)))
+                   (catch :default e
+                     (await (destroy-temporaries! temps))
+                     (throw e)))
+                 [opts temps]))))))))
 
 #?(:clj
    (defn- ensure-struct-defs!
@@ -1477,8 +1576,8 @@
 
 (defn- ^:async dispatch-default
   "Dispatch for functions without special return types. Selects context
-   dispatch or plain dispatch, then tracks the return value and attaches
-   the context."
+   dispatch or plain dispatch, then attaches the context and tracks the
+   return value."
   [fn-key fn-def opts ctx-for-result]
   (let [result (if (should-use-context-dispatch? fn-key fn-def opts)
                  (let [context-atom (get-context-atom opts fn-def)
@@ -1486,8 +1585,10 @@
                    (await (dispatch-context-fn fn-key fn-def context-atom remaining-args)))
                  (let [args (extract-args fn-def opts)]
                    (await (call-native fn-key fn-def args))))
-        result (process-return-value-with-tracking result fn-def)]
-    (if ctx-for-result (attach-context-to-result result ctx-for-result) result)))
+        result (if ctx-for-result (attach-context-to-result result ctx-for-result) result)]
+    ;; Track after the attach. On the JVM the attach returns a copy, and the
+    ;; GC must track the object that the caller holds.
+    (process-return-value-with-tracking result fn-def)))
 
 (defn- errno-failure-signal?
   "True when the result of a PROJ call shows possible failure, so that an
@@ -1511,21 +1612,27 @@
     (when (#{:ctx :context} fa)
       (resolve-context-val opts fa))))
 
-(defn ^:async dispatch-proj-fn
-  "Central dispatcher for all PROJ functions"
-  [fn-key fn-def opts & [key-casing]]
-  (ensure-initialized!)
-  (let [opts (if (needs-auto-context? fn-key fn-def opts)
-               (let [ctx (or (context-from-pj-args fn-def opts)
-                             (await (context-create {})))]
-                 #?(:clj (assoc opts :context ctx)
-                    :cljs (if (object? opts)
-                            (do (aset opts "context" ctx) opts)
-                            (assoc opts :context ctx))))
-               opts)
-        opts #?(:clj opts
-                :cljs (await (reconcile-cross-worker-args! fn-def opts)))
-        proj-returns (:proj-returns fn-def)
+(def ^:private destroy-fn-keys
+  (set (map keyword (vals proj-type->destroy-fn))))
+
+(defn- tracked-release
+  "The release fn of the tracked PJ or context that destroy fn fn-key frees,
+   or nil. The GC release holds the same fn, so the native destroy runs once.
+   On ClojureScript it is the Symbol.dispose of the object, whose release
+   the FinalizationRegistry and an LRU eviction share. It does not wait: a
+   context destroy waits on its worker until its PJs are released."
+  [fn-key fn-def opts]
+  (when (contains? destroy-fn-keys fn-key)
+    (let [v (lookup-arg-val opts (ffirst (:argtypes fn-def)))]
+      #?(:clj (::release (meta (if (instance? clojure.lang.IDeref v) (:ptr @v) v)))
+         :cljs (when (object? v)
+                 (let [dispose (aget v js/Symbol.dispose)]
+                   (when (fn? dispose) dispose)))))))
+
+(defn- ^:async dispatch-and-check
+  "Dispatch fn-key by its return type, then run the result check."
+  [fn-key fn-def opts key-casing]
+  (let [proj-returns (:proj-returns fn-def)
         result (case proj-returns
                  :struct-list (await (dispatch-struct-list fn-key fn-def opts key-casing))
                  :out-params  (await (dispatch-out-params fn-key fn-def opts key-casing))
@@ -1534,6 +1641,27 @@
                    (await (dispatch-default fn-key fn-def opts ctx-for-result))))]
     ;; The result-check hook returns the result unchanged or throws.
     (await (dispatch/check-result lib fn-key fn-def opts result))))
+
+(defn ^:async dispatch-proj-fn
+  "Central dispatcher for all PROJ functions"
+  [fn-key fn-def opts & [key-casing]]
+  (ensure-initialized!)
+  (if-let [release! (tracked-release fn-key fn-def opts)]
+    (do (release!) nil)
+    (let [opts (if (needs-auto-context? fn-key fn-def opts)
+                 (let [ctx (or (context-from-pj-args fn-def opts)
+                               (await (context-create {})))]
+                   #?(:clj (assoc opts :context ctx)
+                      :cljs (if (object? opts)
+                              (do (aset opts "context" ctx) opts)
+                              (assoc opts :context ctx))))
+                 opts)]
+      #?(:clj (dispatch-and-check fn-key fn-def opts key-casing)
+         :cljs (let [[opts temps] (await (reconcile-cross-worker-args! fn-def opts))]
+                 (try
+                   (await (dispatch-and-check fn-key fn-def opts key-casing))
+                   (finally
+                     (when temps (await (destroy-temporaries! temps))))))))))
 
 (defn ^:async proj-errno-result-check
   "Result-check hook for clj-native.dispatch. When a PROJ call returns
@@ -1569,6 +1697,19 @@
                                       :context-isolator wasm/proj-context-isolator
                                       :result-check     proj-errno-result-check}
                                :clj  {:result-check proj-errno-result-check})}))
+
+#?(:clj
+   (def ^:private backend-libs
+     "A library value for each JVM backend, with an implementation atom that
+      never changes. call-native uses one when *backend* is bound."
+     (delay
+       (into {}
+             (map (fn [impl]
+                    [impl (dispatch/library {:key :net.willcohen.proj
+                                             :fndefs pdefs/fndefs
+                                             :impl-atom (atom impl)
+                                             :ffi-impl-ns 'net.willcohen.proj.impl.native})]))
+             [:ffi :graal]))))
 
 ;; The two platforms call this, so clj-kondo's hooks.proj hook fires for the
 ;; two. A bare JVM doseq made every JVM caller of a generated fn report

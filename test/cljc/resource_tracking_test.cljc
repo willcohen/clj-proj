@@ -234,6 +234,136 @@
              ((aget ctx2 (.-dispose js/Symbol)))
              (await (.flushPendingDisposes proj))))))
 
+     ;; Each worker numbers its contexts from 1, so two workers hand out
+     ;; one ctx-id. Disposing a must release the worker claim of a. The
+     ;; next context then goes to the worker of a, the least loaded.
+     (deftest ^:async clj-proj-one-ctx-id-on-two-workers-keeps-two-claims
+       (await (init-once!))
+       (let [proj (:proj @state)]
+         (await (.shutdown proj))
+         (await (.init proj {:workers 2}))
+         (let [a (await (.contextCreate proj))
+               b (await (.contextCreate proj))]
+           (is (= [0 1] [(.-worker_idx a) (.-worker_idx b)]))
+           (is (= (.-ctx_id a) (.-ctx_id b)) "one ctx-id on each worker")
+           ((aget a (.-dispose js/Symbol)))
+           (await (.flushPendingDisposes proj))
+           (let [c (await (.contextCreate proj))]
+             (is (= 0 (.-worker_idx c)) "the dispose of a released the claim of a")
+             ((aget b (.-dispose js/Symbol)))
+             ((aget c (.-dispose js/Symbol)))
+             (await (.flushPendingDisposes proj))))
+         (await (.shutdown proj))
+         (await (.init proj))))
+
+     (defn ^:async fresh-pool!
+       "Shut the pool down and start it again with init opts `opts`."
+       [proj opts]
+       (await (.shutdown proj))
+       (await (.init proj opts)))
+
+     (defn- dispatches
+       "The count of DISPATCH-RESOLVE trace lines in `lines` for C fn `c-fn`
+        on worker `worker`."
+       [lines c-fn worker]
+       (count (filter (fn [l] (and (.includes l "DISPATCH-RESOLVE")
+                                   (.includes l (str "c-fn=" c-fn " "))
+                                   (.includes l (str "worker-idx=" worker))))
+                      lines)))
+
+     (defn ^:async traced
+       "The console lines that async fn `f` logs. The trace lines need an
+        init with :debug-level."
+       [f]
+       (let [lines #js []
+             log (.-log js/console)]
+         (set! (.-log js/console) (fn [& xs] (.push lines (.join (into-array xs) " "))))
+         (try
+           (await (f))
+           (finally (set! (.-log js/console) log)))
+         lines))
+
+     (def trace-dispatch {:debug-level "debug" :debug-categories ["dispatch"]})
+
+     ;; An explicit projDestroy freed the PJ on its worker, but its handle
+     ;; stayed registered. Its Symbol.dispose, the FinalizationRegistry or an
+     ;; LRU eviction then freed the PJ a second time.
+     (deftest ^:async clj-proj-explicit-projDestroy-then-dispose-frees-once
+       (await (init-once!))
+       (let [proj (:proj @state)]
+         (await (fresh-pool! proj trace-dispatch))
+         (let [ctx (await (.contextCreate proj))
+               crs (await (.projCreateFromDatabase proj #js {:context ctx :auth_name "EPSG" :code "4326"}))
+               live-before (.-total (.getPoolDetail proj))
+               _ (await (.projDestroy proj #js {:pj crs}))
+               released? (= (dec live-before) (.-total (.getPoolDetail proj)))]
+           (is released? "the explicit destroy released the handle")
+           ;; Without the release, a second destroy frees freed memory on the
+           ;; worker, and a context dispose waits for the PJ forever.
+           (when released?
+             (await (.flushPendingDisposes proj))
+             (let [lines (await (traced (fn ^:async dispose-again! []
+                                          ((aget crs (.-dispose js/Symbol)))
+                                          (await (.flushPendingDisposes proj)))))]
+               (is (= 0 (dispatches lines "proj_destroy" (.-worker_idx crs)))
+                   "a later dispose frees nothing"))
+             ((aget ctx (.-dispose js/Symbol)))
+             (await (.flushPendingDisposes proj))))
+         (await (fresh-pool! proj {:debug-level "off"}))))
+
+     ;; An explicit projContextDestroy freed the context on its worker, but
+     ;; kept its worker claim, and its Symbol.dispose freed it a second time.
+     (deftest ^:async clj-proj-explicit-projContextDestroy-releases-the-claim-once
+       (await (init-once!))
+       (let [proj (:proj @state)]
+         (await (fresh-pool! proj {:workers 2}))
+         (let [a (await (.contextCreate proj))
+               b (await (.contextCreate proj))
+               c (await (.contextCreate proj))]
+           (is (= [0 1 0] (mapv (fn [x] (.-worker_idx x)) [a b c])))
+           (await (.projContextDestroy proj #js {:context a}))
+           (await (.projContextDestroy proj #js {:context c}))
+           ;; The pool counts a queued destroy as load on its worker.
+           (await (.flushPendingDisposes proj))
+           (let [d (await (.contextCreate proj))]
+             (is (= 0 (.-worker_idx d)) "the destroys of a and c released their claims")
+             (when (= 0 (.-worker_idx d))
+               ((aget a (.-dispose js/Symbol)))
+               (is (zero? (.-length (await (.flushPendingDisposes proj))))
+                   "a later dispose frees nothing"))
+             ((aget b (.-dispose js/Symbol)))
+             ((aget d (.-dispose js/Symbol)))
+             (await (.flushPendingDisposes proj))))
+         (await (fresh-pool! proj nil))))
+
+     ;; A call with PJ args on two workers recreates each moved PJ on the
+     ;; target worker. The identity operation, its context clone and the
+     ;; recreated PJ were never destroyed, so each call leaked two PJs and a
+     ;; context on that worker. The call also wrote the recreated PJ into the
+     ;; opts of the caller.
+     (deftest ^:async clj-proj-cross-worker-args-destroy-their-copies
+       (await (init-once!))
+       (let [proj (:proj @state)
+             op (atom nil)]
+         (await (fresh-pool! proj (assoc trace-dispatch :workers 2)))
+         (let [c0 (await (.contextCreate proj))
+               c1 (await (.contextCreate proj {:worker 1}))
+               src (await (.projCreateFromDatabase proj #js {:context c0 :auth_name "EPSG" :code "4326"}))
+               dst (await (.projCreateFromDatabase proj #js {:context c1 :auth_name "EPSG" :code "3857"}))
+               opts #js {:context c0 :source_crs src :target_crs dst}
+               lines (await (traced (fn ^:async cross-worker-call! []
+                                      (reset! op (await (.projCreateCrsToCrsFromPj proj opts))))))]
+           (is (= [0 1] [(.-worker_idx src) (.-worker_idx dst)]))
+           (is (some? @op))
+           (is (identical? dst (.-target_crs opts)) "the opts of the caller keep its PJ")
+           (is (= 2 (dispatches lines "proj_destroy" 0))
+               "the identity operation and the recreated PJ are destroyed on worker 0")
+           (is (= 1 (dispatches lines "proj_context_destroy" 0))
+               "the context clone of the identity operation is destroyed on worker 0")
+           (doseq [x [@op src dst c0 c1]] ((aget x (.-dispose js/Symbol))))
+           (await (.flushPendingDisposes proj)))
+         (await (fresh-pool! proj {:debug-level "off"}))))
+
      ;; Must run last in this file. After shutdown the `proj` module
      ;; is not usable, and the teardown shutdown call is a no-op.
      (deftest ^:async clj-proj-shutdown-drains-pending-disposes-before-terminating-workers

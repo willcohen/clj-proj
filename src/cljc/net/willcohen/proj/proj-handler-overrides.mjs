@@ -42,7 +42,6 @@ import { isNode } from 'ffi-wasm/handler-env';
 import {
   createSyncFetch,
   installXhrPolyfill,
-  shutdownMethod,
   moduleDestroy,
 } from 'ffi-wasm/http-bridge';
 
@@ -135,6 +134,21 @@ function writeErrorString(errStrPtr, errMaxSize, msg) {
   module.HEAPU8[errStrPtr + n] = 0;
 }
 
+// PROJ reads a header string after get_header returns. The strings of a
+// handle live until its close, as the strings of PROJ's own callbacks do.
+export function headerValuePtr(mod, entry, name) {
+  const value = entry?.headers?.[name.toLowerCase()];
+  if (!value) return 0;
+  const ptr = mod.stringToNewUTF8(value);
+  (entry.headerPtrs ??= []).push(ptr);
+  return ptr;
+}
+
+export function releaseHandleStrings(mod, entry) {
+  for (const ptr of entry?.headerPtrs ?? []) mod._free(ptr);
+  if (entry) entry.headerPtrs = [];
+}
+
 function installProjNetCallbacks() {
   if (globalThis.__proj_net_open) return;
   if (NET_DBG) console.log('[NET-DBG] INSTALL proj-net callbacks on globalThis');
@@ -172,6 +186,7 @@ function installProjNetCallbacks() {
 
   globalThis.__proj_net_close = (ctx, handle, _userData) => {
     if (NET_DBG) console.log(`[NET-DBG] CLOSE ctx=${ctx} h=${handle}`);
+    releaseHandleStrings(module, handles.get(handle));
     handles.delete(handle);
   };
 
@@ -181,13 +196,10 @@ function installProjNetCallbacks() {
       if (NET_DBG) console.log(`[NET-DBG] HDR-NOENTRY ctx=${ctx} h=${handle}`);
       return 0;
     }
-    const name = module.UTF8ToString(namePtr).toLowerCase();
-    const value = entry.headers?.[name];
-    if (!value) {
-      if (NET_DBG) console.log(`[NET-DBG] HDR-MISS ctx=${ctx} h=${handle} name=${name}`);
-      return 0;
-    }
-    return module.stringToNewUTF8(value);
+    const name = module.UTF8ToString(namePtr);
+    const ptr = headerValuePtr(module, entry, name);
+    if (!ptr && NET_DBG) console.log(`[NET-DBG] HDR-MISS ctx=${ctx} h=${handle} name=${name}`);
+    return ptr;
   };
 
   globalThis.__proj_net_read_range = (
@@ -391,12 +403,14 @@ function prepareCallArgs(mod, args, argTypes, opts) {
 // Turns the raw ccall return into the value the caller gets, and releases
 // every allocation the call made. `args` still carries the out-param and
 // struct-list pointers the prologue appended.
-function decodeCallResult(mod, rawResult, opts) {
+export function decodeCallResult(mod, rawResult, opts) {
   const { projReturns, args, outParamAllocs, paramsPtrLocal,
     structParamsDestroy, structDestroyFn, structFields } = opts;
 
   if (projReturns === 'string-list' && rawResult !== 0) {
-    return readStringArray(mod, rawResult);
+    const strings = readStringArray(mod, rawResult);
+    mod.ccall('proj_string_list_destroy', null, ['number'], [rawResult]);
+    return strings;
   }
 
   if (projReturns === 'struct-list') {
@@ -494,14 +508,10 @@ export const methods = {
   ...heapHelpers(() => module),
 
   read_string_array: async (ptr, _count) => readStringArray(module, ptr),
-
-  // Releases this handler's reference on the fetch worker that init spawned.
-  shutdown: shutdownMethod,
 };
 
 // worker-router calls this once for each worker at pool terminate, through
-// the `destroy` that the generated proj-handler.mjs re-exports. It closes
-// the fetch worker that init spawned when no client called `shutdown`.
+// the generated proj-handler.mjs. It releases the fetch worker that init took.
 export const destroy = moduleDestroy;
 
 export async function init(initArgs, ctx) {

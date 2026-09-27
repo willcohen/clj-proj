@@ -11,7 +11,9 @@
   (:refer-clojure :exclude [await])
   #?(:clj (:require [clojure.test :refer [deftest is testing use-fixtures]]
                     [net.willcohen.proj.proj :as proj]
+                    [net.willcohen.proj.impl.network :as proj-network]
                     [net.willcohen.proj.wasm :as wasm]
+                    [net.willcohen.native.graal-wasm :as nw]
                     [tech.v3.resource :as resource])
      :cljs (:require [cljs.test :as t :refer [deftest is testing]]
                      ["proj-wasm" :as proj]
@@ -139,7 +141,48 @@
           ;; squint wraps a set predicate as a `get` fn, and `get` on
           ;; a Set returns a present key. Thus the set predicate works
           ;; on a JS array in cljs.
-          (is (some #{"4326"} epsg-codes) "Should contain a well-known code like '4326'"))))))
+          (is (some #{"4326"} epsg-codes) "Should contain a well-known code like '4326'")))
+      ;; JVM only: on CLJS a new context holds errno 44 from its setup, so
+      ;; the errno check throws on this NULL result.
+      #?(:clj
+         (testing "a NULL string list reads as empty"
+           ;; PROJ returns NULL for PJ_TYPE_UNKNOWN (0) and sets no errno.
+           (is (empty? (proj/proj-get-codes-from-database {:context ctx
+                                                           :auth_name "EPSG"
+                                                           :type 0}))))))))
+
+;; GraalVM: the get_header callback copied each header value into a new wasm
+;; block, and nothing freed it: three blocks for each grid file that PROJ
+;; opened.
+#?(:clj
+   (deftest get-header-strings-are-freed-test
+     (with-each-implementation
+       (when (proj/graal?)
+         (let [module @wasm/p
+               real-execute nw/module-execute
+               allocated (atom [])
+               freed (atom [])
+               get-header (#'proj-network/create-get-header-callback module)
+               close (#'proj-network/create-close-callback module)
+               call-get-header (nw/module-eval-js module "(f, h, n) => f(0, h, n, 0)" "get-header-test.js")
+               call-close (nw/module-eval-js module "(f, h) => f(0, h, 0)" "close-test.js")
+               id (#'proj-network/create-handle! "https://example.invalid/g.tif"
+                                                 {"content-range" "bytes 0-9/100"})
+               name-ptr (nw/module-execute module "stringToNewUTF8" ["Content-Range"] :int)]
+           (try
+             (with-redefs [nw/module-execute
+                           (fn [m path args & more]
+                             (let [r (apply real-execute m path args more)]
+                               (case path
+                                 "stringToNewUTF8" (swap! allocated conj r)
+                                 "_free" (swap! freed conj (first args))
+                                 nil)
+                               r))]
+               (dotimes [_ 3] (nw/value-execute call-get-header [get-header id name-ptr] :int))
+               (nw/value-execute call-close [close id]))
+             (is (= 3 (count @allocated)))
+             (is (= (set @allocated) (set @freed)) "close freed each header string of the handle")
+             (finally (nw/module-execute module "_free" [name-ptr]))))))))
 
 (deftest ^:async get-crs-info-list-from-database-test
   #?(:clj  (with-each-implementation
@@ -220,6 +263,18 @@
       (is (#{:ffi :graal :cljs :node :browser} @proj/implementation)
           "Should be a recognized runtime impl"))))
 
+;; cs runs a PROJ call once. Inside a swap!, a concurrent change of the
+;; context atom would make the swap! retry, and the call would run again.
+#?(:clj
+   (deftest cs-runs-each-call-once-test
+     (with-each-implementation
+       (let [calls (atom 0)
+             ctx (atom {:ptr (Object.) :op 0})
+             in-call (promise)
+             bump (future @in-call (swap! ctx update :op inc))]
+         (is (= :r (proj/cs ctx (fn [_] (swap! calls inc) (deliver in-call true) @bump :r) [])))
+         (is (= 1 @calls) "a concurrent change of the context atom does not rerun the call")))))
+
 (deftest ^:async context-creation-test
   #?(:clj  (with-each-implementation
              (testing "Context creation returns valid atom with expected structure"
@@ -278,6 +333,50 @@
                  (str "Z should be 100.0, got " z))
              (is (< (Math/abs (- t 0.0)) 0.0001)
                  (str "T should be 0.0, got " t))))))))
+
+#?(:clj
+   (deftest heap-calls-with-a-second-registered-context-test
+     ;; cg also loads clj-gdal, and clj-gdal registers a second WasmContext.
+     ;; Then an unbound heap call has no single default context.
+     (with-each-implementation
+       (let [k ::second-library]
+         (nw/create-wasm-context! k)
+         (try
+           (let [ca  (proj/coord->coord-array [42.3603222 -71.0579667 100.0 0.0])
+                 [x] (proj/get-coords ca 0)]
+             (is (< (Math/abs (- x 42.3603222)) 0.0001) "a coord array round trip"))
+           (is (seq (proj/proj-get-authorities-from-database)))
+           (with-test-context [ctx]
+             (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+                   wkt (proj/proj-as-wkt {:context ctx :pj crs :options ["MULTILINE=NO"]})]
+               (is (and (string? wkt) (not (re-find #"\n" wkt)))
+                   "a string-array argument"))
+             (is (seq (proj/proj-get-celestial-body-list-from-database {:context ctx :auth-name ""}))
+                 "a struct list"))
+           (finally (swap! nw/contexts dissoc k)))))))
+
+#?(:clj
+   (deftest string-array-arg-is-freed-test
+     (with-each-implementation
+       (with-test-context [ctx]
+         (let [crs (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})
+               alloc nw/string-list-to-native-array
+               free nw/free-on-heap
+               allocated (atom [])
+               freed (atom #{})
+               wkt (with-redefs [nw/string-list-to-native-array
+                                 (fn [s] (let [p (alloc s)]
+                                           (swap! allocated conj (nw/address-as-int p))
+                                           p))
+                                 nw/free-on-heap
+                                 (fn [p] (when p (swap! freed conj (nw/address-as-int p)))
+                                   (free p))]
+                     (proj/proj-as-wkt {:context ctx :pj crs :options ["MULTILINE=NO"]}))]
+           (is (string? wkt))
+           ;; FFI builds the array in a GC-tracked NativeBuffer.
+           (when (proj/graal?)
+             (is (= 1 (count @allocated)) "one block for the options")
+             (is (every? @freed @allocated) "the block is freed after the call")))))))
 
 #?(:clj
    (deftest ^:async transformation-modifies-coords-test
@@ -767,6 +866,43 @@
                                                           :source_crs "INVALID:9999"
                                                           :target_crs "EPSG:4326"}))))))))
 
+;; A fake pool runs the real hooks of proj/lib. proj_context_clone gives
+;; 77, and proj_create_crs_to_crs gives what `create` returns or throws.
+#?(:cljs
+   (defn- clone-fake-pool [create destroyed]
+     #js {:worker (fn [idx]
+                    (js-obj "net.willcohen.proj"
+                            #js {:ccall (fn [c-name _rettype _argtypes args _extra]
+                                          (case c-name
+                                            "proj_context_clone" 77
+                                            "proj_create_crs_to_crs" (create)
+                                            "proj_context_destroy"
+                                            (do (.push destroyed [idx (aget args 0)]) nil)))}))}))
+
+#?(:cljs
+   (defn- ^:async isolated-create [create destroyed]
+     (let [ctx #js {:ptr 5 :worker_idx 1 :type "proj-context"}
+           r (await (.catch (proj/dispatch-call "proj_create_crs_to_crs"
+                                                [ctx "EPSG:4326" "EPSG:3857" 0]
+                                                #js {:pool (clone-fake-pool create destroyed)})
+                            (fn [e] e)))]
+       (await (proj/flush-pending-disposes!))
+       r)))
+
+#?(:cljs
+   (deftest ^:async isolated-call-destroys-an-unowned-clone-test
+     (let [destroyed #js []
+           pj (await (isolated-create (fn [] 1234) destroyed))]
+       (is (= 77 (.-_ephemeral_context_ptr pj)) "a PJ owns its clone")
+       (is (= 0 (.-length destroyed))))
+     (let [destroyed #js []]
+       (is (nil? (await (isolated-create (fn [] 0) destroyed))))
+       (is (= [[1 77]] (vec destroyed)) "a NULL result destroys the clone on its worker"))
+     (let [destroyed #js []
+           err (await (isolated-create (fn [] (throw (js/Error. "crs not found"))) destroyed))]
+       (is (instance? js/Error err))
+       (is (= [[1 77]] (vec destroyed)) "a rejection destroys the clone on its worker"))))
+
 (deftest ^:async context-error-state-test
   (with-each-implementation
     (with-test-context [ctx]
@@ -1013,3 +1149,169 @@
 #?(:cljs (defn ^:async shutdown! [] (await (.shutdown proj))))
 
 #?(:cljs (run_tests_and_exit_BANG_ shutdown!))
+;; Logs each proj_destroy with its address and the backend that call-native
+;; takes. call-native is the leaf, and the GC dispose runs on another
+;; thread, which with-redefs reaches. The short arities of call-native call
+;; the 4-arity through the var, so only the 4-arity logs.
+#?(:clj
+   (defn- with-destroy-log [f]
+     (let [log (atom [])
+           orig proj/call-native]
+       (with-redefs [proj/call-native
+                     (fn [fn-key & more]
+                       (when (and (= :proj_destroy fn-key) (= 3 (count more)))
+                         (let [p (first (second more))]
+                           (swap! log conj {:impl (or (var-get #'proj/*backend*)
+                                                      @proj/implementation)
+                                            :addr (if (instance? tech.v3.datatype.ffi.Pointer p)
+                                                    (.address ^tech.v3.datatype.ffi.Pointer p)
+                                                    (nw/address-as-int p))})))
+                       (apply orig fn-key more))]
+         (f log)))))
+
+#?(:clj
+   (defn- gc-until [pred]
+     (loop [i 0]
+       (when (and (< i 50) (not (pred)))
+         (System/gc)
+         (Thread/sleep 50)
+         (recur (inc i))))))
+
+#?(:clj
+   (deftest gc-releases-an-unreferenced-pj-test
+     (with-each-implementation
+       (with-test-context [ctx]
+         (with-destroy-log
+           (fn [log]
+             (let [held (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
+               (dotimes [_ 20]
+                 (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "3857"}))
+               (gc-until #(seq @log))
+               (is (seq @log) "the GC released an unreferenced PJ")
+               (is (string? (proj/proj-as-wkt {:context ctx :pj held}))
+                   "a held PJ stays usable after GC"))))))))
+
+#?(:clj
+   (deftest explicit-release-then-gc-frees-once-test
+     (with-each-implementation
+       (with-test-context [ctx]
+         (with-destroy-log
+           (fn [log]
+             ;; The canaries go first and stay unreleased, so no address
+             ;; can repeat after the explicit release: nothing allocates
+             ;; then. A canary destroy shows that the GC ran.
+             (dotimes [_ 20]
+               (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "3857"}))
+             (let [n ((fn []
+                        (let [pj (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
+                          (is (true? (proj/release-tracked! pj "proj_destroy")))
+                          (is (false? (proj/release-tracked! pj "proj_destroy")))
+                          (count @log))))
+                   addr (:addr (nth @log (dec n)))]
+               (gc-until #(> (count @log) n))
+               (is (> (count @log) n) "the GC released the canaries")
+               (is (not-any? #{addr} (map :addr (drop n @log)))
+                   "the GC did not free the released PJ again"))))))))
+
+;; The public destroy fns and the GC release share one release, so a PJ or a
+;; context that the caller destroys is not freed again by the GC. The log
+;; skips the real destroys, so a second free cannot crash the JVM.
+#?(:clj
+   (deftest explicit-destroy-then-gc-frees-once-test
+     (with-each-implementation
+       (let [log (atom [])
+             orig proj/call-native
+             addr-of (fn [p] (if (instance? tech.v3.datatype.ffi.Pointer p)
+                               (.address ^tech.v3.datatype.ffi.Pointer p)
+                               (nw/address-as-int p)))]
+         (with-redefs [proj/call-native
+                       (fn [fn-key & more]
+                         (if (and (#{:proj_destroy :proj_context_destroy} fn-key)
+                                  (= 3 (count more)))
+                           (swap! log conj [fn-key (addr-of (first (second more)))])
+                           (apply orig fn-key more)))]
+           (let [n-canaries 20
+                 [c p] ((fn []
+                          (let [ctx (proj/context-create)
+                                pj (proj/proj-create-from-database
+                                    {:context ctx :auth_name "EPSG" :code "4326"})]
+                            (dotimes [_ n-canaries]
+                              (proj/proj-create-from-database
+                               {:context ctx :auth_name "EPSG" :code "3857"}))
+                            (proj/proj-destroy {:pj pj})
+                            (proj/proj-context-destroy {:context ctx})
+                            [(addr-of (proj/context-ptr ctx)) (addr-of pj)])))
+                 n-of (fn [k a] (count (filter #{[k a]} @log)))]
+             ;; The canaries hold the context until the GC frees them.
+             (gc-until #(> (count (filter (comp #{:proj_destroy} first) @log)) n-canaries))
+             (dotimes [_ 10] (System/gc) (Thread/sleep 50))
+             (is (> (count @log) n-canaries) "the GC released the canaries")
+             (is (= 1 (n-of :proj_destroy p)) "the PJ was freed once")
+             (is (= 1 (n-of :proj_context_destroy c)) "the context was freed once")))))))
+
+;; PROJ allocates a string list for the caller, so each string-list call
+;; frees it after the decode.
+#?(:clj
+   (deftest string-list-result-is-freed-test
+     (with-each-implementation
+       (with-test-context [ctx]
+         (let [freed (atom 0)
+               orig proj/call-native]
+           (with-redefs [proj/call-native
+                         (fn [fn-key & more]
+                           (when (and (= :proj_string_list_destroy fn-key) (= 3 (count more)))
+                             (swap! freed inc))
+                           (apply orig fn-key more))]
+             (is (seq (proj/proj-get-authorities-from-database {:context ctx})))
+             (is (= 1 @freed) "the list was freed once")))))))
+
+#?(:clj
+   (deftest gc-release-after-a-backend-switch-test
+     (with-each-implementation
+       (let [made-on @proj/implementation
+             other (if (= :graal made-on) :ffi :graal)]
+         (with-destroy-log
+           (fn [log]
+             (with-test-context [ctx]
+               (dotimes [_ 20]
+                 (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "3857"})))
+             (case other :ffi (proj/force-ffi!) :graal (proj/force-graal!))
+             (proj/init!)
+             ;; A host with no native lib cannot switch to FFI.
+             (when (= other @proj/implementation)
+               (gc-until (constantly false))
+               (is (every? #(= made-on (:impl %)) @log)
+                   "a result frees only through the backend that made it"))))))))
+
+;; PROJ reads the context of a PJ when it frees the PJ: ~NetworkFile calls
+;; the network callbacks of the context. The GC must free each PJ before its
+;; context. The log skips the real destroys, so a wrong order cannot crash.
+#?(:clj
+   (deftest gc-frees-a-pj-before-its-context-test
+     (with-each-implementation
+       (let [log (atom [])
+             orig proj/call-native
+             addr-of (fn [p] (if (instance? tech.v3.datatype.ffi.Pointer p)
+                               (.address ^tech.v3.datatype.ffi.Pointer p)
+                               (nw/address-as-int p)))]
+         (with-redefs [proj/call-native
+                       (fn [fn-key & more]
+                         (if (and (#{:proj_destroy :proj_context_destroy} fn-key)
+                                  (= 3 (count more)))
+                           (swap! log conj [fn-key (addr-of (first (second more)))])
+                           (apply orig fn-key more)))]
+           (let [pairs ((fn []
+                          (vec (for [_ (range 10)]
+                                 (let [ctx (proj/context-create)
+                                       pj (proj/proj-create-from-database
+                                           {:context ctx :auth_name "EPSG" :code "4326"})]
+                                   [(addr-of (proj/context-ptr ctx)) (addr-of pj)])))))
+                 idx (fn [k a] (first (keep-indexed (fn [i [fk x]] (when (and (= k fk) (= a x)) i)) @log)))]
+             (gc-until #(every? (fn [[c _]] (idx :proj_context_destroy c)) pairs))
+             (is (every? (fn [[c _]] (idx :proj_context_destroy c)) pairs)
+                 "the GC released each context")
+             (is (every? (fn [[c p]] (let [ci (idx :proj_context_destroy c)
+                                           pi (idx :proj_destroy p)]
+                                       (or (nil? ci) (and pi (< pi ci)))))
+                         pairs)
+                 "each PJ was freed before its context")))))))

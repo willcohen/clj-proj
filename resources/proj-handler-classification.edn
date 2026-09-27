@@ -17,8 +17,7 @@
                    :ccall :malloc :free
                    :heapf64_set :heapf64_get :read_string_array
                    :heapu8_set :heapu8_get
-                   :string_to_utf8 :utf8_to_string
-                   :shutdown]
+                   :string_to_utf8 :utf8_to_string]
 
  :busy-methods [:context_create :set_log_level
                 :ccall :malloc
@@ -26,7 +25,7 @@
                 :heapu8_set :heapu8_get
                 :string_to_utf8 :utf8_to_string]
 
- :destroy-methods [:context_destroy :free :shutdown]
+ :destroy-methods [:context_destroy :free]
 
  ;; Init-arg fields in the handler cache key. With these, the generator
  ;; emits the fingerprint, so proj-handler-overrides.mjs does not import the

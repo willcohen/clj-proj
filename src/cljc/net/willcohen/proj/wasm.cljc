@@ -204,6 +204,14 @@
      (await (pool/worker-call (current-pool) :net.willcohen.proj method args worker-idx))))
 
 #?(:cljs
+   (defn ctx-key
+     "The key of context ctx-id of worker worker-idx in the pool maps. Each
+      worker numbers its contexts from 1, so ctx-id alone repeats across
+      workers."
+     [worker-idx ctx-id]
+     (str worker-idx ":" ctx-id)))
+
+#?(:cljs
    (def ^:private DESTROY-GATE-MAX-ITERS 16))
 ;; Race-recovery cap for the event-driven gate of destroy-context!. Each
 ;; iteration awaits a Promise that resolves when the in-flight counter
@@ -236,12 +244,7 @@
       ctx-id routed to the current pool destroys a LIVE context of the
       new generation. Refer to live-pool?."
      [p worker-idx ctx-id]
-     (let [;; Globally unique parent key. Each worker keeps its own
-           ;; ctx-id sequence, so the raw number is not unique across
-           ;; workers. The composite prevents cross-worker counter
-           ;; aggregation in in-flight-by-parent and
-           ;; gate-promises-by-parent.
-           parent-key (str worker-idx ":" ctx-id)]
+     (let [parent-key (ctx-key worker-idx ctx-id)]
        (loop [iters 0]
          (let [remaining (pool/in-flight-count-for-parent parent-key)]
            (when (and (pos? remaining)
@@ -345,14 +348,15 @@
 
 #?(:cljs
    (defn track-context!
-     "Add an owner-tracked entry to the :ctx-workers map of clj-native's
-      library context. owner must be a JS object. clj-native wraps it in
+     "Add an owner-tracked entry, keyed by ctx-key, to the :ctx-workers map
+      of clj-native's library context. owner must be a JS object. clj-native wraps it in
       a WeakRef and sweeps stale entries (collected owners) on every
       track/assign call. The sweep fires release-fn synchronously and
       does not wait for the FinalizationRegistry callback queue to
       drain."
      [ctx-id worker-idx release-fn owner]
-     (pool/track-context! :net.willcohen.proj ctx-id worker-idx release-fn owner)))
+     (pool/track-context! :net.willcohen.proj (ctx-key worker-idx ctx-id)
+                          worker-idx release-fn owner)))
 
 #?(:cljs
    (defn untrack-context!
@@ -360,8 +364,8 @@
       context destroy-fn calls this, so the pool's claim_count releases
       synchronously when destroy fires, before the destroy promise of the
       worker-call settles."
-     [ctx-id]
-     (pool/untrack-context! :net.willcohen.proj ctx-id)))
+     [worker-idx ctx-id]
+     (pool/untrack-context! :net.willcohen.proj (ctx-key worker-idx ctx-id))))
 
 #?(:clj
    (defn- read-resource-bytes [path]
@@ -590,6 +594,40 @@
         :on-result (when (seq coord-arrays)
                      (coord-writeback-fn coord-arrays args))})))
 
+;; The context clone of each isolated call in flight, keyed by the args
+;; array of dispatch/call!: a fn that destroys the clone. The result-wrapper
+;; removes the entry. proj/dispatch-call calls it when the call rejects. The
+;; wasm has no C++ exception catching, so PROJ rejects an invalid CRS, and
+;; this path is common. The key works because proj-extras-builder returns
+;; the args array itself when a call has no coord array, and cljs-leg gives
+;; that array to the isolator and the wrapper.
+#?(:cljs
+   (defonce ^:private unowned-clones (js/WeakMap.)))
+
+#?(:cljs
+   (defn- clone-release-fn
+     "A fn that destroys context clone `clone-ptr` on worker `worker-idx` of
+      `call-pool`. pool/fire-and-capture-dispose! holds the Promise, so a
+      flush waits for it and reports a failure."
+     [library call-pool worker-idx clone-ptr]
+     (fn []
+       (pool/fire-and-capture-dispose!
+        (fn []
+          (.catch (dispatch/call! library "proj_context_destroy"
+                                  [#js {:worker_idx worker-idx :ptr clone-ptr}]
+                                  {:pool call-pool :force-worker-idx worker-idx})
+                  ignore-pool-terminated))
+        #js {:lib "net.willcohen.proj" :kind "ctx-clone" :worker worker-idx}))))
+
+#?(:cljs
+   (defn release-unowned-clone!
+     "Destroy the context clone of the isolated call with `args`, if no
+      result took it."
+     [args]
+     (when-let [release (.get unowned-clones args)]
+       (.delete unowned-clones args)
+       (release))))
+
 #?(:cljs
    (defn proj-result-wrapper
      "PROJ result-wrapper hook for clj-native.dispatch. It wraps an opaque
@@ -620,7 +658,9 @@
       call was context-isolated. The wrapper attaches its :ephemeral-ctx-ptr
       to the wrapped object as _ephemeral_context_ptr, with the call's
       worker-idx as _ephemeral_context_worker_idx. build-pj-destroy-fn reads
-      the two fields and chains the ctx destroy after the primary destroy."
+      the two fields and chains the ctx destroy after the primary destroy.
+      A result that is not an object owns no clone, so the wrapper destroys
+      the clone at once."
      [{:keys [result fn-def worker-idx platform args isolator-result]}]
      (let [proj-returns (:proj-returns fn-def)
            wrapped
@@ -662,9 +702,12 @@
 
              :else result)
            ephemeral-ctx-ptr (:ephemeral-ctx-ptr isolator-result)]
-       (when (and ephemeral-ctx-ptr (object? wrapped))
-         (aset wrapped "_ephemeral_context_ptr" ephemeral-ctx-ptr)
-         (aset wrapped "_ephemeral_context_worker_idx" worker-idx))
+       (when isolator-result
+         (.delete unowned-clones args)
+         (if (object? wrapped)
+           (do (aset wrapped "_ephemeral_context_ptr" ephemeral-ctx-ptr)
+               (aset wrapped "_ephemeral_context_worker_idx" worker-idx))
+           ((:release isolator-result))))
        wrapped)))
 
 #?(:cljs
@@ -676,7 +719,8 @@
       back to proj-result-wrapper as :isolator-result. The wrapper attaches the
       clone ptr to the wrapped result through _ephemeral_context_ptr, and
       build-pj-destroy-fn reads it and chains proj_context_destroy after the
-      primary proj_destroy fires.
+      primary proj_destroy fires. :release destroys a clone that no result
+      owns. Refer to unowned-clones.
 
       PERF: proj_context_clone reconstructs the projCppContext. It opens
       sqlite again and rebuilds factory state (c_api.cpp:157). The clone
@@ -691,9 +735,12 @@
            clone-ptr (await (dispatch/call! library
                                             :proj_context_clone
                                             [consumer-ctx]
-                                            {:pool pool :force-worker-idx worker-idx}))]
+                                            {:pool pool :force-worker-idx worker-idx}))
+           release (clone-release-fn library pool worker-idx clone-ptr)]
+       (.set unowned-clones args release)
        {:args (assoc (vec args) 0 clone-ptr)
-        :ephemeral-ctx-ptr clone-ptr})))
+        :ephemeral-ctx-ptr clone-ptr
+        :release release})))
 
 ;; The heap and coord-array helpers below are JVM-only, and specifically
 ;; the GraalVM backend. They reach into the Emscripten module through `p`,
