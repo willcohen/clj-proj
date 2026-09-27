@@ -667,15 +667,12 @@
             (is (or (nil? result) (= 0 result)) "Transform should succeed")
             #?(:clj
                (if (map? coord-array)
-                 ;; GraalVM mode - coord-array is a map with :array
-                 (let [arr (:array coord-array)]
-                   (when arr
-                     (let [x (.asDouble (.getArrayElement arr 0))
-                           y (.asDouble (.getArrayElement arr 1))]
-                       ;; The GraalVM path does not transform
-                       ;; correctly here, so only assert numbers.
-                       (is (number? x) "X should be a number")
-                       (is (number? y) "Y should be a number"))))
+                 ;; GraalVM mode - coord-array is a map with :malloc
+                 (let [[x y] (proj/get-coords coord-array 0)]
+                   ;; The GraalVM path does not transform
+                   ;; correctly here, so only assert numbers.
+                   (is (number? x) "X should be a number")
+                   (is (number? y) "Y should be a number"))
                  ;; FFI mode - coord-array is a tensor
                  (let [x (get-in coord-array [0 0])
                        y (get-in coord-array [0 1])]
@@ -706,13 +703,12 @@
             (is (or (nil? result) (= 0 result)) "Transform should succeed")
             #?(:clj
                (if (map? coord-array)
-                 ;; GraalVM mode - coord-array is a map with :array
-                 (let [arr (:array coord-array)]
-                   (when arr
-                     ;; The GraalVM path does not transform correctly
-                     ;; here, so only assert numbers.
-                     (is (number? (.asDouble (.getArrayElement arr 0))) "First X should be a number")
-                     (is (number? (.asDouble (.getArrayElement arr 1))) "First Y should be a number")))
+                 ;; GraalVM mode - coord-array is a map with :malloc
+                 (let [[x y] (proj/get-coords coord-array 0)]
+                   ;; The GraalVM path does not transform correctly
+                   ;; here, so only assert numbers.
+                   (is (number? x) "First X should be a number")
+                   (is (number? y) "First Y should be a number"))
                  ;; FFI mode - coord-array is a tensor
                  (do
                    ;; Boston City Hall (around 775,200, 2,956,400)

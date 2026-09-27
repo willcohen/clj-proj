@@ -868,9 +868,7 @@
                  (and is-context-arg
                       (some? provided-val)
                       (is-context? provided-val))
-                 #?(:clj (if (graal?)
-                           provided-val
-                           (context-ptr provided-val))
+                 #?(:clj (context-ptr provided-val)
                     :cljs provided-val)
 
                  (and is-context-arg

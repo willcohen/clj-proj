@@ -5,7 +5,7 @@
 ;; SPDX-License-Identifier: MIT
 ;;
 ;; Bounded-LRU acceptance suite for the helpers in
-;; clj-native/pool.cljc. Synthetic library-key, owners, and dispose
+;; clj-native/pool.cljs. Synthetic library-key, owners, and dispose
 ;; fns. No PROJ or native handles.
 
 (ns lru-test
@@ -33,8 +33,8 @@
 
      (deftest bound-caps-live-count-and-increments-evictions-counter
        (let [lib "lru-test-bound"]
-    ;; min_age_ms 0 makes every entry evictable immediately.
-         (register_library_context_BANG_ lib #js {:max_live_ctxs 8 :min_age_ms 0})
+    ;; min-age-ms 0 makes every entry evictable immediately.
+         (register_library_context_BANG_ lib {:max-live-ctxs 8 :min-age-ms 0})
          (let [releases #js {:fired 0}
                release-fn (fn [] (set! (.-fired releases) (inc (.-fired releases))))
                n 100
@@ -59,7 +59,7 @@
 
      (deftest refcount-prevents-eviction-EvictionGuard
        (let [lib "lru-test-refcount"]
-         (register_library_context_BANG_ lib #js {:max_live_ctxs 4 :min_age_ms 0})
+         (register_library_context_BANG_ lib {:max-live-ctxs 4 :min-age-ms 0})
          (let [release-log #js []
                release-fn (fn [id] (fn [] (.push release-log id)))]
            (dotimes [i 4]
@@ -82,7 +82,7 @@
 
      (deftest ^:async AgeGate-skips-entries-within-min-age-ms
        (let [lib "lru-test-age"]
-         (register_library_context_BANG_ lib #js {:max_live_ctxs 2 :min_age_ms 60000})
+         (register_library_context_BANG_ lib {:max-live-ctxs 2 :min-age-ms 60000})
          (let [release-log #js []
                release-fn (fn [id] (fn [] (.push release-log id)))]
            (register_handle_BANG_ lib "fresh-a" 0 (release-fn "fresh-a") #js {:id "a"})

@@ -10,11 +10,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1787345788,
-        "narHash": "sha256-HKEd5TFTVpP39LsaAYXMLANnzEkY6AOPAgCfd/zDuq8=",
+        "lastModified": 1790630665,
+        "narHash": "sha256-EzpIg4gJyHKWjrxCZ8W3f/ogsG0qvug5IS5fmVggYLI=",
         "owner": "willcohen",
         "repo": "clj-native",
-        "rev": "8839bfcf3f9bd9fb691ed0b31fbebbfaf7192ff2",
+        "rev": "254d8b043db6100dde06872f73197b749e839272",
         "type": "github"
       },
       "original": {

@@ -16,7 +16,6 @@
       let
         native = clj-native.lib.${system};
         pkgs = nixpkgs.legacyPackages.${native.actualSystem};
-        inherit (native) buildPkgs;
 
         shells = native.mkCrossShells {
           # GraalVM as the JDK makes native-image available to the clojure CLI,
@@ -25,8 +24,8 @@
           # have to move together; jvm_runtime_test guards the pairing.
           jdk = pkgs.graalvmPackages.graalvm-ce;
 
-          # PROJ links against SQLite for its grid database.
-          extraBuildInputs = [ buildPkgs.sqlite ];
+          # The PROJ build runs sqlite3 to make proj.db.
+          extraBuildInputs = [ pkgs.sqlite ];
 
           # nodejs_26, not the default `nodejs` (the v24 LTS): node 24.x has a
           # libuv regression that aborts the process (uv__io_poll kqueue EBADF)
@@ -47,10 +46,6 @@
             nodejs_26
             python3
           ];
-
-          extraShellHook = ''
-            export SQLITE=${buildPkgs.sqlite}
-          '';
         };
       in {
         devShells = shells // {

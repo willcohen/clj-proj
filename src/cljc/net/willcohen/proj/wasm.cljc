@@ -80,26 +80,12 @@
      []
      (wp/wiring-pool pool-wiring)))
 
+;; The cap is about twice the live-PJ peak of bb test:node, where V8 runs
+;; almost no GC. init-proj opts override it.
 #?(:cljs
-   (do
-     (pool/register-cmd-args! "context_create"
-                              (fn [cmd] #js [(or (:opts cmd) #js {})]))
-     (pool/register-cmd-args! "context_destroy"
-                              (fn [cmd] #js [(:ctxId cmd)]))
-     (pool/register-cmd-args! "set_log_level"
-                              (fn [cmd] #js [(:level cmd)]))
-     ;; Bounded-LRU config. evict-oldest! in pool.cljc uses
-     ;; :max-live-ctxs as the hard cap on the set of live PJs with no JS
-     ;; owner, and :min-age-ms as the age threshold, so the pool does not
-     ;; evict fresh PJs under in-flight ccalls. Default 128: bb test:node
-     ;; peaks near 65, because V8 does not run GC under the light
-     ;; pressure of the test suite (PJ wrappers are small), so the
-     ;; WeakRef gate cannot fire on them. 128 is two times that peak,
-     ;; which keeps the bound a real back-pressure ceiling. Consumers
-     ;; override it through init-proj opts.
-     (pool/register-library-context! :net.willcohen.proj
-                                     {:max-live-ctxs 128
-                                      :min-age-ms 100})))
+   (pool/register-library-context! :net.willcohen.proj
+                                   {:max-live-ctxs 128
+                                    :min-age-ms 100}))
 
 #?(:cljs
    (defn ^:async init-workers!
@@ -205,18 +191,17 @@
 
 #?(:cljs
    (defn ^:async worker-call
-     "Dispatch a legacy cmd envelope to the proj handler, on a specific
-      worker (when worker-idx is non-nil, 0 included) or on the
+     "Call `method` of the proj handler with the JS array `args`, on a
+      specific worker (when worker-idx is non-nil, 0 included) or on the
       least-loaded worker from worker-router's any() picker (worker-idx
-      nil). The handler method is (:cmd cmd). cmd-args extracts the
-      positional args.
+      nil).
 
       Single-arity: on a multi-arity defn, squint's `^:async` metadata
       marks only the outer dispatcher, and the per-arity closures stay
       non-async. esbuild then rejects the inner `await`. All callers pass
-      worker-idx already, so a 2-arity-only signature is the simplest fix."
-     [worker-idx cmd]
-     (await (pool/worker-call (current-pool) :net.willcohen.proj (:cmd cmd) (pool/cmd-args cmd) worker-idx))))
+      worker-idx already, so one arity is the simplest fix."
+     [worker-idx method args]
+     (await (pool/worker-call (current-pool) :net.willcohen.proj method args worker-idx))))
 
 #?(:cljs
    (def ^:private DESTROY-GATE-MAX-ITERS 16))
@@ -230,17 +215,14 @@
    (defn ^:async destroy-context!
      "Drain children, then post context_destroy.
 
-      Composite pool-side gate that prevents context_destroy from a
-      reorder before child handle disposes:
-        (C) await the handle dispose Promises held under this ctx in
-            pool/pending-disposes-by-parent.
-        (B) await pool/await-parent-drain!, a Promise that resolves when
-            the in-flight counter for this ctx drops to zero. The counter
-            increments synchronously at register-handle! and decrements
-            in the wrapped disposer's `.finally()` on the release-fn
-            Promise. Thus zero means that every child's proj_destroy
-            worker_call resolved on its worker, and not only that the
-            membership map dropped the entry.
+      Pool-side gate that prevents context_destroy from a reorder before
+      child handle disposes: await pool/await-parent-drain!, a Promise
+      that resolves when the in-flight counter for this ctx drops to zero.
+      The counter increments synchronously at register-handle! and
+      decrements in the wrapped disposer's `.finally()` on the release-fn
+      Promise. Thus zero means that every child's proj_destroy
+      worker_call resolved on its worker, and not only that the
+      membership map dropped the entry.
 
       The bounded re-check loop guards a register/decrement race: after
       the Promise resolves, a new register-handle! for this parent can
@@ -257,10 +239,9 @@
      (let [;; Globally unique parent key. Each worker keeps its own
            ;; ctx-id sequence, so the raw number is not unique across
            ;; workers. The composite prevents cross-worker counter
-           ;; aggregation in in-flight-by-parent /
-           ;; gate-promises-by-parent / pending-disposes-by-parent.
+           ;; aggregation in in-flight-by-parent and
+           ;; gate-promises-by-parent.
            parent-key (str worker-idx ":" ctx-id)]
-       (await (pool/drain-pending-disposes-for-parent! parent-key))
        (loop [iters 0]
          (let [remaining (pool/in-flight-count-for-parent parent-key)]
            (when (and (pos? remaining)
@@ -269,7 +250,7 @@
              (recur (inc iters)))))
        (await (pool/worker-call p :net.willcohen.proj
                                 "context_destroy"
-                                (pool/cmd-args {:cmd "context_destroy" :ctxId ctx-id})
+                                #js [ctx-id]
                                 worker-idx)))))
 
 #?(:cljs
@@ -352,7 +333,7 @@
       promise of a map with :ctx-id, :ptr, :worker-idx, and :release."
      [opts]
      (let [{:keys [idx release]} (pool/assign-worker-for-context! (current-pool) :net.willcohen.proj opts)]
-       (-> (worker-call idx {:cmd "context_create"})
+       (-> (worker-call idx "context_create" #js [#js {}])
            (.then (fn [result]
                     {:ctx-id (.-ctxId result)
                      :ptr (.-ptr result)
@@ -726,20 +707,12 @@
      (nw/malloc b)))
 
 #?(:clj
-   (defn heapf64
-     [offset n]
-     (ensure-proj-initialized!)
-     (nw/heapf64 offset n)))
-
-#?(:clj
    (defn alloc-coord-array
      "PROJ ergonomics: allocate space for `num-coords` 4-double tuples
       that match the PJ_COORD shape. The generic byte-level malloc lives
-      in clj-native.wasm; the two nw calls lock per-module on their own."
+      in clj-native.wasm, and it locks per-module on its own."
      [num-coords _dims]
-     (let [alloc (malloc (* 32 num-coords))
-           array (heapf64 (/ (nw/address-as-int alloc) 8) (* 4 num-coords))]
-       {:malloc alloc :array array :n num-coords})))
+     {:malloc (malloc (* 32 num-coords)) :n num-coords}))
 
 #?(:clj
    (defn- coords->doubles

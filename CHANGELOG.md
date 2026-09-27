@@ -4,6 +4,10 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- clj-native 0.0.2 (`net.willcohen/native`, npm `ffi-wasm`). On the GraalVM
+  backend, a PROJ exception makes the call throw.
+
 ## [0.1.0-alpha10] - 2026-09-15
 
 ### Changed

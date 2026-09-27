@@ -1,6 +1,6 @@
 {:paths ["scripts"]
  :deps {net.willcohen/proj {:local/root "."}
-        net.willcohen/native {:mvn/version "0.0.1"}
+        net.willcohen/native {:mvn/version "0.0.2"}
         org.babashka/http-client {:mvn/version "0.4.22"}}
  :tasks
  {:requires ([babashka.fs :as fs]

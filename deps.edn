@@ -11,7 +11,7 @@
         ;; work on GraalVM CE.
         org.graalvm.truffle/truffle-runtime {:mvn/version "25.2.4"}
         org.clojure/tools.logging {:mvn/version "1.3.0"}
-        net.willcohen/native {:mvn/version "0.0.1"}}
+        net.willcohen/native {:mvn/version "0.0.2"}}
 
  :aliases {;; Develop against a clj-native checkout: clojure -A:dev ...
            ;; The nix twin is --override-input clj-native path:/abs/path.
