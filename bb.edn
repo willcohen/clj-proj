@@ -1104,16 +1104,13 @@ public class JavaJarTest {
                                   (when-not (fs/exists? final-proj-lib)
                                     (println "Building PROJ for" (name type) "...")
 
-                                    ;; No -fwasm-exceptions. GraalWasm has implemented the
+                                    ;; No -fwasm-exceptions yet. GraalWasm has implemented the
                                     ;; exception handling proposal since 25.1, and node and
-                                    ;; current browsers support it, but emscripten 6.0.6 cannot
-                                    ;; link it: its LLVM emits calls to _Unwind_CallPersonality
-                                    ;; while its own libunwind-wasmexcept.a (Unwind-wasm.o)
-                                    ;; defines every other _Unwind_* routine and not that one.
-                                    ;; Reproduced on a two-line C++ file with no PROJ involved,
-                                    ;; under WASM_LEGACY_EXCEPTIONS 0 and 1 alike. Recheck after
-                                    ;; an emscripten bump; upstream LLVM is removing the
-                                    ;; indirection (llvm-project PR 175202).
+                                    ;; current browsers support it. emscripten 6.0.6 could not
+                                    ;; link it (no _Unwind_CallPersonality in its libunwind).
+                                    ;; 6.0.9 links a two-line C++ probe, and node catches its
+                                    ;; throw. The switch needs its own run of the GraalWasm and
+                                    ;; browser suites.
                                     (let [base-cxx-flags "-ftemplate-depth=256"
                                           cmake-args (cond-> ["-DBUILD_APPS=OFF" "-DBUILD_PROJSYNC=OFF" "-DBUILD_CCT=OFF" "-DBUILD_GEOD=OFF" "-DBUILD_GIE=OFF" "-DBUILD_PROJINFO=OFF" "-DBUILD_TESTING=OFF"
                                                               (str "-DCMAKE_BUILD_TYPE=" (if debug? "Debug" "Release"))

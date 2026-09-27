@@ -33,10 +33,11 @@
 
 (defn- graal-version
   "The GraalVM release out of java.vendor.version, so
-   'GraalVM CE 25.2.4+7.1' gives '25.2.4'. This is the version of the JDK's
-   libgraal, which is not java.version: GraalVM 25.2.4 ships JDK 25.0.4."
+   'GraalVM CE 25.3.4.1+1.1' gives '25.3.4.1'. This is the version of the
+   JDK's libgraal, which is not java.version: GraalVM 25.3.4.1 ships JDK
+   25.0.4.1."
   [vendor]
-  (second (re-find #"(\d+\.\d+\.\d+)" (or vendor ""))))
+  (second (re-find #"(\d+(?:\.\d+){2,})" (or vendor ""))))
 
 (defn- diagnose-interpreted
   "Truffle falls back to the interpreter for more than one reason, and the

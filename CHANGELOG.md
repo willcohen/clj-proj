@@ -14,6 +14,10 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 - The Linux libs load on glibc 2.28 and later. A musl host, for example
   Alpine, gets a separate `linux-<arch>-musl` lib. The Linux and Windows libs
   contain the LLVM C++ runtime, and a host needs no libstdc++ or libgcc.
+- Dependencies: GraalVM 25.3.4.1 (js, polyglot, wasm and truffle-runtime),
+  Clojure 1.12.6, tools.logging 1.3.1 and dtype-next 11.026. The optimizing
+  runtime of the GraalVM backend needs a GraalVM CE 25.3.4.1 JVM.
+- squint-cljs 0.14.210.
 
 ### Fixed
 - The jar contains the clj-kondo exports. The 0.1.0-alpha9 and 0.1.0-alpha10

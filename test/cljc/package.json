@@ -5,6 +5,6 @@
   "dependencies": {
     "ffi-wasm": "0.0.2",
     "proj-wasm": "file:../../src/cljc/net/willcohen/proj",
-    "squint-cljs": "^0.14.206"
+    "squint-cljs": "^0.14.210"
   }
 }
