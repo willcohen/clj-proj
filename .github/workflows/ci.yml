@@ -118,10 +118,13 @@ jobs:
           path: resources/darwin-aarch64/
           retention-days: 7
 
-  build-native-linux-amd64:
-    name: Build Native (Linux amd64)
+  build-zig:
+    name: Build ${{ matrix.dir }}
     needs: [download-sources]
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        dir: [linux-amd64, linux-aarch64, linux-amd64-musl, linux-aarch64-musl, windows-amd64]
     steps:
       - uses: actions/checkout@v7
 
@@ -129,8 +132,8 @@ jobs:
         id: cache
         uses: actions/cache@v6
         with:
-          path: resources/linux-amd64/
-          key: native-linux-amd64-${{ hashFiles('bb.edn', 'flake.nix', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
+          path: resources/${{ matrix.dir }}/
+          key: build-${{ matrix.dir }}-${{ hashFiles('bb.edn', 'flake.nix', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
 
       - name: Download source archives
         if: steps.cache.outputs.cache-hit != 'true'
@@ -149,91 +152,17 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         uses: DeterminateSystems/magic-nix-cache-action@v14
 
-      - name: Build native libraries
+      # zig in the dev shell builds each lib on this runner: glibc 2.28 for
+      # linux-<arch>, musl for linux-<arch>-musl, and windows-amd64.
+      - name: Build
         if: steps.cache.outputs.cache-hit != 'true'
-        run: nix develop --command bb build --native
+        run: nix develop --command bb build --native --target ${{ matrix.dir }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: native-linux-amd64
-          path: resources/linux-amd64/
-          retention-days: 7
-
-  build-cross-linux-aarch64:
-    name: Build Cross (Linux aarch64)
-    needs: [download-sources]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Restore build cache
-        id: cache
-        uses: actions/cache@v6
-        with:
-          path: resources/linux-aarch64/
-          key: cross-linux-aarch64-${{ hashFiles('bb.edn', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
-
-      - name: Install Babashka
-        if: steps.cache.outputs.cache-hit != 'true'
-        uses: DeLaGuardo/setup-clojure@13.6.1
-        with:
-          bb: latest
-
-      - name: Download source archives
-        if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v8
-        with:
-          name: source-archives
-          path: target/
-
-      - name: Build cross-platform
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: bb build --cross-platform linux/aarch64
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: native-linux-aarch64
-          path: resources/linux-aarch64/
-          retention-days: 7
-
-  build-cross-windows:
-    name: Build Cross (Windows amd64)
-    needs: [download-sources]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Restore build cache
-        id: cache
-        uses: actions/cache@v6
-        with:
-          path: resources/windows-amd64/
-          key: cross-windows-${{ hashFiles('bb.edn', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
-
-      - name: Install Babashka
-        if: steps.cache.outputs.cache-hit != 'true'
-        uses: DeLaGuardo/setup-clojure@13.6.1
-        with:
-          bb: latest
-
-      - name: Download source archives
-        if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v8
-        with:
-          name: source-archives
-          path: target/
-
-      - name: Build cross-platform
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: bb build --cross-platform windows/amd64
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: native-windows-amd64
-          path: resources/windows-amd64/
+          name: native-${{ matrix.dir }}
+          path: resources/${{ matrix.dir }}/
           retention-days: 7
 
   build-wasm-browser:
@@ -389,7 +318,7 @@ jobs:
 
   test-java-linux-amd64:
     name: Java Tests (Linux amd64)
-    needs: [build-native-linux-amd64, build-wasm-browser, build-wasm-graal]
+    needs: [build-zig, build-wasm-browser, build-wasm-graal]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -448,7 +377,7 @@ jobs:
 
   test-java-linux-aarch64:
     name: Java Tests (Linux aarch64)
-    needs: [build-cross-linux-aarch64, build-wasm-browser, build-wasm-graal]
+    needs: [build-zig, build-wasm-browser, build-wasm-graal]
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
@@ -505,9 +434,47 @@ jobs:
       - name: Run JAR tests
         run: bb test:jar
 
+  test-java-linux-musl:
+    name: Java FFI Tests (Alpine amd64)
+    needs: [build-zig, build-wasm-browser, build-wasm-graal]
+    runs-on: ubuntu-latest
+    container: clojure:temurin-25-tools-deps-alpine
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: native-linux-amd64-musl
+          path: resources/linux-amd64-musl/
+
+      # The jar ships both libs. If the loader takes the glibc lib on musl,
+      # the load fails and the FFI tests fail.
+      - name: Download glibc native artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: native-linux-amd64
+          path: resources/linux-amd64/
+
+      - name: Download WASM browser artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: wasm-browser
+          path: .
+
+      - name: Download WASM graal artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: wasm-graal
+          path: resources/wasm/
+
+      # The image has no bb.
+      - name: Run FFI tests
+        run: clojure -J-Dnet.willcohen.proj.proj-test.implementation=ffi -J--enable-native-access=ALL-UNNAMED -M:test
+
   test-java-windows:
     name: Java Tests (Windows)
-    needs: [build-cross-windows, build-wasm-browser, build-wasm-graal]
+    needs: [build-zig, build-wasm-browser, build-wasm-graal]
     runs-on: windows-latest
     defaults:
       run:
@@ -952,6 +919,7 @@ jobs:
       - test-java-macos
       - test-java-linux-amd64
       - test-java-linux-aarch64
+      - test-java-linux-musl
       - test-java-windows
       - test-wasm-macos
       - test-wasm-linux-amd64
@@ -969,6 +937,7 @@ jobs:
             "${{ needs.test-java-macos.result }}"
             "${{ needs.test-java-linux-amd64.result }}"
             "${{ needs.test-java-linux-aarch64.result }}"
+            "${{ needs.test-java-linux-musl.result }}"
             "${{ needs.test-java-windows.result }}"
             "${{ needs.test-wasm-macos.result }}"
             "${{ needs.test-wasm-linux-amd64.result }}"
@@ -980,7 +949,7 @@ jobs:
             "${{ needs.test-playwright-windows.result }}"
           )
           names=(
-            "test-java-macos" "test-java-linux-amd64" "test-java-linux-aarch64" "test-java-windows"
+            "test-java-macos" "test-java-linux-amd64" "test-java-linux-aarch64" "test-java-linux-musl" "test-java-windows"
             "test-wasm-macos" "test-wasm-linux-amd64" "test-wasm-linux-aarch64" "test-wasm-windows"
             "test-playwright-macos" "test-playwright-linux-amd64" "test-playwright-linux-aarch64" "test-playwright-windows"
           )

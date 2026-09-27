@@ -14,9 +14,14 @@
              [net.willcohen.native.build :as nb])
 
   :init (do (def proj-source {:type :tag :ref "9.9.0"})
+            ;; zig builds each on the host: bb build --native --target <os>-<arch>[-musl].
+            (def cross-platforms ["linux/amd64" "linux/aarch64" "linux/amd64-musl"
+                                  "linux/aarch64-musl" "windows/amd64"])
             (def sqlite-version-url "3510200")
             (def sqlite-year "2026")
             (def zlib-version "1.3.2")
+            (def zlib-url (str "https://github.com/madler/zlib/releases/download/v"
+                               zlib-version "/zlib-" zlib-version ".tar.gz"))
             (def libtiff-version "4.7.1")
             (def path-sep (System/getProperty "path.separator"))
             (def clj-cmd (str (or (fs/which "clojure") (fs/which "clj") "clojure")))
@@ -55,7 +60,7 @@
   {:doc "Download source archives for zlib, sqlite, libtiff, and PROJ into target/"
    :task (let [target-dir "target"
                archives [[(str "zlib-" zlib-version ".tar.gz")
-                          (str "https://zlib.net/zlib-" zlib-version ".tar.gz")]
+                          zlib-url]
                          [(str "sqlite-autoconf-" sqlite-version-url ".tar.gz")
                           (str "https://sqlite.org/" sqlite-year "/sqlite-autoconf-" sqlite-version-url ".tar.gz")]
                          [(str "libtiff-v" libtiff-version ".tar.gz")
@@ -69,12 +74,15 @@
   download-ci-artifacts
   {:doc "Download native and WASM build artifacts from CI. Each artifact comes from the most recent run that made it. The gh CLI is necessary."
    :task (let [artifact-names ["source-archives"
-                               "native-macos" "native-linux-amd64" "native-linux-aarch64" "native-windows-amd64"
+                               "native-macos" "native-linux-amd64" "native-linux-aarch64"
+                               "native-linux-amd64-musl" "native-linux-aarch64-musl" "native-windows-amd64"
                                "wasm-browser" "wasm-graal"]
                dest-map {"source-archives" "target"
                          "native-macos" "resources/darwin-aarch64"
                          "native-linux-amd64" "resources/linux-amd64"
                          "native-linux-aarch64" "resources/linux-aarch64"
+                         "native-linux-amd64-musl" "resources/linux-amd64-musl"
+                         "native-linux-aarch64-musl" "resources/linux-aarch64-musl"
                          "native-windows-amd64" "resources/windows-amd64"
                          "wasm-graal" "resources/wasm"
                          "wasm-browser" "."}]
@@ -237,6 +245,7 @@
                           (delete-if-exists (fs/path "target" (str "sqlite-install-" target-suffix)))
                           (delete-if-exists (fs/path "target" (str "zlib-install-" target-suffix)))
                           (delete-if-exists (fs/path "target" (str "libtiff-install-" target-suffix)))
+                          (delete-if-exists (fs/path "target" (str "zig-" target-suffix)))
                           (delete-if-exists (fs/path "target" proj-dir (str "proj-build-" target-suffix)))
                           (delete-if-exists (fs/path "target" "PROJ-local" (str "proj-build-" target-suffix)))
                           (delete-if-exists (fs/path "resources" target-suffix)))]
@@ -272,8 +281,7 @@
 
        (when cross?
          (println "\nCleaning cross-compiled artifacts...")
-         (let [default-platforms ["linux/amd64" "linux/aarch64" "windows/amd64"]
-               target-platforms (if-let [p (:cross-platform opts)] [p] default-platforms)]
+         (let [target-platforms (if-let [p (:cross-platform opts)] [p] cross-platforms)]
            (doseq [platform target-platforms]
              (clean-target (str/replace platform "/" "-")))))
 
@@ -943,25 +951,15 @@ public class JavaJarTest {
 
                    get-safe-parallel-jobs nb/safe-parallel-jobs
 
-                   build-sqlite (fn [{:keys [type install-dir cc host-flag is-linux? is-windows? pthreads? debug?]}]
+                   build-sqlite (fn [{:keys [type install-dir cc zig-env host-flag is-linux? is-windows? pthreads? debug?]}]
                                   (let [lib-path (fs/path install-dir "lib" "libsqlite3.a")]
                                     (when debug? (println "DEBUG: Checking for existing" (name type) "SQLite library at:" (str lib-path)))
                                     (when-not (fs/exists? lib-path)
                                       (println "Building SQLite for" (name type) (if pthreads? "(pthreads)" "(single-threaded)") "...")
                                       (let [build-dir (fs/path target-dir sqlite-dir (str "sqlite-build-" (name type) (when (and (= type :wasm) (not pthreads?)) "-st")))
                                             src-dir (fs/path target-dir sqlite-dir)
-                                            in-container? (and (= type :native) is-linux? (System/getenv "NIX_BUILD_TOP"))
-                                            container-host-flag (when in-container?
-                                                                  (let [arch (case (System/getProperty "os.arch")
-                                                                               "amd64" "x86_64"
-                                                                               "x86_64" "x86_64"
-                                                                               "aarch64" "aarch64"
-                                                                               "arm64" "aarch64"
-                                                                               "unknown")]
-                                                                    (str "--host=" arch "-pc-linux-musl")))
                                             configure-args (cond-> []
                                                              host-flag (conj host-flag)
-                                                             (and container-host-flag (not host-flag)) (conj container-host-flag)
                                                              (= type :wasm) (conj "--disable-shared" "--disable-editline" "--disable-readline")
                                                              (and (= type :native) is-linux?) (conj "--disable-shared" "--enable-static")
                                                              is-windows? (conj "--disable-shared" "--enable-static"))
@@ -978,12 +976,10 @@ public class JavaJarTest {
                                                              ;; instantiation). The link-level ASan runtime still
                                                              ;; intercepts malloc/free, so heap corruption from PROJ
                                                              ;; that crashes in sqlite's allocator stays visible.
-                                                             (when debug? "-O0 -g -gsource-map ")
+                                                             (if debug? "-O0 -g -gsource-map " "-O2 ")
                                                              "-s ERROR_ON_UNDEFINED_SYMBOLS=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DISABLE_LFS -DSQLITE_LONGDOUBLE_TYPE=double -DSQLITE_ENABLE_JSON1 -DSQLITE_ENABLE_NORMALIZE")
-                                            env (cond-> {"CC" cc}
-                                                  (and (= type :native) is-linux?) (assoc "CFLAGS" "-fPIC")
-                                                  is-windows? (assoc "CFLAGS" (or (System/getenv "CFLAGS") "-static-libgcc -static-libstdc++")
-                                                                     "LDFLAGS" (or (System/getenv "LDFLAGS") "-static-libgcc -static-libstdc++"))
+                                            env (cond-> (merge {"CC" cc} zig-env)
+                                                  (and (= type :native) is-linux?) (assoc "CFLAGS" "-O2 -fPIC")
                                                   (= type :wasm) (assoc "CFLAGS" wasm-cflags))]
                                         (nb/build-autotools-library
                                          {:type type
@@ -993,13 +989,16 @@ public class JavaJarTest {
                                           :configure-args configure-args
                                           :env env})))))
 
-                   build-zlib (fn [{:keys [type install-dir cc pthreads? debug?]}]
+                   build-zlib (fn [{:keys [type install-dir cc zig-env host pthreads? debug?]}]
                                 (let [lib-path (fs/path install-dir "lib" "libz.a")]
                                   (when debug? (println "DEBUG: Checking for existing" (name type) "zlib library at:" (str lib-path)))
                                   (when-not (fs/exists? lib-path)
                                     (println "Building zlib for" (name type) (if pthreads? "(pthreads)" "(single-threaded)") "...")
                                     (let [src-dir (fs/path target-dir zlib-dir)
-                                          env (cond-> {"CC" cc}
+                                          env (cond-> (merge {"CC" cc} zig-env)
+                                                ;; CHOST keeps configure from reading uname on a
+                                                ;; macOS host, and --static needs -fPIC for libproj.so.
+                                                zig-env (assoc "CHOST" host "CFLAGS" "-O2 -fPIC")
                                                 (= type :wasm) (assoc "AR" "emar" "RANLIB" "emranlib")
                                                 (and (= type :wasm) pthreads?) (assoc "CFLAGS" "-pthread")
                                                 (and (= type :wasm) debug?)
@@ -1027,34 +1026,24 @@ public class JavaJarTest {
                                         :env env
                                         :post-configure (when (= type :wasm) patch-wasm-makefile)})))))
 
-                   build-libtiff (fn [{:keys [type install-dir zlib-install-dir cc cxx host-flag is-darwin? is-linux? is-windows? pthreads? debug?]}]
+                   build-libtiff (fn [{:keys [type install-dir zlib-install-dir cc cxx zig-env host-flag is-darwin? is-linux? is-windows? pthreads? debug?]}]
                                    (let [lib-path (fs/path install-dir "lib" "libtiff.a")]
                                      (when debug? (println "DEBUG: Checking for existing" (name type) "LibTIFF library at:" (str lib-path)))
                                      (when-not (fs/exists? lib-path)
                                        (println "Building LibTIFF for" (name type) (if pthreads? "(pthreads)" "(single-threaded)") "...")
                                        (let [src-dir (fs/path target-dir libtiff-dir)
-                                             in-container? (and (= type :native) is-linux? (System/getenv "NIX_BUILD_TOP"))
-                                             container-host-flag (when in-container?
-                                                                   (let [arch (case (System/getProperty "os.arch")
-                                                                                "amd64" "x86_64"
-                                                                                "x86_64" "x86_64"
-                                                                                "aarch64" "aarch64"
-                                                                                "arm64" "aarch64"
-                                                                                "unknown")]
-                                                                     (str "--host=" arch "-pc-linux-musl")))
                                              configure-args (cond-> []
                                                               host-flag (conj host-flag)
-                                                              (and container-host-flag (not host-flag)) (conj container-host-flag)
                                                               (= type :native) (conj "--disable-shared" "--enable-static" "--disable-zstd")
-                                                              in-container? (conj "--disable-cxx")
+                                                              zig-env (conj "--disable-cxx")
                                                               (and (not= type :wasm) (not= type :native)) (conj "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs")
                                                               (and (= type :native) zlib-install-dir) (conj (str "--with-zlib-include-dir=" (fs/path zlib-install-dir "include"))
                                                                                                             (str "--with-zlib-lib-dir=" (fs/path zlib-install-dir "lib")))
                                                               (= type :wasm) (conj (str "--with-zlib-include-dir=" (fs/path zlib-install-dir "include"))
                                                                                    (str "--with-zlib-lib-dir=" (fs/path zlib-install-dir "lib"))
                                                                                    "--disable-zstd" "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs" "--disable-ccitt"))
-                                             env (cond-> {"CC" cc "CXX" cxx}
-                                                   (and (= type :native) is-linux?) (assoc "CFLAGS" "-fPIC" "CXXFLAGS" "-fPIC")
+                                             env (cond-> (merge {"CC" cc "CXX" cxx} zig-env)
+                                                   (and (= type :native) is-linux?) (assoc "CFLAGS" "-O2 -fPIC" "CXXFLAGS" "-O2 -fPIC")
                                                    (= type :wasm) (assoc "CPPFLAGS" "-DHAVE_FCNTL_H=1")
                                                    (and (= type :wasm) pthreads?) (assoc "CFLAGS" "-pthread" "CXXFLAGS" "-pthread")
                                                    (and (= type :wasm) debug?)
@@ -1102,11 +1091,11 @@ public class JavaJarTest {
                                            :env env
                                            :post-configure (when (= type :wasm) patch-wasm-makefile)})))))
 
-                   build-proj (fn [{:keys [type library-dir cc cxx host-flag is-darwin? is-linux? is-windows? sqlite-install-dir zlib-install-dir libtiff-install-dir pthreads? debug? target-str]}]
+                   build-proj (fn [{:keys [type library-dir cc cxx zig host-flag is-darwin? is-linux? is-windows? sqlite-install-dir zlib-install-dir libtiff-install-dir pthreads? debug?]}]
                                 (let [wasm-suffix (if (and (= type :wasm) (not pthreads?)) "-st" "")
                                       final-proj-lib (fs/path "resources" (if (= type :wasm) "wasm" library-dir)
                                                               (cond (= type :wasm) (str "proj-emscripten" wasm-suffix ".js")
-                                                                    is-windows? "proj.dll"
+                                                                    is-windows? "libproj.dll"
                                                                     is-darwin? "libproj.dylib"
                                                                     is-linux? "libproj.so"
                                                                     :else "libproj.a"))
@@ -1114,27 +1103,18 @@ public class JavaJarTest {
                                   (when debug? (println "DEBUG: Checking for existing" (name type) "PROJ library at:" (str final-proj-lib)))
                                   (when-not (fs/exists? final-proj-lib)
                                     (println "Building PROJ for" (name type) "...")
-                                    (when (and (not is-darwin?) (System/getenv "NIX_BUILD_TOP"))
-                                      (let [cmake-file (fs/path target-dir proj-dir "CMakeLists.txt")
-                                            content (slurp (str cmake-file))
-                                            patched (str/replace content
-                                                                 "add_subdirectory(scripts)"
-                                                                 "# add_subdirectory(scripts) - Skipped for cross-compilation")]
-                                        (spit (str cmake-file) patched)))
 
-                                    (let [is-nix-build? (and (not is-darwin?) (System/getenv "NIX_BUILD_TOP"))
-                                          is-cross-build? (and target-str (not= type :wasm))
-                                          ;; No -fwasm-exceptions. GraalWasm has implemented the
-                                          ;; exception handling proposal since 25.1, and node and
-                                          ;; current browsers support it, but emscripten 6.0.6 cannot
-                                          ;; link it: its LLVM emits calls to _Unwind_CallPersonality
-                                          ;; while its own libunwind-wasmexcept.a (Unwind-wasm.o)
-                                          ;; defines every other _Unwind_* routine and not that one.
-                                          ;; Reproduced on a two-line C++ file with no PROJ involved,
-                                          ;; under WASM_LEGACY_EXCEPTIONS 0 and 1 alike. Recheck after
-                                          ;; an emscripten bump; upstream LLVM is removing the
-                                          ;; indirection (llvm-project PR 175202).
-                                          base-cxx-flags "-ftemplate-depth=256"
+                                    ;; No -fwasm-exceptions. GraalWasm has implemented the
+                                    ;; exception handling proposal since 25.1, and node and
+                                    ;; current browsers support it, but emscripten 6.0.6 cannot
+                                    ;; link it: its LLVM emits calls to _Unwind_CallPersonality
+                                    ;; while its own libunwind-wasmexcept.a (Unwind-wasm.o)
+                                    ;; defines every other _Unwind_* routine and not that one.
+                                    ;; Reproduced on a two-line C++ file with no PROJ involved,
+                                    ;; under WASM_LEGACY_EXCEPTIONS 0 and 1 alike. Recheck after
+                                    ;; an emscripten bump; upstream LLVM is removing the
+                                    ;; indirection (llvm-project PR 175202).
+                                    (let [base-cxx-flags "-ftemplate-depth=256"
                                           cmake-args (cond-> ["-DBUILD_APPS=OFF" "-DBUILD_PROJSYNC=OFF" "-DBUILD_CCT=OFF" "-DBUILD_GEOD=OFF" "-DBUILD_GIE=OFF" "-DBUILD_PROJINFO=OFF" "-DBUILD_TESTING=OFF"
                                                               (str "-DCMAKE_BUILD_TYPE=" (if debug? "Debug" "Release"))
                                                               "-DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=ON"
@@ -1148,76 +1128,24 @@ public class JavaJarTest {
                                                               (str "-DZLIB_INCLUDE_DIR=" (fs/path zlib-install-dir "include"))
                                                               (str "-DZLIB_LIBRARY=" (fs/path zlib-install-dir "lib" "libz.a"))]
 
-                                                       is-darwin? (conj "-DCMAKE_INSTALL_RPATH=@loader_path")
-                                                       is-windows? (conj "-DCMAKE_SYSTEM_NAME=Windows"
-                                                                         "-DCMAKE_C_FLAGS=-static-libgcc -static-libstdc++ -static"
-                                                                         "-DCMAKE_CXX_FLAGS=-static-libgcc -static-libstdc++ -static"
-                                                                         "-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++ -static -Wl,--enable-auto-import -lws2_32 -lcrypt32 -lbcrypt"
-                                                                         "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++ -static -lws2_32 -lcrypt32 -lbcrypt"
-                                                                         "-DBUILD_SHARED_LIBS=ON"
-                                                                         "-DCMAKE_DL_LIBS="
-                                                                         "-DHAVE_DLADDR=0"
-                                                                         "-DCMAKE_CROSSCOMPILING=ON"
-                                                                         "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
-                                                                         "-DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON"
+                                                       ;; The lib ships from the build tree, and the build rpath
+                                                       ;; of CMake names that dir.
+                                                       is-darwin? (conj "-DCMAKE_SKIP_BUILD_RPATH=ON")
+                                                       is-windows? (conj "-DBUILD_SHARED_LIBS=ON"
                                                                          (str "-DCMAKE_CXX_STANDARD_LIBRARIES="
-                                                                              (fs/path zlib-install-dir "lib" "libz.a")
-                                                                              " -lws2_32 -lcrypt32 -lbcrypt"))
+                                                                              (fs/path zlib-install-dir "lib" "libz.a")))
 
-                                                       (and (or is-nix-build? is-cross-build?) (not is-windows?)) (conj "-DCMAKE_SYSTEM_NAME=Linux"
-                                                                                                                        "-DCMAKE_CROSSCOMPILING=ON"
-                                                                                                                        "-DCMAKE_C_COMPILER_WORKS=TRUE"
-                                                                                                                        "-DCMAKE_CXX_COMPILER_WORKS=TRUE"
-                                                                                                                        "-DCMAKE_C_ABI_COMPILED=TRUE"
-                                                                                                                        "-DCMAKE_CXX_ABI_COMPILED=TRUE"
-                                                                                                                        "-DCMAKE_C_COMPILE_FEATURES=c_std_99"
-                                                                                                                        "-DCMAKE_CXX_COMPILE_FEATURES=cxx_std_17"
-                                                                                                                        "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY"
-                                                                                                                        "-DCMAKE_DISABLE_FIND_PACKAGE_Dlfcn=ON"
-                                                                                                                        "-DHAVE_DLADDR=0"
-                                                                                                                        "-DHAVE_LOCALECONV=1"
-                                                                                                                        "-DHAVE_STRERROR=1"
-                                                                                                                        "-DCMAKE_DISABLE_FIND_PACKAGE_Threads=ON"
-                                                                                                                        "-DCMAKE_HAVE_LIBC_PTHREAD=NO"
-                                                                                                                        "-DCMAKE_USE_PTHREADS_INIT=NO"
-                                                                                                                        "-DCMAKE_USE_WIN32_THREADS_INIT=NO"
-                                                                                                                        "-DCMAKE_C_STANDARD_COMPUTED_DEFAULT=99"
-                                                                                                                        "-DCMAKE_CXX_STANDARD_COMPUTED_DEFAULT=17"
-                                                                                                                        (str "-DCMAKE_SYSTEM_PROCESSOR="
-                                                                                                                             (if target-str
-                                                                                                                               (case (second (str/split target-str (re-pattern "-")))
-                                                                                                                                 "amd64" "x86_64"
-                                                                                                                                 "aarch64" "aarch64"
-                                                                                                                                 "arm64" "aarch64"
-                                                                                                                                 "x86_64")
-                                                                                                                               (case (System/getProperty "os.arch")
-                                                                                                                                 "amd64" "x86_64"
-                                                                                                                                 "x86_64" "x86_64"
-                                                                                                                                 "aarch64" "aarch64"
-                                                                                                                                 "arm64" "aarch64"
-                                                                                                                                 "x86_64")))
-                                                                                                                        "-DCMAKE_INSTALL_LIBDIR=lib"
-                                                                                                                        "-DCMAKE_CROSSCOMPILING_EMULATOR=/bin/false"
-                                                                                                                        "-DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=ON"
-                                                                                                                        "-DUSE_EXTERNAL_NLOHMANN_JSON=OFF"
-                                                                                                                        "-DNLOHMANN_JSON_FOUND=FALSE"
-                                                                                                                        "-DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON")
-                                                       (and target-str is-windows? (not= type :wasm)) (conj "-DCMAKE_CROSSCOMPILING=ON"
-                                                                                                            "-DCMAKE_C_COMPILER_WORKS=TRUE"
-                                                                                                            "-DCMAKE_CXX_COMPILER_WORKS=TRUE"
-                                                                                                            "-DCMAKE_C_ABI_COMPILED=TRUE"
-                                                                                                            "-DCMAKE_CXX_ABI_COMPILED=TRUE"
-                                                                                                            "-DCMAKE_SIZEOF_VOID_P=8")
+                                                       zig (into (:cmake-args zig))
                                                        (= type :native) (conj "-DENABLE_CURL=OFF"
                                                                               "-DENABLE_NETWORK=ON")
                                                        (and (= type :native) is-darwin?) (conj "-DBUILD_SHARED_LIBS=ON"
                                                                                                (str "-DCMAKE_CXX_STANDARD_LIBRARIES="
                                                                                                     (fs/path zlib-install-dir "lib" "libz.a")))
                                                        (and (= type :native) is-linux?) (conj "-DBUILD_SHARED_LIBS=ON"
-                                                                                              "-DCMAKE_SHARED_LINKER_FLAGS=-static-libgcc -static-libstdc++ -Wl,-Bstatic -lc -lm -Wl,-Bdynamic -Wl,--no-as-needed"
-                                                                                              "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-Wl,-Bstatic -lc -lm -Wl,-Bdynamic"
                                                                                               "-DCMAKE_FIND_LIBRARY_SUFFIXES=.a"
                                                                                               "-DCMAKE_SKIP_RPATH=ON")
+                                                       ;; zig puts the debug info of libc++ into the lib: 55 MB, not 9.
+                                                       (and zig (not debug?)) (conj "-DCMAKE_SHARED_LINKER_FLAGS=-s")
                                                        (and (= type :native) is-linux?) (conj (str "-DCMAKE_CXX_STANDARD_LIBRARIES="
                                                                                                    (fs/path zlib-install-dir "lib" "libz.a")))
                                                        (= type :wasm) (conj "-DBUILD_SHARED_LIBS=OFF"
@@ -1230,49 +1158,7 @@ public class JavaJarTest {
                                                        (and (= type :wasm) (not pthreads?)) (conj "-DENABLE_EMSCRIPTEN_FETCH=OFF")
                                                        (and (= type :wasm) (not pthreads?) debug?) (conj "-DCMAKE_C_FLAGS=-fsanitize=address"
                                                                                                          (str "-DCMAKE_CXX_FLAGS=" base-cxx-flags " -fsanitize=address")))]
-                                      (let [cmake-env (cond-> {"CXX" cxx "CC" cc "CMAKE_VERBOSE_MAKEFILE" "TRUE"}
-                                                        (and (= type :native) is-linux?) (assoc "LDFLAGS" "-static-libgcc -static-libstdc++ -Wl,-Bstatic -lc -Wl,-Bdynamic"))
-                                            ;; Absolute, like :src-dir below. cmake runs with
-                                            ;; its working directory set to build-dir and
-                                            ;; resolves -C against it, so a relative path
-                                            ;; here becomes build-dir/build-dir/... and the
-                                            ;; configure step fails with "Not a file".
-                                            cache-file (fs/absolutize (fs/path build-dir "initial-cache.cmake"))
-                                            write-cache (fn []
-                                                          (spit (str cache-file)
-                                                                (str "# Initial cache to skip tests and prevent hanging\n"
-                                                                     "set(CMAKE_CROSSCOMPILING ON CACHE BOOL \"\")\n"
-                                                                     "set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY CACHE STRING \"\")\n"
-                                                                     "set(CMAKE_C_COMPILER_WORKS TRUE CACHE BOOL \"\")\n"
-                                                                     "set(CMAKE_CXX_COMPILER_WORKS TRUE CACHE BOOL \"\")\n"
-                                                                     "set(CMAKE_C_ABI_COMPILED TRUE CACHE BOOL \"\")\n"
-                                                                     "set(CMAKE_CXX_ABI_COMPILED TRUE CACHE BOOL \"\")\n"
-                                                                     "set(Threads_FOUND FALSE CACHE BOOL \"\")\n"
-                                                                     "set(CMAKE_THREAD_LIBS_INIT \"\" CACHE STRING \"\")\n"
-                                                                     "set(CMAKE_USE_PTHREADS_INIT OFF CACHE BOOL \"\")\n"
-                                                                     "set(CMAKE_USE_WIN32_THREADS_INIT OFF CACHE BOOL \"\")\n"
-                                                                     "set(CMAKE_HP_PTHREADS_INIT OFF CACHE BOOL \"\")\n"
-                                                                     "set(HAVE_PTHREAD_H OFF CACHE BOOL \"\")\n"
-                                                                     "set(HAVE_PTHREAD_CREATE OFF CACHE BOOL \"\")\n"
-                                                                     "set(CMAKE_INSTALL_LIBDIR lib CACHE STRING \"\")\n"
-                                                                     "set(HAVE_DLADDR 0 CACHE INTERNAL \"\")\n"
-                                                                     "set(HAVE_LOCALECONV 1 CACHE INTERNAL \"\")\n"
-                                                                     "set(HAVE_STRERROR 1 CACHE INTERNAL \"\")\n"
-                                                                     "set(nlohmann_json_FOUND FALSE CACHE BOOL \"\")\n"
-                                                                     "set(PkgConfig_FOUND FALSE CACHE BOOL \"\")\n"
-                                                                     "set(CMAKE_C_COMPILE_FEATURES c_std_99 CACHE STRING \"\")\n"
-                                                                     "set(CMAKE_CXX_COMPILE_FEATURES cxx_std_17 CACHE STRING \"\")\n"
-                                                                     "set(CMAKE_CROSSCOMPILING_EMULATOR /bin/false CACHE STRING \"\")\n"
-                                                                     "set(HAVE_EXP 1 CACHE INTERNAL \"\")\n"
-                                                                     "set(HAVE_LOG 1 CACHE INTERNAL \"\")\n"
-                                                                     "set(HAVE_SQRT 1 CACHE INTERNAL \"\")\n"
-                                                                     "set(MATH_LIBRARY m CACHE STRING \"\")\n"
-                                                                     "set(CMAKE_REQUIRED_LIBRARIES m CACHE STRING \"\")\n"
-                                                                     "set(CMAKE_DL_LIBS dl CACHE STRING \"\")\n"
-                                                                     "set(DL_LIBRARY dl CACHE STRING \"\")\n"
-                                                                     "set(CMAKE_THREAD_LIBS_INIT \"-lpthread\" CACHE STRING \"\")\n"
-                                                                     "set(CMAKE_USE_PTHREADS_INIT 1 CACHE INTERNAL \"\")\n"
-                                                                     "set(CMAKE_HAVE_LIBC_PTHREAD 1 CACHE INTERNAL \"\")\n")))]
+                                      (let [cmake-env {"CXX" cxx "CC" cc "CMAKE_VERBOSE_MAKEFILE" "TRUE"}]
                                         (try
                                           (nb/build-cmake-library
                                            {:type type
@@ -1280,9 +1166,7 @@ public class JavaJarTest {
                                             :build-dir build-dir
                                             :cmake-args cmake-args
                                             :env cmake-env
-                                            :install? false
-                                            :cache-file (when is-nix-build? cache-file)
-                                            :pre-configure (when is-nix-build? write-cache)})
+                                            :install? false})
                                           (catch Exception e
                                             (let [error-log (fs/path build-dir "CMakeFiles" "CMakeError.log")
                                                   output-log (fs/path build-dir "CMakeFiles" "CMakeOutput.log")]
@@ -1402,50 +1286,13 @@ public class JavaJarTest {
                                           (let [source-path (if is-windows?
                                                               (fs/path build-dir "bin" proj-lib-versioned)
                                                               (fs/path build-dir "lib" proj-lib-versioned))]
+                                            (when zig
+                                              (if is-windows?
+                                                (nb/check-windows-lib! library-dir source-path)
+                                                (nb/check-linux-lib! library-dir source-path)))
+                                            (when is-darwin?
+                                              (nb/check-darwin-lib! source-path))
                                             (fs/copy source-path final-proj-lib {:replace-existing true}))
-                                          (when (and is-linux? (= type :native))
-                                            (println "Verifying Linux shared library dependencies...")
-                                            (println "DEBUG: Checking library file:" (str final-proj-lib))
-                                            ;; readelf is more often available than ldd.
-                                            (let [readelf-result (shell/sh "readelf" "-d" (str final-proj-lib))]
-                                              (if (zero? (:exit readelf-result))
-                                                (let [output (:out readelf-result)
-                                                      needed-libs (filter (fn [line] (str/includes? line "NEEDED"))
-                                                                          (str/split-lines output))]
-                                                  (println "DEBUG: Found NEEDED entries:")
-                                                  (doseq [lib needed-libs]
-                                                    (println "  " lib))
-
-                                                  (let [problematic-deps (filter (fn [lib] (or (str/includes? lib "libc.so")
-                                                                                               (str/includes? lib "musl")
-                                                                                               (str/includes? lib "/nix/store")))
-                                                                                 needed-libs)]
-                                                    (if (seq problematic-deps)
-                                                      (do
-                                                        (println "WARNING: Shared library has unexpected dynamic dependencies:")
-                                                        (doseq [dep problematic-deps]
-                                                          (println "  " dep))
-                                                        (println "This may cause native library loading failures at runtime.")
-                                                        (let [patchelf-result (shell/sh "which" "patchelf")]
-                                                          (when (zero? (:exit patchelf-result))
-                                                            (println "Attempting to remove dynamic dependencies with patchelf...")
-                                                            (let [remove-result (shell/sh "patchelf" "--remove-needed" "libc.so" (str final-proj-lib))]
-                                                              (if (zero? (:exit remove-result))
-                                                                (println "Successfully removed libc.so dependency")
-                                                                (println "Failed to remove dependency:" (:err remove-result)))))))
-                                                      (println "No problematic dependencies found!")))
-
-                                                  (when debug?
-                                                    (println "Full readelf output:")
-                                                    (println output)))
-                                                (do
-                                                  (println "ERROR: readelf failed to analyze library")
-                                                  (println "Exit code:" (:exit readelf-result))
-                                                  (println "Error:" (:err readelf-result))
-                                                  (let [ldd-result (shell/sh "ldd" (str final-proj-lib))]
-                                                    (if (zero? (:exit ldd-result))
-                                                      (println "Fallback ldd output:" (:out ldd-result))
-                                                      (println "Both readelf and ldd unavailable")))))))
                                           (fs/copy (fs/path build-dir "data" "proj.db") (fs/path "resources") {:replace-existing true})
                                           (fs/copy (fs/path build-dir "data" "proj.ini") (fs/path "resources") {:replace-existing true})))))))]
 
@@ -1455,7 +1302,7 @@ public class JavaJarTest {
 
                (fs/create-dirs "target")
 
-               (download-file (str "https://zlib.net/" zlib-archive) (fs/path target-dir zlib-archive))
+               (download-file zlib-url (fs/path target-dir zlib-archive))
                (extract-archive zlib-archive zlib-dir target-dir)
 
                (download-file (str "https://sqlite.org/" sqlite-year "/" sqlite-archive) (fs/path target-dir sqlite-archive))
@@ -1483,17 +1330,15 @@ public class JavaJarTest {
                        is-darwin? (= effective-os :darwin)
                        is-linux? (= effective-os :linux)
 
-                       cc (or (System/getenv "CC") "clang")
-                       cxx (or (System/getenv "CXX") "clang++")
-                       library-dir (str (name effective-os) "-" (name effective-arch))
-                       host-triple (when target-str
-                                     (cond
-                                       (= target-str "linux-amd64") "x86_64-pc-linux-musl"
-                                       (= target-str "linux-aarch64") "aarch64-pc-linux-musl"
-                                       (= target-str "windows-amd64") "x86_64-w64-mingw32"
-                                       (= target-str "windows-arm64") "aarch64-w64-mingw32"
-                                       :else nil))
-                       host-flag (when host-triple (str "--host=" host-triple))
+                       ;; A Linux target keeps its -musl suffix: linux-amd64-musl.
+                       library-dir (if (and is-linux? target-str)
+                                     target-str
+                                     (str (name effective-os) "-" (name effective-arch)))
+                       zig (when (or is-linux? is-windows?)
+                             (nb/zig-toolchain! library-dir (fs/absolutize (fs/path "target" (str "zig-" library-dir)))))
+                       cc (get-in zig [:env "CC"] (or (System/getenv "CC") "clang"))
+                       cxx (get-in zig [:env "CXX"] (or (System/getenv "CXX") "clang++"))
+                       host-flag (when zig (str "--host=" (:host zig)))
                        sqlite-install-dir (fs/absolutize (fs/path "target" (str "sqlite-install-" library-dir)))
                        zlib-install-dir (fs/absolutize (fs/path "target" (str "zlib-install-" library-dir)))
                        libtiff-install-dir (fs/absolutize (fs/path "target" (str "libtiff-install-" library-dir)))]
@@ -1501,7 +1346,7 @@ public class JavaJarTest {
                    (println "--> Starting native build for" (if target-str (str target-str " (cross-compile)") library-dir))
 
                    (let [final-proj-lib (fs/path "resources" library-dir
-                                                 (cond is-windows? "proj.dll"
+                                                 (cond is-windows? "libproj.dll"
                                                        is-darwin? "libproj.dylib"
                                                        is-linux? "libproj.so"
                                                        :else "libproj.a"))]
@@ -1511,6 +1356,7 @@ public class JavaJarTest {
                          (build-sqlite {:type :native
                                         :install-dir sqlite-install-dir
                                         :cc cc
+                                        :zig-env (:env zig)
                                         :host-flag host-flag
                                         :is-linux? is-linux?
                                         :is-windows? is-windows?
@@ -1519,6 +1365,8 @@ public class JavaJarTest {
                          (build-zlib {:type :native
                                       :install-dir zlib-install-dir
                                       :cc cc
+                                      :zig-env (:env zig)
+                                      :host (:host zig)
                                       :debug? debug?})
 
                          (build-libtiff {:type :native
@@ -1526,6 +1374,7 @@ public class JavaJarTest {
                                          :zlib-install-dir zlib-install-dir
                                          :cc cc
                                          :cxx cxx
+                                         :zig-env (:env zig)
                                          :host-flag host-flag
                                          :is-darwin? is-darwin?
                                          :is-linux? is-linux?
@@ -1536,6 +1385,7 @@ public class JavaJarTest {
                                       :library-dir library-dir
                                       :cc cc
                                       :cxx cxx
+                                      :zig zig
                                       :host-flag host-flag
                                       :is-linux? is-linux?
                                       :is-darwin? is-darwin?
@@ -1543,8 +1393,7 @@ public class JavaJarTest {
                                       :sqlite-install-dir sqlite-install-dir
                                       :zlib-install-dir zlib-install-dir
                                       :libtiff-install-dir libtiff-install-dir
-                                      :debug? debug?
-                                      :target-str target-str}))))))
+                                      :debug? debug?}))))))
 
                (when wasm?
                  (let [sqlite-install-dir-wasm (fs/absolutize (fs/path target-dir "sqlite-install-wasm"))
@@ -1616,52 +1465,11 @@ public class JavaJarTest {
                      (fs/copy (fs/path dest-js-src "proj-loader.mjs") dest-resources-wasm {:replace-existing true}))))
 
                (when (or (:cross opts) (:cross-platform opts))
-                 (let [default-platforms ["linux/amd64" "linux/aarch64" "windows/amd64"]
-                       target-platforms (if-let [p (:cross-platform opts)] [p] default-platforms)
-                       route-artifacts
-                       (fn [platform-tag artifacts-dir]
-                         (let [dest-dir (fs/path "resources" platform-tag)
-                               proj-build-dir (first (fs/glob artifacts-dir "proj-build-*/lib"))
-                               lib-files (cond
-                                           (str/includes? platform-tag "windows")
-                                           (concat (when proj-build-dir (fs/glob proj-build-dir "*.dll"))
-                                                   (fs/glob artifacts-dir "*.dll"))
-                                           :else
-                                           (concat (when proj-build-dir (fs/glob proj-build-dir "*.so"))
-                                                   (fs/glob artifacts-dir "*.so")
-                                                   (fs/glob artifacts-dir "*.dylib")))]
-                           (fs/create-dirs dest-dir)
-                           (doseq [lib-file lib-files]
-                             (let [filename (fs/file-name lib-file)
-                                   ;; Rename each PROJ DLL variant to libproj.dll. clj-native
-                                   ;; extracts the resource <os>-<arch>/<lib-basename><suffix>,
-                                   ;; and native.clj passes :lib-basename "libproj".
-                                   target-name (if (and (str/includes? platform-tag "windows")
-                                                        (re-matches (re-pattern ".*proj.*\\.dll") filename))
-                                                 "libproj.dll"
-                                                 filename)]
-                               (println "Copying" (str lib-file) "to" (str (fs/path dest-dir target-name)))
-                               (fs/copy lib-file (fs/path dest-dir target-name) {:replace-existing true})))
-                           (when (fs/exists? (fs/path artifacts-dir "proj.db"))
-                             (fs/copy (fs/path artifacts-dir "proj.db")
-                                      (fs/path "resources" "proj.db") {:replace-existing true}))
-                           (when (fs/exists? (fs/path artifacts-dir "proj.ini"))
-                             (fs/copy (fs/path artifacts-dir "proj.ini")
-                                      (fs/path "resources" "proj.ini") {:replace-existing true}))))]
-                   (nb/cross-compile-in-container
-                    {:platforms target-platforms
-                     :image-tag "clj-proj-build"
-                     :target "native-build"
-                     :extract-paths ["/build/resources/$PLATFORM_TAG/."
-                                     "/build/resources/proj.db"
-                                     "/build/resources/proj.ini"]
-                     :mounts (when (:local-proj opts)
-                               [{:host-path (str (fs/canonicalize "vendor/PROJ"))
-                                 :container-path "/build/vendor/PROJ"
-                                 :read-only? true}])
-                     :build-args (when (:local-proj opts)
-                                   {"EXTRA_BB_ARGS" "--local-proj"})
-                     :on-artifacts route-artifacts})))
+                 (doseq [p (if-let [p (:cross-platform opts)] [p] cross-platforms)]
+                   (apply tasks/shell "bb" "build" "--native" "--target" (str/replace p "/" "-")
+                          (cond-> []
+                            (:local-proj opts) (conj "--local-proj" (str (:local-proj opts)))
+                            (:debug opts) (conj "--debug")))))
                (println "Build task finished."))))}
   gen-handler
   {:doc "Regenerate src/cljc/net/willcohen/proj/proj-handler.mjs with clj-native's

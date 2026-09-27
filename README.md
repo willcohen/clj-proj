@@ -265,12 +265,13 @@ The JVM implementation has two backends:
 
 Supported platforms (native):
 - macOS/darwin Apple Silicon (arm64)
-- Linux x64 and arm64
+- Linux x64 and arm64: glibc 2.28 or later (for example Debian 10, Ubuntu
+  20.04, RHEL 8), and musl (Alpine)
 - Windows x64
 
 Not yet built:
 - macOS/darwin Intel (x86_64)
-- Windows ARM64 - Cross-compiler not available in nixpkgs
+- Windows ARM64
 
 ### JDK 25+ with native library
 
@@ -475,17 +476,11 @@ $ node index.mjs
 
 ## Prerequisites
 
-Builds run through Babashka and Nix. The host build needs no container.
+Builds run through Babashka and Nix, with no container. zig builds the Linux
+and Windows libs on the host.
 
-Two tasks do need podman or docker:
-
-- `bb build --cross` and `bb build --cross-platform` build each target in a
-  container, from the Containerfile that clj-native supplies. clj-proj has no
-  Containerfile of its own. The task vendors clj-native into
-  `clj-native-vendor/` and points the flake at it. On the published clj-native
-  jar, the flake files come out of the jar. With the `:dev` checkout override,
-  the task copies the checkout.
-- `bb test:linux` pulls the public `clojure:tools-deps-trixie` image.
+`bb test:linux` needs podman or docker. It pulls the public
+`clojure:tools-deps-trixie` image.
 
 **Babashka + Nix users**:
 - Install [Nix](https://nixos.org/download.html) and [direnv](https://direnv.net/)
@@ -516,10 +511,10 @@ bb clean --help   # Show clean options
 ```bash
 bb build --native                         # Native libraries, current platform
 bb build --wasm                           # WebAssembly
-bb build --cross-platform linux/amd64     # One cross target
-bb build --cross-platform linux/aarch64
-bb build --cross-platform windows/amd64
-bb build --cross                          # All default platforms
+bb build --cross-platform linux/amd64     # One zig target: glibc 2.28
+bb build --cross-platform linux/amd64-musl #   or musl
+bb build --cross-platform windows/amd64   #   or Windows
+bb build --cross                          # All zig targets
 bb test-run                               # Build everything, run all tests
 ```
 
@@ -542,15 +537,21 @@ bb squint         # JavaScript (ES6 module)
 
 1. **Native builds** compile PROJ + dependencies (SQLite, LibTIFF, zlib) for the host platform
    - **Output**: `resources/{platform}/` (for example, `resources/darwin-aarch64/`)
-   - **Linux**: Static linking
-   - **Windows**: Static linking
+   - **Linux**: zig builds four libs from any host:
+     `linux-<arch>` binds glibc 2.28 and loads on glibc 2.28 and later, and
+     `linux-<arch>-musl` loads on musl. clj-native takes the `-musl` lib on
+     musl. Each lib links SQLite, LibTIFF, zlib and the LLVM C++ runtime
+     statically, and libc dynamically. The build checks each lib before it
+     copies it to `resources/`, and stops if the lib needs a library or a
+     glibc version that its dir does not allow.
+   - **Windows**: zig builds `windows-amd64` from any host. The DLL links
+     SQLite, LibTIFF, zlib and the LLVM C++ runtime statically. The build
+     stops if the DLL imports a DLL other than KERNEL32, SHELL32 and the UCRT
+     of Windows 10 and later.
 
 2. **WASM builds** use emscripten to compile PROJ into WebAssembly
    - **Output**: `resources/wasm/` and `src/cljc/net/willcohen/proj/`
    - **Requirements**: emscripten tools in PATH, supplied by the Nix dev shell
-
-3. **Cross-platform builds** use Nix for reproducible builds
-   - **Resource requirements**: 150GB disk, 8GB RAM
 
 ## Testing
 
@@ -866,7 +867,7 @@ bb build --wasm --local-proj
 bb test:node
 
 # Cross-platform verification
-bb build --cross --local-proj             # Test musl builds with local PROJ
+bb build --cross --local-proj             # Linux and Windows builds with local PROJ
 ```
 
 **Local PROJ Tasks:**

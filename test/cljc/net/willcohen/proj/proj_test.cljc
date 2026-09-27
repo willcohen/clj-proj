@@ -94,6 +94,10 @@
               :ffi (proj/force-ffi!)
               :graal (proj/force-graal!))
             (proj/init!)
+            ;; A missing or unloadable native lib makes init! fall back to
+            ;; GraalVM, and the FFI lane would then pass on wasm.
+            (is (= current-impl# @proj/implementation)
+                "init! did not fall back from the requested implementation")
             (try
               ~@body
               (finally))))))) ; no proj-reset: resource tracking does the cleanup

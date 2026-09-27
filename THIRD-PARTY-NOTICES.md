@@ -153,12 +153,21 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
 EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
+## glibc
+
+`linux-amd64/libproj.so` and `linux-aarch64/libproj.so` contain wrappers from
+the `libc_nonshared.a` of glibc, for example the wrapper for `stat`. These
+files are under the GNU LGPL 2.1 or later, with an exception that gives
+unlimited permission to link them into a program and to distribute that
+program.
+
 ## LLVM runtime libraries
 
-The WebAssembly module contains libc++, libc++abi, libunwind, compiler-rt and
-llvm-libc of the LLVM Project, under the Apache License v2.0 with LLVM
-Exceptions. The exceptions remove the notice conditions for the parts that the
-compiler links into a binary.
+The Linux and Windows libs contain libc++, libc++abi, libunwind and
+compiler-rt of the LLVM Project. The WebAssembly module contains these and
+llvm-libc. They are under the Apache License v2.0 with LLVM Exceptions. The
+exceptions remove the notice conditions for the parts that the compiler links
+into a binary.
 
 ## Emscripten
 
@@ -214,8 +223,7 @@ IN THE SOFTWARE.
 
 ## musl
 
-In the Linux libs and in the WebAssembly module. The C library of Emscripten
-is musl libc.
+In the WebAssembly module. The C library of Emscripten is musl libc.
 
 ```
 musl as a whole is licensed under the following standard MIT license:

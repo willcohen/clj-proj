@@ -32,12 +32,6 @@
           # at teardown of a multi-worker pool whose workers did network I/O,
           # for example proj_test's pool after grid fetches. v22 and v26 are
           # clean.
-          # No container runtime in this list. The Containerfile base stage
-          # runs plain `nix develop`, which resolves to the `default` shell
-          # these inputs feed, so anything here is built into every image.
-          # podman would drag its closure (gtk+3, iptables, libpcap) in, and
-          # nothing inside a container ever starts a container. The `host`
-          # shell below adds podman for local use.
           extraDevInputs = with pkgs; [
             act
             binaryen
@@ -50,15 +44,8 @@
       in {
         devShells = shells // {
           # The shell for working on this repo, and what .envrc selects. It is
-          # `default` plus podman, so `bb build --cross` and `bb test:linux`
-          # find a container runtime.
-          #
-          # podman belongs here and not in `default`, because the Containerfile
-          # base stage runs plain `nix develop`. Only `default` reaches the
-          # image, so this split keeps the runtime on the host and out of every
-          # build. clj-native picks the runtime with
-          # (or (fs/which "podman") (fs/which "docker")) and gives no override,
-          # so podman on PATH here also decides it over a running Docker.
+          # `default` plus podman, for `bb test:linux`. CI builds in `default`,
+          # without podman and its closure (gtk+3, iptables, libpcap).
           host = shells.default.overrideAttrs (old: {
             buildInputs = old.buildInputs ++ [ pkgs.podman ];
           });

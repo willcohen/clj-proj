@@ -11,10 +11,21 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Changed
 - clj-native 0.0.2 (`net.willcohen/native`, npm `ffi-wasm`). On the GraalVM
   backend, a PROJ exception makes the call throw.
+- The Linux libs load on glibc 2.28 and later. A musl host, for example
+  Alpine, gets a separate `linux-<arch>-musl` lib. The Linux and Windows libs
+  contain the LLVM C++ runtime, and a host needs no libstdc++ or libgcc.
 
 ### Fixed
 - The jar contains the clj-kondo exports. The 0.1.0-alpha9 and 0.1.0-alpha10
   jars did not.
+- SQLite in the wasm, and SQLite and libtiff in the Linux libs, built with no
+  optimization. They now build with `-O2`.
+- The Linux libs of 0.1.0-alpha8 to 0.1.0-alpha10 did not load on older glibc.
+  linux-amd64 needed glibc 2.38 and did not load on Debian 12 or Ubuntu 22.04.
+  linux-aarch64, a musl build, needed glibc 2.33, and on a glibc host its
+  mutexes had the wrong size. Both libs had a run path into the build
+  directories.
+- The macOS lib had a run path into the build directory.
 - The jar contains `META-INF/LICENSE` and `META-INF/THIRD-PARTY-NOTICES.md`,
   and the npm package contains `dist/THIRD-PARTY-NOTICES.md`. The jar had no
   license text.
