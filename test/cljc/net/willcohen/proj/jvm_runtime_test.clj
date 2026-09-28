@@ -15,7 +15,7 @@
    approximately 6x slower. Stock OpenJDK 25 cannot load the
    optimizing runtime cleanly (JDK-8364936), so this guard asserts
    only on a GraalVM JDK. On a plain OpenJDK (FFI-only environments)
-   guest JIT is not applicable and the test is informational.
+   guest JIT is not applicable and the test asserts nothing.
 
    JVM-only. The .clj extension keeps the file out of the squint
    compile. cognitect.test-runner finds it through `-d test/cljc/net`
@@ -59,14 +59,11 @@
            "org.graalvm.truffle/truffle-runtime is on the path."))))
 
 (deftest optimizing-runtime-active
-  (let [runtime (nw/truffle-runtime-name)]
-    (if graalvm-jdk?
-      (testing "on a GraalVM JDK, Truffle selects an optimizing (guest-JIT) runtime"
+  (when graalvm-jdk?
+    (testing "on a GraalVM JDK, Truffle selects an optimizing (guest-JIT) runtime"
+      (let [runtime (nw/truffle-runtime-name)]
         ;; Only diagnose on failure: building an Engine costs real time, and
         ;; `is` evaluates its message whether or not the assertion passes.
         (if (= "Interpreted" runtime)
           (is false (diagnose-interpreted runtime))
-          (is (not= "Interpreted" runtime))))
-      (testing "not a GraalVM JDK: guest JIT not applicable (FFI-only)"
-        (is true (str "runtime: " runtime " (informational; run on GraalVM CE "
-                      "for guest JIT)"))))))
+          (is (not= "Interpreted" runtime)))))))

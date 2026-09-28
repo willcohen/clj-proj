@@ -20,37 +20,9 @@
         ;; binding in every consumer that lints these fns.
         [[] ['_opts]]))))
 
-(defn define-proj-public-fn
-  "A clj-kondo hook for the `define-proj-public-fn` macro.
-
-  This hook transforms a call like:
-    (define-proj-public-fn :proj_create_crs_to_crs :info)
-
-  Into a `defn` form with the correct arity and a generated docstring
-  for clj-kondo to analyze:
-    (defn proj-create-crs-to-crs
-      \"<generated-docstring>\"
-      ([] nil)
-      ([opts] nil))"
-  [{:keys [node]}]
-  (let [[_ fn-key-node & _] (:children node)
-        fn-key (api/sexpr fn-key-node)]
-    (if (keyword? fn-key)
-      (if-let [new-node (fn-key->defn-node fn-key)]
-        {:node new-node}
-        (do
-          (api/reg-finding!
-           (assoc (meta fn-key-node)
-                  :message (str "No fn-def found for key: " fn-key)
-                  :type :proj/unknown-fn-key))
-          {:node node}))
-      {:node node})))
-
 (defn define-all-proj-public-fns
-  "A clj-kondo hook for the `define-all-proj-public-fns` macro.
-
-  This hook expands the macro call into a `do` block containing a `defn`
-  form for each PROJ function defined in `fn-defs.cljc`."
+  "Expand `define-all-proj-public-fns` into a `do` of one `defn` for each
+  entry of hooks.fn-defs."
   [_]
   (let [defn-nodes (->> (keys pdefs/fn-defs)
                         (map fn-key->defn-node)

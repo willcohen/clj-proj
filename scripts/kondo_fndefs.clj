@@ -13,10 +13,7 @@
    reads as `Unresolved var: proj/proj-<name>` in every consumer.
 
    The copy holds the constants plus the fn-defs map. `:argsemantics`
-   defaults name the constants, so the map does not read without them.
-
-   Generic over the source and target, so clj-gdal can call it for its own
-   fndefs copy."
+   defaults name the constants, so the map does not read without them."
   (:require [babashka.fs :as fs]
             [clojure.string :as str]
             [rewrite-clj.node :as n]

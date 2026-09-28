@@ -6,35 +6,22 @@
 
 #?(:clj
    (ns net.willcohen.proj.wasm
-     "PROJ-specific WASM glue. Loads the PROJ WASM module into the
-      shared GraalVM Polyglot Context owned by clj-native.wasm. The
-      generic per-fn dispatch engine lives in clj-native.dispatch. This
-      namespace defines PROJ's extras-builder, result-wrapper, and
-      context-isolator hooks, which proj.cljc puts on the library value,
-      and supplies coord-array ergonomics tied to PROJ's PJ_COORD shape
-      (4-double tuples)."
+     "GraalVM glue: loads the PROJ WASM module through clj-native's
+      graal-wasm, and supplies coord arrays of PJ_COORD shape (4 doubles)."
      (:require [clojure.java.io :as io]
                [clojure.tools.logging :as log]
                [net.willcohen.native.graal-wasm :as nw]))
    :cljs
    (ns wasm
-     "Worker pool management for browser and Node.js. This namespace
-      holds one private clj-native pool wiring. init-proj without :pool
-      registers the proj handler spec and spawns an owned pool.
-      init-proj with :pool adopts the caller's joint pool (owned?
-      false). Either way the wiring latches the pass, so one pool
-      serves every caller. The generic per-fn dispatch
-      engine lives in clj-native.dispatch. This namespace supplies
-      PROJ's extras-builder, result-wrapper, and context-isolator
-      hooks, which proj.cljc puts on the library value."
+     "The worker pool wiring for browser and Node.js, and PROJ's
+      extras-builder, result-wrapper and context-isolator hooks for
+      clj-native dispatch."
      (:require ["ffi-wasm/pool" :as pool]
                ["ffi-wasm/workload-pool" :as wp]
                ["ffi-wasm/dispatch" :as dispatch]
                ["./handler.mjs" :as handler])))
 
 #?(:clj (set! *warn-on-reflection* true))
-
-(def ^:dynamic *runtime-log-level* nil)
 
 #?(:clj
    (def ^:dynamic *load-grids*
@@ -44,25 +31,17 @@
   Set to false to skip grid load and make initialization faster."
      false))
 
-;; Per-library WasmContext registered with clj-native. Pointerlike
-;; protocol methods and heap utilities route through this. In a
-;; single-library JVM, the registry's sole-entry fallback in
-;; current-module finds it without a with-wasm-context wrap.
+;; With no with-wasm-context binding, clj-native's heap utilities fall back
+;; to this sole registered WasmContext.
 #?(:clj (defonce proj-context (nw/create-wasm-context! :net.willcohen.proj)))
 
-;; Loaded WASM module ref. The JVM side shows the proj-context atom, so
-;; existing @p reads continue to work. The cljs side keeps its own atom,
-;; because clj-native's JVM-only state does not get to the cljs runtime.
+;; The loaded module, or nil. Always nil in ClojureScript, where the module
+;; lives in each worker.
 #?(:clj  (def p (:module-ref proj-context))
    :cljs (defonce p (atom nil)))
 
-;; Joint-pool state (CLJS only): one clj-native wiring for this
-;; namespace. The wiring holds the workload-pool registry of the
-;; current init!/shutdown! cycle plus the memo that makes the wiring
-;; pass run once, so concurrent init-proj callers share one pass and
-;; one pool. Only clj-native's own accessors read the wiring atoms. A
-;; squint Atom from a different package instance does not support
-;; deref, so the accessor is the API.
+;; Read the wiring only through clj-native's accessors: a squint Atom from
+;; another package instance does not support deref.
 #?(:cljs
    (do
      (defonce ^:private pool-wiring (wp/make-wiring!))
@@ -74,9 +53,7 @@
 
 #?(:cljs
    (defn current-pool
-     "Return the live joint pool, or nil before init-proj and after
-      shutdown!. Each call reads through the wiring with
-      wp/wiring-pool."
+     "The live joint pool, or nil before init-proj and after shutdown!."
      []
      (wp/wiring-pool pool-wiring)))
 
@@ -90,90 +67,49 @@
 #?(:cljs
    (defn ^:async init-workers!
      "Wire the private workload-pool registry and return the joint pool.
-      opts is a Clojure map with these keys:
+      opts keys:
 
-        :pool           caller-supplied WorkerPool ref. init-workers!
-                        adopts it with owned? false, and the caller
-                        keeps its lifecycle. The caller's registry must
-                        register the proj handler module before it
-                        spawns the pool. This registry takes only the
-                        host-side :pre-terminate hook.
-        :workers        :auto, integer, or 'auto' string. Default :auto.
-        :log-level      integer (0..3) for the proj logger. Default 0.
-        :max-live-ctxs  integer or nil. Overrides the load-time default
-                        for the hard cap on live PJ contexts. nil keeps
-                        the current setting. Increase it for workloads
-                        with a high peak live-context count (for
-                        example, heavy maplibre-proj replays).
-        :min-age-ms     integer or nil. Overrides the eviction age
-                        threshold (default 100), so the pool does not
-                        evict fresh PJs under in-flight ccalls.
-        :debug-level      :off | :error | :warn | :info | :debug | :trace
-                          (or nil → off). Controls clj-native's diagnostic
-                          substrate page-side AND worker-side. Distinct from
-                          :log-level, which is the PROJ C-library logger.
-        :debug-categories collection of category keywords/strings to allow,
-                          or nil for all. See clj-native pool/set-log-config!
-                          for category derivation.
+        :pool             a caller WorkerPool, adopted with owned? false. The
+                          caller keeps its lifecycle, and its registry must
+                          register the proj handler before it spawns the pool.
+        :workers          :auto, an integer or \"auto\". Default :auto.
+        :log-level        0..3, the level of the PROJ logger. Default 0.
+        :max-live-ctxs    the cap on live PJ contexts, or nil to keep it.
+        :min-age-ms       the eviction age threshold, or nil to keep it.
+        :debug-level      :off | :error | :warn | :info | :debug | :trace, or
+                          nil for off: clj-native's diagnostics, on the page
+                          and in the workers.
+        :debug-categories the categories to allow, or nil for all.
 
-      Without :pool, handler/default-init-args builds the per-worker
-      init payload from proj.db and proj.ini on the main thread. Then
-      init-workers! registers the full proj handler spec and spawns an
-      owned pool. Returns the pool ref.
-
-      wp/ensure-wired! latches the whole pass, so concurrent callers
-      share one wiring and one pool, and a later call yields the first
-      call's pool whatever opts it passes."
+      wp/ensure-wired! latches the whole pass, so concurrent callers share
+      one wiring and one pool, and a later call gets the first call's pool
+      whatever its opts."
      [opts]
      (await
-      (let [opts             (or opts {})
-            caller-pool      (:pool opts)
-            size             (or (:workers opts) "auto")
-            log-level        (or (:log-level opts) 0)
-            max-live-ctxs    (:max-live-ctxs opts)
-            min-age-ms       (:min-age-ms opts)
-            debug-level      (:debug-level opts)
-            debug-categories (:debug-categories opts)
-            ;; Pool-wide worker propagation: the registry forwards
-            ;; :handler-runtime to init-pool!, which broadcasts
-            ;; setLogConfig to every worker through the substrate's
-            ;; reserved __setLogConfig method. The per-handler
-            ;; init-args.handlerRuntime path is ALSO populated, so the
-            ;; substrate is live before the per-handler init() runs. That
-            ;; is necessary to catch emscripten's pre-allocated pthread
-            ;; worker spawn (PTHREAD_POOL_SIZE=1 +
-            ;; PTHREAD_POOL_DELAY_LOAD=1), which fires inside
-            ;; loadEmscriptenModule, before the pool-wide broadcast can
-            ;; get to this worker.
-            handler-rt-opt   (when (some? debug-level)
-                               {:level      debug-level
-                                :categories debug-categories})
+      (let [{caller-pool :pool
+             :keys [workers max-live-ctxs min-age-ms debug-level debug-categories]} opts
+            ;; Workers take it through init args before init() runs, and
+            ;; again from the broadcast of init-pool!.
+            handler-rt-opt (when (some? debug-level)
+                             {:level      debug-level
+                              :categories debug-categories})
             register!
             (fn ^:async register-proj! [reg]
               ;; Enable the page side BEFORE pool init, so QUEUE-* / FR-*
               ;; events from the create call land in the trace.
-              (when (some? debug-level)
-                (pool/set-log-config!
-                 {:level      debug-level
-                  :categories debug-categories}))
-              ;; Apply the caller's live-context-cap overrides.
-              ;; ensure-library! updates only fields with a non-nil value,
-              ;; so a partial map keeps the load-time default for unset
-              ;; fields.
-              (when (or (some? max-live-ctxs) (some? min-age-ms))
-                (pool/register-library-context!
-                 :net.willcohen.proj
-                 (cond-> {}
-                   (some? max-live-ctxs) (assoc :max-live-ctxs max-live-ctxs)
-                   (some? min-age-ms)    (assoc :min-age-ms min-age-ms))))
+              (when handler-rt-opt
+                (pool/set-log-config! handler-rt-opt))
+              ;; A nil value keeps the current setting.
+              (pool/register-library-context!
+               :net.willcohen.proj
+               {:max-live-ctxs max-live-ctxs :min-age-ms min-age-ms})
               (if (some? caller-pool)
                 ;; An adopted pool also gets the flush and the
                 ;; library-context reset at shutdown!. A spec with only
                 ;; :pre-terminate can register at any time.
                 (wp/register-handler! reg :compute :net.willcohen.proj
                                       {:pre-terminate handler/pre-terminate!})
-                (let [init-args (await (handler/default-init-args
-                                        {:log-level log-level}))]
+                (let [init-args (await (handler/default-init-args opts))]
                   (when handler-rt-opt
                     (aset init-args "handlerRuntime"
                           (js-obj "logLevel"      debug-level
@@ -184,22 +120,18 @@
          pool-wiring
          (if (some? caller-pool)
            {:pool caller-pool :register! register!}
-           {:registry-opts (cond-> {:size size}
+           {:registry-opts (cond-> {:size (or workers "auto")}
                              handler-rt-opt
                              (assoc :handler-runtime handler-rt-opt))
             :register! register!}))))))
 
 #?(:cljs
    (defn ^:async worker-call
-     "Call `method` of the proj handler with the JS array `args`, on a
-      specific worker (when worker-idx is non-nil, 0 included) or on the
-      least-loaded worker from worker-router's any() picker (worker-idx
-      nil).
+     "Call `method` of the proj handler with the JS array `args`, on worker
+      worker-idx, or on the least-loaded worker when worker-idx is nil.
 
-      Single-arity: on a multi-arity defn, squint's `^:async` metadata
-      marks only the outer dispatcher, and the per-arity closures stay
-      non-async. esbuild then rejects the inner `await`. All callers pass
-      worker-idx already, so one arity is the simplest fix."
+      Single arity: on a multi-arity defn, squint's `^:async` marks only
+      the outer dispatcher, and esbuild rejects the inner `await`."
      [worker-idx method args]
      (await (pool/worker-call (current-pool) :net.willcohen.proj method args worker-idx))))
 
@@ -213,36 +145,14 @@
 
 #?(:cljs
    (def ^:private DESTROY-GATE-MAX-ITERS 16))
-;; Race-recovery cap for the event-driven gate of destroy-context!. Each
-;; iteration awaits a Promise that resolves when the in-flight counter
-;; gets to zero. The cap bounds the pathological case where a new
-;; register-handle! for the parent re-arms the counter immediately after
-;; each resolution. One iteration is the steady state. 16 is generous.
 
 #?(:cljs
    (defn ^:async destroy-context!
-     "Drain children, then post context_destroy.
-
-      Pool-side gate that prevents context_destroy from a reorder before
-      child handle disposes: await pool/await-parent-drain!, a Promise
-      that resolves when the in-flight counter for this ctx drops to zero.
-      The counter increments synchronously at register-handle! and
-      decrements in the wrapped disposer's `.finally()` on the release-fn
-      Promise. Thus zero means that every child's proj_destroy
-      worker_call resolved on its worker, and not only that the
-      membership map dropped the entry.
-
-      The bounded re-check loop guards a register/decrement race: after
-      the Promise resolves, a new register-handle! for this parent can
-      increment the counter again, so the loop awaits a fresh Promise.
-      DESTROY-GATE-MAX-ITERS bounds runaway registration at teardown. At
-      the cap, the gate gives up and posts the worker-call.
-
-      `p` is the pool the context was CREATED on, and not (current-pool).
-      A GC-fired destroy can arrive after a shutdown!/init! cycle, and
-      each pool restarts its per-worker ctx-id sequence at 1, so a stale
-      ctx-id routed to the current pool destroys a LIVE context of the
-      new generation. Refer to live-pool?."
+     "Wait until every child handle of the context has released, then post
+      context_destroy to `p`, the pool that created the context (refer to
+      live-pool?). A register-handle! after the drain resolves can add a
+      child, so the drain runs again, at most DESTROY-GATE-MAX-ITERS
+      times, and then the destroy posts anyway."
      [p worker-idx ctx-id]
      (let [parent-key (ctx-key worker-idx ctx-id)]
        (loop [iters 0]
@@ -258,27 +168,10 @@
 
 #?(:cljs
    (defn live-pool?
-     "True only if `p` is the pool this consumer routes to at this time.
-
-      A GC-fired destroy must fire against the pool that created its
-      handle, so every tracked handle holds that pool, and its disposer
-      guards on this test rather than on active?. active? alone is not
-      sufficient: V8 delivers a FinalizationRegistry callback at an
-      unspecified time, which can be after a shutdown!/init! cycle
-      replaced the pool. A fresh pool restarts each worker's ctx-id
-      sequence at 1, and a PJ destroy carries a raw per-worker heap
-      address, so a re-routed destroy frees a live handle of the new
-      generation. That showed as PROJ FactoryException 4000680
-      (\"Cannot find proj.db\") and 4430488 (\"Open of 8 failed\", a
-      garbage database path) in the browser benchmark, from 4 workers up.
-
-      A stale destroy is safe to drop: the terminated pool owned the
-      native memory, so the memory died with its workers. An adopted
-      pool that survives shutdown! keeps its identity, and the destroys
-      of its handles still fire when the consumer adopts it again. That
-      is correct, because its workers never died and their ctx-id
-      sequences did not restart. A counter that increases on each
-      shutdown would drop those destroys and cause a leak."
+     "True only if `p` is the pool this consumer routes to now. A GC-fired
+      destroy tests it, because a new pool restarts each worker's ctx-ids
+      at 1 and reuses heap addresses, so a stale destroy would free a live
+      handle of the new pool. Refer to wp/live-pool? for an adopted pool."
      [p]
      (wp/live-pool? pool-wiring p)))
 
@@ -304,36 +197,23 @@
 
 #?(:cljs
    (defn ^:async shutdown!
-     "Stop the wiring. wp/shutdown-wiring! runs proj's :pre-terminate
-      hook first. The hook flushes pending async disposers, so
-      worker-call destroys land before the workers die, and then resets
-      the library context. The pool terminates only when this consumer
-      owns it. A caller-supplied pool stays up. shutdown-wiring! then
-      clears the registry and the wiring memo, so a later init-proj
+     "Stop the wiring: run handler/pre-terminate!, terminate the pool when
+      this consumer owns it, and clear the wiring, so a later init-proj
       starts fresh."
      []
-     (await
-      (-> (wp/shutdown-wiring! pool-wiring)
-          (.then (fn [reg]
-                   ;; A registry means the wiring ran its :pre-terminate
-                   ;; hook, which already flushed. nil means nothing was
-                   ;; wired -- init never ran, or a shutdown already ran --
-                   ;; so drain pending disposers here instead.
-                   (when-not reg
-                     (.then (pool/flush-pending-disposes!)
-                            (fn [_] nil)))))))))
+     ;; A registry means the wiring ran its :pre-terminate hook, which
+     ;; already flushed. nil means nothing was wired (init never ran, or a
+     ;; shutdown already ran), so drain pending disposers here instead.
+     (when-not (await (wp/shutdown-wiring! pool-wiring))
+       (await (pool/flush-pending-disposes!)))
+     nil))
 
 #?(:cljs
    (defn create-context-on-worker
-     "Create a PROJ context on a specific worker. clj-native picks the
-      worker through worker-router's claim() (least-loaded over pending
-      plus claims) or honors an explicit :worker opt with no claim. The
-      release closure returns to the caller, so the caller can pair it
-      with a JS owner for clj-native's WeakRef-based stale sweep (refer
-      to track-context!). The worker's context_create handler does the
-      full setup: it creates the PROJ context, sets the database path,
-      enables the network, and installs the log callback. Returns a
-      promise of a map with :ctx-id, :ptr, :worker-idx, and :release."
+     "Create a PROJ context on the least-loaded worker, or on the :worker
+      of opts. Returns a promise of {:ctx-id :ptr :worker-idx :release}.
+      Call :release once, or hand it to track-context!, so the worker
+      claim drains."
      [opts]
      (let [{:keys [idx release]} (pool/assign-worker-for-context! (current-pool) :net.willcohen.proj opts)]
        (-> (worker-call idx "context_create" #js [#js {}])
@@ -348,12 +228,8 @@
 
 #?(:cljs
    (defn track-context!
-     "Add an owner-tracked entry, keyed by ctx-key, to the :ctx-workers map
-      of clj-native's library context. owner must be a JS object. clj-native wraps it in
-      a WeakRef and sweeps stale entries (collected owners) on every
-      track/assign call. The sweep fires release-fn synchronously and
-      does not wait for the FinalizationRegistry callback queue to
-      drain."
+     "Track the context under ctx-key. release-fn fires once: on
+      untrack-context!, or when V8 collects `owner`, a JS object."
      [ctx-id worker-idx release-fn owner]
      (pool/track-context! :net.willcohen.proj (ctx-key worker-idx ctx-id)
                           worker-idx release-fn owner)))
@@ -369,9 +245,10 @@
 
 #?(:clj
    (defn- read-resource-bytes [path]
-     (with-open [in (io/input-stream (io/resource path))]
-       (when-not in (throw (ex-info (str "Could not find resource on classpath: " path) {:path path})))
-       (.readAllBytes in))))
+     (let [url (or (io/resource path)
+                   (throw (ex-info (str "Could not find resource on classpath: " path) {:path path})))]
+       (with-open [in (io/input-stream url)]
+         (.readAllBytes in)))))
 
 #?(:clj
    (defonce ^:private proj-resources
@@ -409,39 +286,33 @@
             :proj-ini      (slurp (io/resource "proj.ini"))
             :grid-files    grid-files})))))
 
+#?(:clj
+   (defn- bootstrap-proj!
+     "Load PROJ into polyglot Context `pctx`, and store the module on `wc`."
+     [wc pctx]
+     (let [{:keys [proj-js-url loader-js-url wasm-bytes proj-db-bytes
+                   proj-ini grid-files]} @proj-resources]
+       (nw/bootstrap-graal-module! wc {:loader-module-url   loader-js-url
+                                       :preload-module-urls [proj-js-url]
+                                       :polyglot-context    pctx
+                                       :init-opts {"wasmBinary" (nw/js-bytes pctx wasm-bytes)
+                                                   "projDb"     (nw/js-bytes pctx proj-db-bytes)
+                                                   "projIni"    proj-ini
+                                                   "projGrids"  (nw/js-bytes-map pctx grid-files)}}))))
+
 (defn init-proj
-  "Initialize PROJ for GraalVM and for ClojureScript.
-   opts is an optional map. In ClojureScript, opts forwards to
-   init-workers!. Recognized keys: :pool, :workers, :log-level,
-   :max-live-ctxs, :min-age-ms, :debug-level, :debug-categories
-   (refer to the init-workers! docstring)."
+  "Initialize PROJ for GraalVM and for ClojureScript. In ClojureScript,
+   opts goes to init-workers!, which lists its keys."
   ([] (init-proj {}))
-  ;; opts is read by the :cljs branch only. The JVM reads its config from
-  ;; classpath resources.
+  ;; Only the :cljs branch reads opts.
   #_{:clj-kondo/ignore [:unused-binding]}
   ([opts]
    #?(:clj
       (when (nil? @p)
-        (let [{:keys [proj-js-url loader-js-url wasm-bytes proj-db-bytes
-                      proj-ini grid-files]} @proj-resources
-              ;; nw/js-bytes gives the loader a real Uint8Array, so the
-              ;; loader does no signed-byte widening of its own.
-              init-opts {"wasmBinary" (nw/js-bytes wasm-bytes)
-                         "projDb"     (nw/js-bytes proj-db-bytes)
-                         "projIni"    proj-ini
-                         "projGrids"  (nw/js-bytes-map grid-files)}]
-          (nw/bootstrap-graal-module! proj-context
-                                      {:loader-module-url   loader-js-url
-                                       :preload-module-urls [proj-js-url]
-                                       :init-opts           init-opts})
-          (log/info "PROJ.js initialization complete. System is ready.")))
+        (bootstrap-proj! proj-context (nw/context))
+        (log/info "PROJ.js initialization complete. System is ready."))
 
       :cljs
-      ;; CLJS init is async (returns a Promise) because worker creation and
-      ;; WASM load are async. The CLJ side blocks on CompletableFuture.get().
-      ;; The wiring latches init-workers!, so concurrent and later callers
-      ;; share the first pass. A failed pass clears that memo, so a retry is
-      ;; possible, and later calls do not inherit the rejection.
       (-> (init-workers! opts)
           (.catch (fn [error]
                     (js/console.error "PROJ worker init failed:" error)
@@ -455,44 +326,26 @@
       The WasmContext is never registered: a second registry entry would
       break current-module's single-entry fallback for off-pool callers.
       The caller owns the Context and must close it at worker destroy,
-      after the PROJ resources inside it are released.
-
-      Costs about 54-70 MB heap and 220-340 ms init per Context on the
-      shared Engine, each with its own proj.db in MEMFS."
+      after the PROJ resources inside it are released. A failed boot
+      closes it."
      []
-     (let [{:keys [proj-js-url loader-js-url wasm-bytes proj-db-bytes
-                   proj-ini grid-files]} @proj-resources
-           pctx (nw/new-polyglot-context!)
-           wc   (nw/->WasmContext :net.willcohen.proj/pooled (atom nil))
-           init-opts {"wasmBinary" (nw/js-bytes pctx wasm-bytes)
-                      "projDb"     (nw/js-bytes pctx proj-db-bytes)
-                      "projIni"    proj-ini
-                      "projGrids"  (nw/js-bytes-map pctx grid-files)}]
-       (nw/bootstrap-graal-module! wc {:loader-module-url   loader-js-url
-                                       :preload-module-urls [proj-js-url]
-                                       :init-opts           init-opts
-                                       :polyglot-context    pctx})
-       {:wc wc :pctx pctx})))
+     (let [pctx (nw/new-polyglot-context!)
+           wc   (nw/->WasmContext :net.willcohen.proj/pooled (atom nil))]
+       (try
+         (bootstrap-proj! wc pctx)
+         {:wc wc :pctx pctx}
+         (catch Throwable t
+           (.close ^org.graalvm.polyglot.Context pctx)
+           (throw t))))))
 
 (defn ensure-proj-initialized!
   "Lazily start PROJ when a call arrives before init!. Best effort: the
-   ClojureScript init is async and nothing awaits it here, so a call that
-   really does arrive first still fails. It exists so a consumer that
-   forgets init! recovers by the next call.
-
-   The two platforms test different things because they hold the module in
-   different places. The JVM loads it into the shared Polyglot Context, so
-   `p` is the readiness flag. In ClojureScript the module lives inside each
-   worker and `p` is never set on the main thread, so the pool is the flag.
-   Testing `p` there made this fire on every native call."
+   ClojureScript init is async and nothing awaits it here, so the first call
+   still fails, and the next call recovers. The JVM holds the module in `p`.
+   ClojureScript holds it in each worker, so the pool is the flag."
   []
   (when (nil? #?(:clj @p :cljs (current-pool)))
     (init-proj)))
-
-#?(:cljs
-   (defn- coord-array-arg?
-     [arg]
-     (and (object? arg) (= (.-type arg) "coord-array"))))
 
 #?(:cljs
    (defn- kebab->snake
@@ -527,13 +380,12 @@
            out-idxs (vec (keep-indexed (fn [i arg-name] (when (.startsWith arg-name "out_") i))
                                        arg-names))]
        {:outFields
-        (vec (map-indexed (fn [i field-spec]
-                            (let [[field-name field-type] field-spec]
-                              (cond-> {:key (kebab->snake field-name)
-                                       :type (str field-type)
-                                       :argIdx (nth out-idxs i)}
-                                (= field-type :double-array)
-                                (assoc :countArgIdx (.indexOf arg-names (str (nth field-spec 3)))))))
+        (vec (map-indexed (fn [i [field-name field-type _ count-arg]]
+                            (cond-> {:key (kebab->snake field-name)
+                                     :type (str field-type)
+                                     :argIdx (nth out-idxs i)}
+                              (= field-type :double-array)
+                              (assoc :countArgIdx (.indexOf arg-names (str count-arg)))))
                           (:out-fields fn-def)))})))
 
 (defn errno-checked?
@@ -568,15 +420,9 @@
       take-call-errno!, then yield the call's own result."
      [coord-arrays args]
      (fn [result]
-       (let [returned-data (.-coordData result)]
-         (dotimes [i (count coord-arrays)]
-           (let [ca-info (nth coord-arrays i)
-                 original-arg (nth args (:argIdx ca-info))
-                 new-data (aget returned-data i)]
-
-             
-             
-             (.set (.-buffer original-arg) new-data))))
+       (dotimes [i (count coord-arrays)]
+         (.set (.-buffer (nth args (:argIdx (nth coord-arrays i))))
+               (aget (.-coordData result) i)))
        (let [errno (.-errno result)]
          (when (and (number? errno) (not (zero? errno)))
            (.set call-errnos args errno)))
@@ -600,10 +446,14 @@
            coord-arrays (into []
                               (keep-indexed
                                (fn [idx arg]
-                                 (when (coord-array-arg? arg)
-                                   {:argIdx idx
-                                    :data (.-buffer arg)
-                                    :numFloats (.-floatsNeeded arg)}))
+                                 (when (and (object? arg) (= (.-type arg) "coord-array"))
+                                   (let [^js data (.-buffer arg)
+                                         n (.-floatsNeeded arg)]
+                                     ;; structured clone of a view copies its
+                                     ;; whole backing buffer
+                                     {:argIdx idx
+                                      :data (if (= (.-length data) n) data (.slice data 0 n))
+                                      :numFloats n})))
                                args))
            string-names (into #{} (keep (fn [[arg-name semantic-type]]
                                           (when (= :string-array? semantic-type) arg-name)))
@@ -622,19 +472,7 @@
                     proj-returns (assoc :projReturns (str proj-returns))
                     (= proj-returns :struct-list) (merge (struct-list-extras fn-def))
                     (= proj-returns :out-params)  (merge (out-params-extras fn-def))
-                    (seq coord-arrays)
-                    (assoc :coordArrays
-                           (mapv (fn [ca]
-                                   ;; structured clone of a view copies its
-                                   ;; whole backing buffer
-                                   {:argIdx (:argIdx ca)
-                                    :data (let [^js data (:data ca)
-                                                n (:numFloats ca)]
-                                            (if (= (.-length data) n)
-                                              data
-                                              (.slice data 0 n)))
-                                    :numFloats (:numFloats ca)})
-                                 coord-arrays))
+                    (seq coord-arrays) (assoc :coordArrays coord-arrays)
                     (seq string-arrays) (assoc :stringArrays string-arrays)
                     errno? (assoc :errnoCheck true))]
        {:args (if (seq moved)
@@ -646,11 +484,11 @@
 
 ;; The context clone of each isolated call in flight, keyed by the args
 ;; array of dispatch/call!: a fn that destroys the clone. The result-wrapper
-;; removes the entry. proj/dispatch-call calls it when the call rejects. The
-;; wasm has no C++ exception catching, so PROJ rejects an invalid CRS, and
-;; this path is common. The key works because cljs-leg gives the args array
-;; of dispatch/call! to the extras-builder, the isolator and the wrapper,
-;; and proj-extras-builder returns that array when it moves no arg.
+;; removes the entry. proj/dispatch-call calls it when the call rejects, which
+;; is common: the wasm has no C++ exception catching, so PROJ rejects an
+;; invalid CRS. The key works because call-cljs gives the args array of
+;; dispatch/call! to the extras-builder, the isolator and the wrapper, and
+;; proj-extras-builder returns that array when it moves no arg.
 #?(:cljs
    (defonce ^:private unowned-clones (js/WeakMap.)))
 
@@ -680,103 +518,61 @@
 
 #?(:cljs
    (defn proj-result-wrapper
-     "PROJ result-wrapper hook for clj-native.dispatch. It wraps an opaque
-      pointer return with worker_idx, so that a later call goes to the same
-      worker.
-
-      A :pj return gets the full wrapper: ptr, worker_idx, type and ctx_id.
-      process-return-value-with-tracking then registers it with the
-      live-context-cap and FinalizationRegistry pipeline.
-
-      ctx_id carries a generation suffix because PROJ recycles heap
-      addresses. Two different PJs can hold the same ptr in one session, so
-      ptr alone cannot key the live-pjs map.
-
-      A :pj-list or :pj-operation-factory-context return gets a light
-      worker_idx wrap. Without the wrap, a later call such as
-      proj_list_get_count receives the raw integer pointer. That address is
-      valid only on the worker that ran proj_create_operations. Worker
-      affinity routing then falls back to any(), the call goes to a
-      different worker, and PROJ returns 0.
-
-      The light wrap has no ctx_id. Thus the FR-registration branch, which
-      keys on ctx_id, skips it, and the worker mutex deadlock stays absent.
-      The caller must destroy those two types explicitly with
-      proj_list_destroy or proj_operation_factory_context_destroy.
-
-      :isolator-result carries proj-context-isolator's return map when the
-      call was context-isolated. The wrapper attaches its :ephemeral-ctx-ptr
-      to the wrapped object as _ephemeral_context_ptr, with the call's
-      worker-idx as _ephemeral_context_worker_idx. build-pj-destroy-fn reads
-      the two fields and chains the ctx destroy after the primary destroy.
-      A result that is not an object owns no clone, so the wrapper destroys
-      the clone at once. The worker read the errno of the clone in the call."
-     [{:keys [result fn-def worker-idx platform args isolator-result]}]
+     "PROJ result-wrapper hook for clj-native.dispatch. Wraps a pointer
+      return with its worker_idx, so a later call goes to the worker that
+      owns the address. A :pj return also gets the type, ctx_id and
+      parent_ctx_id that process-return-value-with-tracking tracks. A
+      :pj-list or :pj-operation-factory-context return gets no ctx_id, so the
+      caller must destroy it. The context clone of an isolated call goes on
+      an object result as _ephemeral_context_ptr and
+      _ephemeral_context_worker_idx, for build-pj-destroy-fn. With any other
+      result, the wrapper destroys the clone at once."
+     [{:keys [result fn-def worker-idx args isolator-result]}]
      (let [proj-returns (:proj-returns fn-def)
            wrapped
            (cond
-             (and (= platform :cljs)
-                  (= proj-returns :pj)
-                  (some? result)
-                  (not= result 0))
-             (let [gen (swap! pj-gen-counter inc)
-                   ctx-id (str "pj-" result "-g" gen)
-                   ;; Parent ctx-id of the new PJ. PJ-creating PROJ
-                   ;; functions take a ctx as their first arg. The ctx
-                   ;; wrapper carries a bare-integer .ctx_id, and PJ
-                   ;; wrappers prefix with "pj-". parent-ctx-id threaded
-                   ;; into pool/register-handle! lets destroy-context!
-                   ;; drain only this ctx's children (C) and B-gate on its
-                   ;; live PJs.
-                   first-arg (first args)
+             (or (nil? result) (= result 0)) result
+
+             (= proj-returns :pj)
+             (let [first-arg (first args)
+                   ;; A ctx wrapper's ctx_id is a bare integer, and a PJ's
+                   ;; starts with "pj-". destroy-context! drains the
+                   ;; children of the parent ctx.
                    parent-ctx-id (when (and (object? first-arg)
                                             (some? (.-ctx_id first-arg))
                                             (not (.startsWith (str (.-ctx_id first-arg)) "pj-")))
                                    (.-ctx_id first-arg))]
-               ;; ctx_id participates in the refcount scan of clj-native
-               ;; dispatch, so an explicit id keeps that arg scan O(1).
                #js {:ptr result
                     :worker_idx worker-idx
                     :type "pj"
-                    :ctx_id ctx-id
+                    :ctx_id (str "pj-" result "-g" (swap! pj-gen-counter inc))
                     :parent_ctx_id parent-ctx-id})
 
-             (and (= platform :cljs)
-                  (or (= proj-returns :pj-list)
-                      (= proj-returns :pj-operation-factory-context))
-                  (some? result)
-                  (not= result 0))
+             (contains? #{:pj-list :pj-operation-factory-context} proj-returns)
              #js {:ptr result
                   :worker_idx worker-idx
                   :type (str proj-returns)}
 
-             :else result)
-           ephemeral-ctx-ptr (:ephemeral-ctx-ptr isolator-result)]
+             :else result)]
        (when isolator-result
          (.delete unowned-clones args)
          (if (object? wrapped)
-           (do (aset wrapped "_ephemeral_context_ptr" ephemeral-ctx-ptr)
+           (do (aset wrapped "_ephemeral_context_ptr" (:ephemeral-ctx-ptr isolator-result))
                (aset wrapped "_ephemeral_context_worker_idx" worker-idx))
            ((:release isolator-result))))
        wrapped)))
 
 #?(:cljs
    (defn ^:async proj-context-isolator
-     "Per-call PROJ context isolation. Runs for fn-defs flagged :isolate-context?
-      true (at this time only proj_create_crs_to_crs). Sub-dispatches
-      proj_context_clone against the consumer's ctx (args[0]) and substitutes
-      the clone ptr. Dispatch reads only :args from this map. The rest comes
-      back to proj-result-wrapper as :isolator-result. The wrapper attaches the
-      clone ptr to the wrapped result through _ephemeral_context_ptr, and
-      build-pj-destroy-fn reads it and chains proj_context_destroy after the
-      primary proj_destroy fires. :release destroys a clone that no result
-      owns. Refer to unowned-clones.
+     "Per-call PROJ context isolation for fn-defs with :isolate-context?.
+      Clones the consumer's ctx (args[0]) on its worker and passes the clone
+      in its place. Dispatch reads only :args. The rest reaches
+      proj-result-wrapper as :isolator-result. :release destroys a clone
+      that no result owns (refer to unowned-clones).
 
-      PERF: proj_context_clone reconstructs the projCppContext. It opens
-      sqlite again and rebuilds factory state (c_api.cpp:157). The clone
-      prevents cumulative cache-state divergence between callers that
-      share one ctx. Examine the cost again if profiling shows a
-      setup-time regression.
+      PERF: proj_context_clone opens sqlite again and rebuilds the factory
+      state (c_api.cpp:157). It keeps callers that share one ctx from
+      drifting apart in cache state.
 
       The isolator gets the library VALUE in :library, because it
       dispatches again. It must not look one up."
@@ -792,11 +588,8 @@
         :ephemeral-ctx-ptr clone-ptr
         :release release})))
 
-;; The heap and coord-array helpers below are JVM-only, and specifically
-;; the GraalVM backend. They reach into the Emscripten module through `p`,
-;; and only the JVM keeps a module there. ClojureScript coord arrays are
-;; plain JS Float64Arrays that proj.cljc builds and the worker copies into
-;; its own heap, so nothing on the main thread allocates in wasm memory.
+;; GraalVM only. A ClojureScript coord array is a Float64Array that the
+;; worker copies into its own heap.
 #?(:clj
    (defn malloc
      [b]
@@ -805,9 +598,7 @@
 
 #?(:clj
    (defn alloc-coord-array
-     "PROJ ergonomics: allocate space for `num-coords` 4-double tuples
-      that match the PJ_COORD shape. The generic byte-level malloc lives
-      in clj-native.wasm, and it locks per-module on its own."
+     "Allocate space for `num-coords` PJ_COORD tuples of 4 doubles."
      [num-coords _dims]
      {:malloc (malloc (* 32 num-coords)) :n num-coords}))
 
@@ -833,7 +624,7 @@
 
 #?(:clj
    (defn set-coord-array
-     "PROJ ergonomics: copy a Clojure coord vector into an allocated
+     "Copy a Clojure coord vector into an allocated
       PJ_COORD array. Packs on the host, then makes one bulk clj-native
       write into HEAPF64."
      [coord-array allocated]
@@ -848,7 +639,7 @@
 
 #?(:clj
    (defn get-coord-array
-     "PROJ ergonomics: read a 4-double PJ_COORD tuple from an allocated
+     "Read a 4-double PJ_COORD tuple from an allocated
       coord array at index idx. Returns a vector [x y z t]."
      [allocated idx]
      (ensure-proj-initialized!)

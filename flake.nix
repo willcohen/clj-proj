@@ -18,10 +18,8 @@
         pkgs = nixpkgs.legacyPackages.${native.actualSystem};
 
         shells = native.mkCrossShells {
-          # GraalVM as the JDK makes native-image available to the clojure CLI,
-          # and its libgraal lets the :graal PROJ wasm guest JIT-compile.
-          # The JDK's libgraal and the org.graalvm.* artifact pins in deps.edn
-          # have to move together; jvm_runtime_test guards the pairing.
+          # libgraal lets the :graal wasm guest JIT-compile. It must match the
+          # org.graalvm.* pins in deps.edn; jvm_runtime_test checks the pair.
           jdk = pkgs.graalvmPackages.graalvm-ce;
 
           # The PROJ build runs sqlite3 to make proj.db.

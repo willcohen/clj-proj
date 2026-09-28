@@ -25,18 +25,14 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node esbuild.config.mjs",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "node esbuild.config.mjs"
   },
-  "keywords": [],
-  "author": "",
   "license": "MIT",
   "dependencies": {
     "ffi-wasm": "0.0.2",
     "resource-tracker": "^0.0.1",
     "squint-cljs": "^0.14.210",
-    "worker-router": "npm:@wcohen/worker-router@^0.0.2",
-    "xhr2": "0.2.1"
+    "worker-router": "npm:@wcohen/worker-router@^0.0.2"
   },
   "devDependencies": {
     "esbuild": "^0.19.0"

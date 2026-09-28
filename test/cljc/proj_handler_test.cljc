@@ -46,15 +46,12 @@
                   :db-bytes (readFileSync (resolve dist-dir "proj.db"))
                   :ini-bytes (readFileSync (resolve dist-dir "proj.ini"))))))
 
-     (deftest ^:async ImportShape-create-is-an-async-function
+     (defn ^:async new-handler
+       "A handler created with the staged proj.db and proj.ini."
+       []
        (await (init-once!))
-       (let [create (:create @state)]
-         (is (= "function" (js* "typeof ~{}" create))
-             "create must be a function")
-         (let [result (or (= "AsyncFunction" (-> create .-constructor .-name))
-                          (and (= "function" (js* "typeof ~{}" create))
-                               (>= (.-length create) 0)))]
-           (is result "create must be callable as async"))))
+       (let [{:keys [create db-bytes ini-bytes]} @state]
+         (await (create #js {:dbBytes db-bytes :iniBytes ini-bytes :logLevel 0}))))
 
      (deftest ^:async rejects-when-dbBytes-missing
        (await (init-once!))
@@ -67,9 +64,7 @@
                  "create({}) must reject with a clear dbBytes-missing error")))))
 
      (deftest ^:async returns-plain-object-with-required-handler-methods
-       (await (init-once!))
-       (let [{:keys [create db-bytes ini-bytes]} @state
-             handler (await (create #js {:dbBytes db-bytes :iniBytes ini-bytes :logLevel 0}))]
+       (let [handler (await (new-handler))]
          (try
            (is (= "object" (js* "typeof ~{}" handler)) "handler must be an object")
            (is (not= nil handler) "handler must not be null")
@@ -82,9 +77,7 @@
            (finally (await ((:destroy @state)))))))
 
      (deftest ^:async context-create-returns-a-positive-integer-ctxId
-       (await (init-once!))
-       (let [{:keys [create db-bytes ini-bytes]} @state
-             handler (await (create #js {:dbBytes db-bytes :iniBytes ini-bytes :logLevel 0}))]
+       (let [handler (await (new-handler))]
          (try
            (let [r (await (.context_create handler #js {}))]
              (is (= "number" (js* "typeof ~{}" (.-ctxId r))))
@@ -95,9 +88,7 @@
            (finally (await ((:destroy @state)))))))
 
      (deftest ^:async malloc-returns-nonzero-ptr-free-succeeds
-       (await (init-once!))
-       (let [{:keys [create db-bytes ini-bytes]} @state
-             handler (await (create #js {:dbBytes db-bytes :iniBytes ini-bytes :logLevel 0}))]
+       (let [handler (await (new-handler))]
          (try
            (let [ptr (await (.malloc handler 8))]
              (is (= "number" (js* "typeof ~{}" ptr)))
@@ -107,14 +98,12 @@
            (finally (await ((:destroy @state)))))))
 
      (deftest ^:async IdempotentInit-re-create-with-same-args-preserves-state
-       (await (init-once!))
-       (let [{:keys [create db-bytes ini-bytes]} @state
-             handler1 (await (create #js {:dbBytes db-bytes :iniBytes ini-bytes :logLevel 0}))]
+       (let [handler1 (await (new-handler))]
          (try
            (let [r1 (await (.context_create handler1 #js {}))
             ;; The ctxId sequence continues only when state stays
             ;; across re-create.
-                 handler2 (await (create #js {:dbBytes db-bytes :iniBytes ini-bytes :logLevel 0}))
+                 handler2 (await (new-handler))
                  r2 (await (.context_create handler2 #js {}))]
              (is (> (.-ctxId r2) (.-ctxId r1))
                  (str "state preserved: r2.ctxId (" (.-ctxId r2)
@@ -139,9 +128,7 @@
      (deftest ^:async parallel-mallocs-return-distinct-nonzero-pointers
   ;; The workerQueue in makeHandler serializes ccall bodies, so no
   ;; two concurrent mallocs share a ptr.
-       (await (init-once!))
-       (let [{:keys [create db-bytes ini-bytes]} @state
-             handler (await (create #js {:dbBytes db-bytes :iniBytes ini-bytes :logLevel 0}))]
+       (let [handler (await (new-handler))]
          (try
            (let [ptrs (await
                        (js/Promise.all
@@ -269,9 +256,7 @@
      ;; of its context first, so it gives the errno of that call. A new
      ;; context starts at 0, because PROJ finds proj.ini.
      (deftest ^:async errno-check-gives-the-errno-of-the-call
-       (await (init-once!))
-       (let [{:keys [create db-bytes ini-bytes]} @state
-             handler (await (create #js {:dbBytes db-bytes :iniBytes ini-bytes :logLevel 0}))]
+       (let [handler (await (new-handler))]
          (try
            (let [ctx (.-ptr (await (.context_create handler #js {})))
                  create-pj (fn [definition]

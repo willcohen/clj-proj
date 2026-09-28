@@ -1,5 +1,0 @@
-# The package.json "files" field is used instead
-# This file is kept for any additional exclusions
-.DS_Store
-*.cljc
-*.clj

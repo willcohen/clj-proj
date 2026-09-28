@@ -5,41 +5,14 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Main-thread orchestrator for PROJ WASM initialization on the GraalVM path,
- * plus a resource-loading helper for the worker-router JS path.
+ * load() is the GraalVM loader of PROJ. loadProjResources() reads proj.db and
+ * proj.ini for the worker pool.
  *
- * - load(): the loader contract that clj-native's bootstrap-graal-module!
- *   drives. It receives the binary resources that the JVM side encoded,
- *   installs them into Emscripten's virtual filesystem, and returns the
- *   loaded module. That fn's docstring holds the contract and the GraalVM
- *   rules that this file obeys.
- * - detectEnvironment(): node / browser / unknown classifier.
- * - loadProjResources(): reads proj.db and proj.ini once on the main thread,
- *   so that wasm.cljc's init-workers! can forward them into each worker
- *   through worker-router's bootstrap protocol.
- *
- * This module has no static imports, deliberately. A GraalVM polyglot Context
- * evaluates it as a bare ESM Source, where a bare specifier does not
- * resolve. Thus it cannot get clj-native's shipped helpers and keeps its own
- * detectEnvironment. Node imports the same file as an ordinary module for
- * loadProjResources, so the two functions stay together.
+ * No static imports: a GraalVM polyglot Context evaluates this file as a bare
+ * ESM Source, where a bare specifier does not resolve.
  *
  * @module proj-loader
  */
-
-/**
- * Identifies the current JavaScript environment.
- * @returns {'node' | 'browser' | 'unknown'}
- */
-function detectEnvironment() {
-  if (typeof process !== 'undefined' && process.versions != null && process.versions.node != null) {
-    return 'node';
-  }
-  if (typeof window !== 'undefined' && typeof window.document !== 'undefined') {
-    return 'browser';
-  }
-  return 'unknown';
-}
 
 /**
  * Load the PROJ Emscripten module and install its data files.
@@ -47,12 +20,7 @@ function detectEnvironment() {
  * Called by clj-native's bootstrap-graal-module!, which owns the caching and
  * bridges the returned promise onto the future that the JVM caller blocks
  * on. Each resource arrives as a real Uint8Array (proj.ini as a string),
- * because the JVM side encodes them through clj-native's js-bytes. This fn
- * does no widening.
- *
- * This fn sets two module arguments for GraalVM. Comments at those two lines
- * give the reason. bootstrap-graal-module!'s docstring holds the general
- * rules.
+ * because the JVM side encodes them through clj-native's js-bytes.
  *
  * @param {object} options
  * @param {Uint8Array} options.wasmBinary - proj-emscripten.wasm bytes.
@@ -107,45 +75,26 @@ async function load(options = {}) {
 
 /**
  * Loads proj.db and proj.ini from the filesystem (Node.js) or fetch
- * (browser). Called once on the main thread by wasm.cljc's init-workers! and
- * forwarded into each worker-router worker through the handler's init args.
- * The two fields are bytes, so the worker handler stages them uniformly
- * through ffi-wasm/handler-fs's stageFiles.
+ * (browser), for handler/default-init-args.
  * @returns {Promise<{projDb: Uint8Array, projIni: Uint8Array}>}
  */
 async function loadProjResources() {
-  const env = detectEnvironment();
-
-  if (env === 'node') {
+  const urls = ['proj.db', 'proj.ini'].map((name) => new URL(name, import.meta.url));
+  let bytes;
+  if (typeof process !== 'undefined' && process.versions?.node != null) {
     const fs = await import('fs');
-    const path = await import('path');
-    const { fileURLToPath } = await import('url');
-
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
-
-    return {
-      projDb: fs.readFileSync(path.join(__dirname, 'proj.db')),
-      projIni: fs.readFileSync(path.join(__dirname, 'proj.ini'))
-    };
+    bytes = urls.map((url) => fs.readFileSync(url));
   } else {
-    const baseUrl = new URL('./', import.meta.url).href;
-    const [dbResp, iniResp] = await Promise.all([
-      fetch(baseUrl + 'proj.db'),
-      fetch(baseUrl + 'proj.ini')
-    ]);
+    const resps = await Promise.all(urls.map((url) => fetch(url)));
     // A 404 page staged as proj.db fails much later, as a database error.
-    for (const [name, resp] of [['proj.db', dbResp], ['proj.ini', iniResp]]) {
+    resps.forEach((resp, i) => {
       if (!resp.ok) {
-        throw new Error(`proj-loader: fetch of ${baseUrl + name} failed: HTTP ${resp.status}`);
+        throw new Error(`proj-loader: fetch of ${urls[i].href} failed: HTTP ${resp.status}`);
       }
-    }
-
-    return {
-      projDb: new Uint8Array(await dbResp.arrayBuffer()),
-      projIni: new Uint8Array(await iniResp.arrayBuffer())
-    };
+    });
+    bytes = await Promise.all(resps.map(async (resp) => new Uint8Array(await resp.arrayBuffer())));
   }
+  return { projDb: bytes[0], projIni: bytes[1] };
 }
 
-export { load, detectEnvironment, loadProjResources };
+export { load, loadProjResources };

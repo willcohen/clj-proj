@@ -7,23 +7,8 @@
 #?(:clj
    (ns net.willcohen.proj.handler
      "Per-worker init/destroy for the clj-native workload-pool `:proj` handler.
-
-      The pool consumer (typically cg's session wiring) registers this
-      handler under `:compute` with `(wp/register-handler! registry
-      :compute :proj (handler/spec))`. The ThreadFactory behind the
-      compute slot then runs `init` once per worker thread on the first
-      job, and `destroy` once per thread at pool shutdown.
-
-      JVM: init returns the per-thread state map
-      `{:ctx <context-atom> :tx-cache (atom {})}`, which
-      `proj/transform-batch` reads through `wp/current-context :proj`.
-
-      CLJS: `spec` emits {:module :args :pre-terminate}. Per-worker init
-      and teardown are in proj-handler.mjs. worker-bootstrap calls its
-      create export with :args, and its module-level destroy sibling at
-      terminate. The host-side :pre-terminate hook flushes pending async
-      disposers before the pool dies. Build :args with
-      `default-init-args`."
+      Register it with `(wp/register-handler! registry :compute :proj
+      (handler/spec))`."
      (:require [net.willcohen.proj.proj :as proj]
                [net.willcohen.proj.wasm :as wasm]
                [net.willcohen.native.graal-wasm :as nw]
@@ -56,7 +41,8 @@
      (proj/init!)
      (if (and (proj/graal?) (not (false? (:graal-pool? args))))
        (let [{:keys [wc pctx]} (wasm/bootstrap-pooled-context!)
-             ctx (nw/with-wasm-context wc (proj/context-create {}))]
+             ctx (try (nw/with-wasm-context wc (proj/context-create {}))
+                      (catch Throwable t (.close ^org.graalvm.polyglot.Context pctx) (throw t)))]
          (log/info "proj/handler: pooled polyglot Context and PROJ Context allocated on"
                    (.getName (Thread/currentThread)))
          {:ctx ctx
@@ -71,17 +57,9 @@
 
 #?(:clj
    (defn destroy
-     "Release the per-worker Context and the cached transformers.
-
-      Runs at pool shutdown on the thread that owns the Context.
-      proj_context_destroy must run on the pthread that created the
-      Context, because PROJ's per-context grid cache and error state are
-      pthread-local.
-
-      Logs and drops per-handle errors, so one bad release does not stop
-      the rest of the teardown. Pooled graal state: the releases run under
-      the worker's WasmContext binding, and the polyglot Context closes
-      last."
+     "Release the per-worker Context and the cached transformers, at pool
+      shutdown, on the thread that owns the Context. Logs and drops each
+      failed release, so one bad release does not stop the rest."
      [{:keys [ctx tx-cache wc pctx] :as _state}]
      (when (some? ctx)
        (try
@@ -109,15 +87,9 @@
 
 #?(:cljs
    (defn ^:async default-init-args
-     "Build the per-worker init payload of the proj handler: load
-      proj.db and proj.ini once on the main thread through proj-loader,
-      and return the plain JS object that proj-handler's init requires.
-      Workers cannot load these themselves -- each worker is its own JS
-      context with no access to the page URL or the main-thread fetch
-      shim. opts:
-
-        :log-level integer (0..3) for the PROJ C-library logger.
-                   Default 0."
+     "Build the per-worker init payload of the proj handler: proj.db and
+      proj.ini, loaded once on the main thread, and the :log-level of opts
+      (0..3, default 0) for the PROJ logger."
      [opts]
      (let [resources (await (.loadProjResources proj-loader))]
        (js-obj "dbBytes"  (.-projDb resources)
@@ -137,18 +109,12 @@
      nil))
 
 (defn spec
-  "Return a handler spec map for
-   `clj-native.workload-pool/register-handler!`.
+  "Return a handler spec map for `clj-native.workload-pool/register-handler!`.
 
-   JVM: {:init init :destroy destroy :args args} -- the cljc fns above,
-   run once per worker thread.
-
-   CLJS: {:module url :args args :pre-terminate pre-terminate!}.
-   :module resolves ./proj-handler.mjs against this module's URL, which
-   is correct unbundled (the source tree) and bundled (esbuild ships
-   proj-handler.mjs adjacent to dist/proj.mjs). `args` must be the
-   payload from `default-init-args` -- proj-handler's init throws
-   without dbBytes."
+   CLJS: :module resolves ./proj-handler.mjs against this module's URL,
+   which is correct unbundled and bundled (esbuild ships proj-handler.mjs
+   next to dist/proj.mjs). `args` must be the payload from
+   `default-init-args`: proj-handler's init throws without dbBytes."
   ([] (spec nil))
   ([args]
    #?(:clj  {:init init :destroy destroy :args args}

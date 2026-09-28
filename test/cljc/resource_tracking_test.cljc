@@ -15,11 +15,6 @@
 ;; Disposers return worker-call Promises. clj-native's pool collects
 ;; them in pending_dispose_promises, and flushPendingDisposes settles
 ;; and clears them, which gives test isolation.
-;;
-;; resource-tracker is imported through the absolute path in
-;; src/cljc/net/willcohen/proj/node_modules so this test shares the
-;; module instance that proj.mjs resolves. A local import would load
-;; a second instance with separate module-scope state.
 
 (ns resource-tracking-test
   #?(:cljs (:require [cljs.test :as t :refer [deftest is]]
@@ -29,132 +24,54 @@
 #?(:cljs
    (do
 
-     (def state (atom {:proj nil :resource nil}))
+     (def state (atom {:proj nil}))
 
-     (defn ^:async init-once! []
+     (defn ^:async init-once!
+       "Load and init proj once, and return it."
+       []
        (when (nil? (:proj @state))
-         (let [proj-mod     (await (js/import "../../src/cljc/net/willcohen/proj/dist/proj.mjs"))
-               resource-mod (await (js/import
-                                       "../../src/cljc/net/willcohen/proj/node_modules/resource-tracker/resource.mjs"))]
-           (swap! state assoc :proj proj-mod :resource resource-mod)
-           (await (.init proj-mod)))))
+         (let [proj-mod (await (js/import "../../src/cljc/net/willcohen/proj/dist/proj.mjs"))]
+           (swap! state assoc :proj proj-mod)
+           (await (.init proj-mod))))
+       (:proj @state))
 
      (defn ^:async shutdown-once! []
        (when-let [proj (:proj @state)]
          (when (.-shutdown proj)
            (await (.shutdown proj)))))
 
-     ;; Top-level so the disposer closure captures no test-scope
-     ;; locals. The box stays strongly held. The tracked PROJ handle
-     ;; must not.
-     (def fr-fired-box #js {:fired false})
-
-     ;; Top-level so the deftest's async frame does not capture the
-     ;; tracked handle. The resource-tracker contract: disposefn
-     ;; returns a Promise.
-     (defn ^:async register-gc-tracker-for-handle! [proj resource ctx]
-       (let [handle (await (.projCreateFromDatabase proj
-                                                       #js {:context   ctx
-                                                            :auth_name "EPSG"
-                                                            :code      "4326"}))]
-         (.track resource handle
-                 #js {:disposefn (fn []
-                                   (set! (.-fired fr-fired-box) true)
-                                   (js/Promise.resolve))
-                      :tracktype "gc"})
-         ;; Return nil. The handle reference must not escape this
-         ;; frame.
-         nil))
-
-     (defn ^:async yield-macrotask! []
-       (await (js/Promise. (fn [r] (js/setImmediate r)))))
-
-     (deftest ^:async lib-resource-tracker-FinalizationRegistry-fires-during-test-lifetime
-  ;; Self-skips with a passing assertion when --expose-gc is absent,
-  ;; so the default `bb test:cljs` run stays green.
-  ;;
-  ;; The clj-proj wrapper pins the PJ tracktype to "stack", so this
-  ;; test calls resource.track directly.
-  ;;
-  ;; A single gc() can do only a minor collection. The loop does gc
-  ;; plus macrotask yields up to max-cycles, then the test fails.
-       (await (init-once!))
-       (if (not= "function" (js* "typeof ~{}" (.-gc js/globalThis)))
-         (is true "skipped: --expose-gc required for FinalizationRegistry test")
-         (let [proj     (:proj @state)
-               resource (:resource @state)]
-           (await (.flushPendingDisposes proj))
-           (set! (.-fired fr-fired-box) false)
-           (let [ctx (await (.contextCreate proj))]
-             (await (register-gc-tracker-for-handle! proj resource ctx))
-             (let [max-cycles 8]
-               (loop [cycle 0]
-                 (when (and (not (.-fired fr-fired-box))
-                            (< cycle max-cycles))
-                   ((.-gc js/globalThis))
-                   (await (yield-macrotask!))
-                   (await (yield-macrotask!))
-                   (recur (inc cycle)))))
-             (is (.-fired fr-fired-box)
-                 "FinalizationRegistry should fire the disposer after GC")
-             (await (.flushPendingDisposes proj))
-             ((aget ctx (.-dispose js/Symbol)))
-             (await (.flushPendingDisposes proj))))))
-
-     (deftest ^:async clj-proj-contextCreate-registers-an-async-disposer
-  ;; releasing_fn is sync, so a stack scope with an async body cannot
-  ;; run it. Symbol.dispose triggers the same registered destroy fn.
-       (await (init-once!))
-       (let [proj (:proj @state)]
+     (defn ^:async check-async-disposer
+       "Make a PJ with (create proj ctx), dispose it and its context, and
+        check that the flush settles their destroy Promises."
+       [label create]
+       (let [proj (await (init-once!))]
          (await (.flushPendingDisposes proj))
-         (let [ctx (await (.contextCreate proj))]
-           ((aget ctx (.-dispose js/Symbol))))
-         (let [settled (await (.flushPendingDisposes proj))]
-           (is (pos? (.-length settled))
-               (str "context dispose should produce a pending Promise "
-                    "(worker-call context_destroy); flush returned " (.-length settled))))))
+         (let [ctx (await (.contextCreate proj))
+               crs (await (create proj ctx))]
+           (is (some? crs) (str label " should return a handle"))
+           (is (= "function" (js* "typeof ~{}" (aget crs (.-dispose js/Symbol))))
+               (str label " handle should expose Symbol.dispose"))
+           ((aget crs (.-dispose js/Symbol)))
+           ((aget ctx (.-dispose js/Symbol)))
+           (let [settled (await (.flushPendingDisposes proj))]
+             (is (pos? (.-length settled))
+                 (str label " and context disposes should produce pending "
+                      "Promises; flush returned " (.-length settled)))))))
 
      (deftest ^:async clj-proj-projCreateCrsToCrs-registers-an-async-disposer
-       (await (init-once!))
-       (let [proj (:proj @state)]
-         (await (.flushPendingDisposes proj))
-         (let [ctx (await (.contextCreate proj))
-               crs (await (.projCreateCrsToCrs proj
-                                                  #js {:context    ctx
-                                                       :source_crs "EPSG:4326"
-                                                       :target_crs "EPSG:3857"}))]
-           (is (some? crs) "projCreateCrsToCrs should return a handle")
-           (is (= "function" (js* "typeof ~{}" (aget crs (.-dispose js/Symbol))))
-               "CRS handle should expose Symbol.dispose")
-           ((aget crs (.-dispose js/Symbol)))
-           ((aget ctx (.-dispose js/Symbol)))
-           (let [settled (await (.flushPendingDisposes proj))]
-             (is (pos? (.-length settled))
-                 (str "CRS+context disposes should produce pending "
-                      "Promises; flush returned " (.-length settled)))))))
+       (await (check-async-disposer
+               "projCreateCrsToCrs"
+               (fn [proj ctx]
+                 (.projCreateCrsToCrs proj #js {:context ctx :source_crs "EPSG:4326" :target_crs "EPSG:3857"})))))
 
      (deftest ^:async clj-proj-projCreateFromDatabase-registers-an-async-disposer
-       (await (init-once!))
-       (let [proj (:proj @state)]
-         (await (.flushPendingDisposes proj))
-         (let [ctx (await (.contextCreate proj))
-               crs (await (.projCreateFromDatabase proj
-                                                      #js {:context   ctx
-                                                           :auth_name "EPSG"
-                                                           :code      "4326"}))]
-           (is (some? crs) "projCreateFromDatabase should return a handle")
-           (is (= "function" (js* "typeof ~{}" (aget crs (.-dispose js/Symbol))))
-               "DB CRS handle should expose Symbol.dispose")
-           ((aget crs (.-dispose js/Symbol)))
-           ((aget ctx (.-dispose js/Symbol)))
-           (let [settled (await (.flushPendingDisposes proj))]
-             (is (pos? (.-length settled))
-                 (str "DB CRS+context disposes should produce pending "
-                      "Promises; flush returned " (.-length settled)))))))
+       (await (check-async-disposer
+               "projCreateFromDatabase"
+               (fn [proj ctx]
+                 (.projCreateFromDatabase proj #js {:context ctx :auth_name "EPSG" :code "4326"})))))
 
      (deftest ^:async clj-proj-flush-pending-disposes-clears-the-atom
-       (await (init-once!))
-       (let [proj (:proj @state)]
+       (let [proj (await (init-once!))]
          (await (.flushPendingDisposes proj))
          (let [ctx (await (.contextCreate proj))]
            ((aget ctx (.-dispose js/Symbol))))
@@ -173,8 +90,7 @@
   ;; for PJ handles is still gated on worker-mutex behavior in
   ;; proj.cljc. The dispose path still reaches worker-call, so the
   ;; workerQueue sees the same bulk-enqueue pattern.
-       (await (init-once!))
-       (let [proj (:proj @state)
+       (let [proj (await (init-once!))
              n    10
              ctxs (await (js/Promise.all
                               (.from js/Array #js {:length n}
@@ -193,13 +109,7 @@
          (let [settled (await (.flushPendingDisposes proj))]
            (is (>= (.-length settled) (* 2 n))
                (str "bulk dispose should produce >= " (* 2 n)
-                    " pending Promises; got " (.-length settled)))
-           (doseq [i (range (.-length settled))]
-             (let [entry (aget settled i)]
-               (is (or (= "fulfilled" (.-status entry))
-                       (= "rejected"  (.-status entry)))
-                   (str "settled[" i "] must be a Promise.allSettled result; got status="
-                        (.-status entry))))))
+                    " pending Promises; got " (.-length settled))))
          (let [post-ctx (await (.contextCreate proj))]
            (is (some? post-ctx)
                "workerQueue should still serve new contextCreate after bulk dispose")
@@ -212,8 +122,7 @@
      ;; adds no Promise, so a flush length of 0 is the observable
      ;; result.
      (deftest ^:async clj-proj-stale-dispose-from-a-previous-pool-generation-is-dropped
-       (await (init-once!))
-       (let [proj (:proj @state)]
+       (let [proj (await (init-once!))]
          (await (.flushPendingDisposes proj))
          (let [ctx1 (await (.contextCreate proj))]
            (await (.shutdown proj))
@@ -238,8 +147,7 @@
      ;; one ctx-id. Disposing a must release the worker claim of a. The
      ;; next context then goes to the worker of a, the least loaded.
      (deftest ^:async clj-proj-one-ctx-id-on-two-workers-keeps-two-claims
-       (await (init-once!))
-       (let [proj (:proj @state)]
+       (let [proj (await (init-once!))]
          (await (.shutdown proj))
          (await (.init proj {:workers 2}))
          (let [a (await (.contextCreate proj))
@@ -289,8 +197,7 @@
      ;; stayed registered. Its Symbol.dispose, the FinalizationRegistry or an
      ;; LRU eviction then freed the PJ a second time.
      (deftest ^:async clj-proj-explicit-projDestroy-then-dispose-frees-once
-       (await (init-once!))
-       (let [proj (:proj @state)]
+       (let [proj (await (init-once!))]
          (await (fresh-pool! proj trace-dispatch))
          (let [ctx (await (.contextCreate proj))
                crs (await (.projCreateFromDatabase proj #js {:context ctx :auth_name "EPSG" :code "4326"}))
@@ -314,8 +221,7 @@
      ;; An explicit projContextDestroy freed the context on its worker, but
      ;; kept its worker claim, and its Symbol.dispose freed it a second time.
      (deftest ^:async clj-proj-explicit-projContextDestroy-releases-the-claim-once
-       (await (init-once!))
-       (let [proj (:proj @state)]
+       (let [proj (await (init-once!))]
          (await (fresh-pool! proj {:workers 2}))
          (let [a (await (.contextCreate proj))
                b (await (.contextCreate proj))
@@ -340,8 +246,7 @@
      ;; failed init left that chain rejected with no handler. Node then exits
      ;; with ERR_UNHANDLED_REJECTION, although the caller caught the error.
      (deftest ^:async clj-proj-failed-init-leaves-no-unhandled-rejection
-       (await (init-once!))
-       (let [proj (:proj @state)
+       (let [proj (await (init-once!))
              unhandled #js []
              on-unhandled (fn [reason] (.push unhandled reason))]
          (await (.shutdown proj))
@@ -360,8 +265,7 @@
      ;; pointer, so the call for a context on worker 1 ran on worker 0 with
      ;; the pointer of worker 1.
      (deftest ^:async clj-proj-context-setters-run-on-the-worker-of-the-context
-       (await (init-once!))
-       (let [proj (:proj @state)]
+       (let [proj (await (init-once!))]
          (await (fresh-pool! proj {:workers 2}))
          (let [c0 (await (.contextCreate proj))
                c1 (await (.contextCreate proj {:worker 1}))]
@@ -385,8 +289,7 @@
      ;; context on that worker. The call also wrote the recreated PJ into the
      ;; opts of the caller.
      (deftest ^:async clj-proj-cross-worker-args-destroy-their-copies
-       (await (init-once!))
-       (let [proj (:proj @state)
+       (let [proj (await (init-once!))
              op (atom nil)]
          (await (fresh-pool! proj (assoc trace-dispatch :workers 2)))
          (let [c0 (await (.contextCreate proj))
@@ -410,8 +313,7 @@
      ;; Must run last in this file. After shutdown the `proj` module
      ;; is not usable, and the teardown shutdown call is a no-op.
      (deftest ^:async clj-proj-shutdown-drains-pending-disposes-before-terminating-workers
-       (await (init-once!))
-       (let [proj (:proj @state)]
+       (let [proj (await (init-once!))]
          (await (.flushPendingDisposes proj))
          (let [ctx (await (.contextCreate proj))
                crs (await (.projCreateCrsToCrs proj

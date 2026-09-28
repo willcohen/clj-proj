@@ -42,7 +42,6 @@ jobs:
             .clj-kondo/.cache-cli
             .clj-kondo/net.willcohen
           key: lint-${{ hashFiles('**/deps.edn', '**/bb.edn') }}
-          restore-keys: lint-
 
       - name: Run clj-kondo
         run: bb lint
@@ -100,8 +99,6 @@ jobs:
       - name: Install Nix
         if: steps.cache.outputs.cache-hit != 'true'
         uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Setup Nix cache
         if: steps.cache.outputs.cache-hit != 'true'
@@ -145,8 +142,6 @@ jobs:
       - name: Install Nix
         if: steps.cache.outputs.cache-hit != 'true'
         uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Setup Nix cache
         if: steps.cache.outputs.cache-hit != 'true'
@@ -193,8 +188,6 @@ jobs:
       - name: Install Nix
         if: steps.cache.outputs.cache-hit != 'true'
         uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Setup Nix cache
         if: steps.cache.outputs.cache-hit != 'true'
@@ -227,7 +220,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: resources/wasm/
-          key: wasm-graal-${{ hashFiles('bb.edn', 'flake.nix', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc') }}
+          key: wasm-graal-${{ hashFiles('bb.edn', 'flake.nix', 'flake.lock', 'src/cljc/net/willcohen/proj/fndefs.cljc', 'src/cljc/net/willcohen/proj/proj-loader.mjs') }}
 
       - name: Download source archives
         if: steps.cache.outputs.cache-hit != 'true'
@@ -239,8 +232,6 @@ jobs:
       - name: Install Nix
         if: steps.cache.outputs.cache-hit != 'true'
         uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Setup Nix cache
         if: steps.cache.outputs.cache-hit != 'true'
@@ -476,9 +467,6 @@ jobs:
     name: Java Tests (Windows)
     needs: [build-zig, build-wasm-browser, build-wasm-graal]
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
     steps:
       - uses: actions/checkout@v7
 
@@ -561,19 +549,6 @@ jobs:
           name: wasm-browser
           path: .
 
-      - name: Build JS bundle
-        run: bb squint
-
-      - name: Cache test/js node_modules
-        uses: actions/cache@v6
-        with:
-          path: test/js/node_modules
-          key: test-js-nm-macos-${{ hashFiles('test/js/package-lock.json') }}
-          restore-keys: test-js-nm-macos-
-
-      - name: Install test dependencies
-        run: cd test/js && npm install
-
       - name: Run Node.js tests
         run: bb test:node
 
@@ -602,19 +577,6 @@ jobs:
         with:
           name: wasm-browser
           path: .
-
-      - name: Build JS bundle
-        run: bb squint
-
-      - name: Cache test/js node_modules
-        uses: actions/cache@v6
-        with:
-          path: test/js/node_modules
-          key: test-js-nm-linux-amd64-${{ hashFiles('test/js/package-lock.json') }}
-          restore-keys: test-js-nm-linux-amd64-
-
-      - name: Install test dependencies
-        run: cd test/js && npm install
 
       - name: Run Node.js tests
         run: bb test:node
@@ -645,19 +607,6 @@ jobs:
           name: wasm-browser
           path: .
 
-      - name: Build JS bundle
-        run: bb squint
-
-      - name: Cache test/js node_modules
-        uses: actions/cache@v6
-        with:
-          path: test/js/node_modules
-          key: test-js-nm-linux-aarch64-${{ hashFiles('test/js/package-lock.json') }}
-          restore-keys: test-js-nm-linux-aarch64-
-
-      - name: Install test dependencies
-        run: cd test/js && npm install
-
       - name: Run Node.js tests
         run: bb test:node
 
@@ -668,9 +617,6 @@ jobs:
     name: WASM Tests (Windows)
     needs: [build-wasm-browser]
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
     steps:
       - uses: actions/checkout@v7
 
@@ -689,19 +635,6 @@ jobs:
         with:
           name: wasm-browser
           path: .
-
-      - name: Build JS bundle
-        run: bb squint
-
-      - name: Cache test/js node_modules
-        uses: actions/cache@v6
-        with:
-          path: test/js/node_modules
-          key: test-js-nm-windows-${{ hashFiles('test/js/package-lock.json') }}
-          restore-keys: test-js-nm-windows-
-
-      - name: Install test dependencies
-        run: cd test/js && npm install
 
       - name: Run Node.js tests
         run: bb test:node
@@ -733,28 +666,17 @@ jobs:
           path: .
 
       - name: Cache Playwright browsers
-        id: playwright-cache
         uses: actions/cache@v6
         with:
           path: ~/Library/Caches/ms-playwright
-          key: playwright-macos-${{ hashFiles('test/browser/package-lock.json') }}
+          key: playwright-macos-${{ hashFiles('test/browser/package.json') }}
 
       - name: Cache test/browser node_modules
         uses: actions/cache@v6
         with:
           path: test/browser/node_modules
-          key: test-browser-nm-macos-${{ hashFiles('test/browser/package-lock.json') }}
+          key: test-browser-nm-macos-${{ hashFiles('test/browser/package.json') }}
           restore-keys: test-browser-nm-macos-
-
-      - name: Install Playwright deps
-        run: cd test/browser && npm install
-
-      - name: Install Playwright browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: cd test/browser && npx playwright install --with-deps
-
-      - name: Build JS bundle
-        run: bb squint
 
       - name: Run Playwright tests
         run: bb test:playwright
@@ -783,28 +705,17 @@ jobs:
           path: .
 
       - name: Cache Playwright browsers
-        id: playwright-cache
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-linux-amd64-${{ hashFiles('test/browser/package-lock.json') }}
+          key: playwright-linux-amd64-${{ hashFiles('test/browser/package.json') }}
 
       - name: Cache test/browser node_modules
         uses: actions/cache@v6
         with:
           path: test/browser/node_modules
-          key: test-browser-nm-linux-amd64-${{ hashFiles('test/browser/package-lock.json') }}
+          key: test-browser-nm-linux-amd64-${{ hashFiles('test/browser/package.json') }}
           restore-keys: test-browser-nm-linux-amd64-
-
-      - name: Install Playwright deps
-        run: cd test/browser && npm install
-
-      - name: Install Playwright browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: cd test/browser && npx playwright install --with-deps
-
-      - name: Build JS bundle
-        run: bb squint
 
       - name: Run Playwright tests
         run: bb test:playwright
@@ -833,28 +744,17 @@ jobs:
           path: .
 
       - name: Cache Playwright browsers
-        id: playwright-cache
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-linux-aarch64-${{ hashFiles('test/browser/package-lock.json') }}
+          key: playwright-linux-aarch64-${{ hashFiles('test/browser/package.json') }}
 
       - name: Cache test/browser node_modules
         uses: actions/cache@v6
         with:
           path: test/browser/node_modules
-          key: test-browser-nm-linux-aarch64-${{ hashFiles('test/browser/package-lock.json') }}
+          key: test-browser-nm-linux-aarch64-${{ hashFiles('test/browser/package.json') }}
           restore-keys: test-browser-nm-linux-aarch64-
-
-      - name: Install Playwright deps
-        run: cd test/browser && npm install
-
-      - name: Install Playwright browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: cd test/browser && npx playwright install --with-deps
-
-      - name: Build JS bundle
-        run: bb squint
 
       - name: Run Playwright tests
         run: bb test:playwright
@@ -863,9 +763,6 @@ jobs:
     name: Playwright (Windows)
     needs: [build-wasm-browser]
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
     steps:
       - uses: actions/checkout@v7
 
@@ -886,28 +783,17 @@ jobs:
           path: .
 
       - name: Cache Playwright browsers
-        id: playwright-cache
         uses: actions/cache@v6
         with:
           path: ~/AppData/Local/ms-playwright
-          key: playwright-windows-${{ hashFiles('test/browser/package-lock.json') }}
+          key: playwright-windows-${{ hashFiles('test/browser/package.json') }}
 
       - name: Cache test/browser node_modules
         uses: actions/cache@v6
         with:
           path: test/browser/node_modules
-          key: test-browser-nm-windows-${{ hashFiles('test/browser/package-lock.json') }}
+          key: test-browser-nm-windows-${{ hashFiles('test/browser/package.json') }}
           restore-keys: test-browser-nm-windows-
-
-      - name: Install Playwright deps
-        run: cd test/browser && npm install
-
-      - name: Install Playwright browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: cd test/browser && npx playwright install --with-deps
-
-      - name: Build JS bundle
-        run: bb squint
 
       - name: Run Playwright tests
         run: bb test:playwright

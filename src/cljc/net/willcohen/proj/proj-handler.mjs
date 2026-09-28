@@ -7,7 +7,7 @@ const busyMethods = ["context_create", "set_log_level", "ccall", "malloc", "heap
 const destroyMethods = ["context_destroy", "free"];
 
 // C fnNames from the fndefs :destroy? flags. Nothing reads this.
-const destroyFns = ["proj_celestial_body_list_destroy", "proj_context_destroy", "proj_crs_info_list_destroy", "proj_destroy", "proj_get_crs_list_parameters_destroy", "proj_insert_object_session_destroy", "proj_int_list_destroy", "proj_list_destroy", "proj_operation_factory_context_destroy", "proj_string_destroy", "proj_string_list_destroy", "proj_unit_list_destroy"];
+const destroyFns = [];
 
 const methods = {
   context_create: overrides.methods.context_create,

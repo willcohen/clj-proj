@@ -25,6 +25,7 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 - `proj-string-destroy` takes a pointer.
 
 ### Removed
+- The `xhr2` dependency of proj-wasm. ffi-wasm 0.0.2 does not use it.
 - The `shutdown` method of the proj-wasm worker handler. To stop the fetch
   worker, terminate the pool.
 - `proj-coord`, `proj-xy-dist` and `proj-get-suggested-operation`. PROJ passes
@@ -72,6 +73,8 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
   now list the units of every category.
 - `context-database-path` always returned nil. It now returns the path of the
   database that the context uses.
+- GraalVM backend: a pool worker whose PROJ boot failed kept its polyglot
+  Context open.
 - ClojureScript: `proj-destroy` and `proj-context-destroy` freed a tracked PJ or
   context, but did not release its tracking. A later release, for example
   `Symbol.dispose`, freed it again. `proj-context-destroy` of a tracked context

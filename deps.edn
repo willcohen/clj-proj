@@ -14,13 +14,9 @@
         net.willcohen/native {:mvn/version "0.0.2"}}
 
  :aliases {;; Develop against a clj-native checkout: clojure -A:dev ...
-           ;; The nix twin is --override-input clj-native path:/abs/path.
            :dev {:override-deps {net.willcohen/native {:local/root "../clj-native"}}}
-           ;; -d is scoped to test/cljc/net because tools.namespace discovery
-           ;; follows two symlink traps (test/js/node_modules/proj-js and
-           ;; test/cljc/node_modules/proj-wasm) into a nested resource-tracker
-           ;; test whose ns require cannot resolve. The other test/cljc roots
-           ;; are cljs-only.
+           ;; -d test/cljc/net: tools.namespace follows the node_modules symlinks
+           ;; under test/cljc into sources that do not load on the JVM.
            :test {:extra-paths ["test/cljc"]
                   :extra-deps {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
                   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]

@@ -13,9 +13,6 @@
 
 #?(:clj (set! *warn-on-reflection* true))
 
-(declare proj_context_errno)
-(declare proj_context_errno_string)
-
 (def ^{:tag 'long} PROJ_VERSION_MAJOR 9)
 (def ^{:tag 'long} PROJ_VERSION_MINOR 9)
 (def ^{:tag 'long} PROJ_VERSION_PATCH 0)
@@ -370,10 +367,10 @@
    :proj_as_wkt {:rettype :string
                  :argtypes [[:context :pointer]
                             [:pj :pointer] ; const PJ *obj
-                            [:type :int32] ; PJ_WKT_TYPE,
-                            [:options :pointer?]]
+                            [:type :int32] ; PJ_WKT_TYPE
+                            [:options :pointer?]] ; const char *const *options
                  :argsemantics [[:options :string-array? :default nil]
-                                [:type :int32 :default PJ_WKT2_2019]]} ; const char *const *options
+                                [:type :int32 :default PJ_WKT2_2019]]}
    :proj_as_proj_string {:rettype :string
                          :argtypes [[:context :pointer]
                                     [:pj :pointer] ; const PJ *obj
@@ -395,8 +392,7 @@
                          :proj-returns :pj}
    :proj_context_create {:rettype :pointer ; PJ_CONTEXT *
                          :argtypes [],
-                         :proj-returns :pj-context,
-                         :is-context-fn false}
+                         :proj-returns :pj-context}
    :proj_context_clone {:rettype :pointer ; PJ_CONTEXT *
                         :argtypes [[:ctx :pointer]] ; PJ_CONTEXT *ctx
                         :proj-returns :pj-context
@@ -443,8 +439,7 @@
                                                 :struct-def :proj-celestial-body-info
                                                 :struct-fields [[:auth-name :string 0]
                                                                 [:name :string 4]]
-                                                :struct-destroy-fn "proj_celestial_body_list_destroy"
-                                                :count-arg-name :out_result_count}
+                                                :struct-destroy-fn "proj_celestial_body_list_destroy"}
    :proj_celestial_body_list_destroy {:rettype :void
                                       :argtypes [[:list :pointer]]} ; PROJ_CELESTIAL_BODY_INFO **list
    :proj_get_crs_list_parameters_create {:rettype :pointer ; PROJ_CRS_LIST_PARAMETERS *
@@ -474,8 +469,7 @@
                                                           [:celestial-body-name :string 64]]
                                           :struct-destroy-fn "proj_crs_info_list_destroy"
                                           :struct-params-create "proj_get_crs_list_parameters_create"
-                                          :struct-params-destroy "proj_get_crs_list_parameters_destroy"
-                                          :count-arg-name :out_result_count}
+                                          :struct-params-destroy "proj_get_crs_list_parameters_destroy"}
    :proj_crs_info_list_destroy {:rettype :void
                                 :argtypes [[:list :pointer]]} ; PROJ_CRS_INFO **list
    :proj_get_units_from_database {:rettype :pointer ; PROJ_UNIT_INFO **
@@ -493,8 +487,7 @@
                                                   [:conv-factor :double 16]
                                                   [:proj-short-name :string 24]
                                                   [:deprecated :boolean 28]]
-                                  :struct-destroy-fn "proj_unit_list_destroy"
-                                  :count-arg-name :out_result_count}
+                                  :struct-destroy-fn "proj_unit_list_destroy"}
    :proj_unit_list_destroy {:rettype :void
                             :argtypes [[:list :pointer]]} ; PROJ_UNIT_INFO **list
    :proj_insert_object_session_create {:rettype :pointer ; PJ_INSERT_SESSION *
@@ -652,11 +645,8 @@
                                        [:area :pointer?]]
                             :argsemantics [[:area :pj-area :default 0]]
                             :proj-returns :pj
-                            ;; Selects the context-isolator hook of clj-native
-                            ;; dispatch: each call gets a fresh
-                            ;; proj_context_clone, so the factory/sqlite cache
-                            ;; state does not accumulate on the consumer's
-                            ;; context. wasm.cljc registers the isolator.
+                            ;; CLJS: run each call on a proj_context_clone, so cache
+                            ;; state does not build up on the caller's context.
                             :isolate-context? true}
    :proj_create_crs_to_crs_from_pj {:rettype :pointer ; PJ *
                                     :argtypes [[:context :pointer]

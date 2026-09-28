@@ -1,7 +1,6 @@
 ;; clj-proj lints itself through its own exported config, so a config change
 ;; runs here before cg consumes it. The exported hooks require
-;; hooks.native.generated from net.willcohen/native. Refresh it with:
-;;   clj-kondo --lint "$(clojure -Spath)" --copy-configs --skip-lint
+;; hooks.native.generated from net.willcohen/native. `bb lint:deps` imports it.
 {:config-paths ["../resources/clj-kondo.exports/net.willcohen/proj"
                 "net.willcohen/native"]
 

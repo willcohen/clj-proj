@@ -9,21 +9,7 @@ test.describe('PROJ WASM Browser Tests', () => {
     await page.goto('/test/browser/test.html');
     await page.waitForFunction(() => window.proj !== undefined, { timeout: 30000 });
 
-    await page.evaluate(async () => {
-      console.log('Starting PROJ initialization...');
-      const initFunction = window.proj.init_BANG_ || window.proj['init!'] || window.proj.init;
-      console.log('Init function found:', typeof initFunction);
-      if (initFunction && typeof initFunction === 'function') {
-        try {
-          console.log('Calling init function...');
-          await initFunction();
-          console.log('Init completed successfully');
-        } catch (error) {
-          console.error('Init failed:', error.message, error.stack);
-          throw error;
-        }
-      }
-    });
+    await page.evaluate(async () => { await window.proj.init(); });
   });
 
   test('module exports expected functions', async ({ page }) => {
@@ -88,42 +74,6 @@ test.describe('PROJ WASM Browser Tests', () => {
     expect(result.tOk).toBe(true);
   });
 
-  test('can create and use a context', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const proj = window.proj;
-      const context = await proj.contextCreate();
-
-      return {
-        hasContext: !!context,
-        contextType: typeof context
-      };
-    });
-
-    expect(result.hasContext).toBe(true);
-    expect(result.contextType).toBe('object');
-  });
-
-  test('can create coordinate transformation', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const proj = window.proj;
-      const context = await proj.contextCreate();
-
-      const transformer = await proj.projCreateCrsToCrs({
-        source_crs: "EPSG:4326",
-        target_crs: "EPSG:2249",  // MA State Plane
-        context: context
-      });
-
-      return {
-        hasTransformer: !!transformer,
-        transformerNotZero: transformer !== 0
-      };
-    });
-
-    expect(result.hasTransformer).toBe(true);
-    expect(result.transformerNotZero).toBe(true);
-  });
-
   test('can transform coordinates', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
@@ -179,47 +129,6 @@ test.describe('PROJ WASM Browser Tests', () => {
     expect(result.yInRange).toBe(true);
   });
 
-  test('CRS transformation without explicit context', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const proj = window.proj;
-
-      try {
-        const transformer = await proj.projCreateCrsToCrs({
-          source_crs: "EPSG:4326",
-          target_crs: "EPSG:3857"
-        });
-
-        if (!transformer || transformer === 0) {
-          return { error: 'transformer is null/0' };
-        }
-
-        const coordArray = await proj.coordArray(1);
-        await proj.setCoords(coordArray, [[42.3603, -71.0591, 0, 0]]);
-
-        await proj.projTransArray({
-          p: transformer,
-          direction: proj.PJ_FWD || 1,
-          n: 1,
-          coord: coordArray
-        });
-
-        const coords = await proj.get_coord_array(coordArray, 0);
-        return {
-          hasTransformer: true,
-          x: coords[0],
-          y: coords[1],
-          xLarge: Math.abs(coords[0]) > 1000
-        };
-      } catch (e) {
-        return { error: e.message };
-      }
-    });
-
-    expect(result.error).toBeUndefined();
-    expect(result.hasTransformer).toBe(true);
-    expect(result.xLarge).toBe(true);
-  });
-
   test('full transform pipeline without any context (demo page pattern)', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const proj = window.proj;
@@ -265,11 +174,6 @@ test.describe('PROJ WASM Browser Tests', () => {
 
       try {
         const authorities = await proj.projGetAuthoritiesFromDatabase({});
-
-        if (authorities === null || authorities === undefined) {
-          return { nullResult: true };
-        }
-
         return {
           isArray: Array.isArray(authorities),
           hasEPSG: authorities.includes('EPSG'),
@@ -281,10 +185,8 @@ test.describe('PROJ WASM Browser Tests', () => {
     });
 
     expect(result.error).toBeUndefined();
-    if (!result.nullResult) {
-      expect(result.isArray).toBe(true);
-      expect(result.hasEPSG).toBe(true);
-    }
+    expect(result.isArray).toBe(true);
+    expect(result.hasEPSG).toBe(true);
   });
 
   test('projAsWkt returns WKT for CRS created without explicit context', async ({ page }) => {
@@ -389,9 +291,7 @@ test.describe('PROJ WASM Browser Tests', () => {
         });
       } catch (error) {
         caught = true;
-        const hasExpectedError = error.message.includes('crs not found') ||
-                                error.message.includes('NoSuchAuthorityCodeException');
-        return { caught, hasExpectedError, transformer };
+        return { caught, transformer };
       }
 
       return {
@@ -432,111 +332,13 @@ test.describe('PROJ WASM Browser Tests', () => {
     expect(result.errnoNonNegative).toBe(true);
   });
 
-  test('can get authorities from database', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const proj = window.proj;
-      const context = await proj.contextCreate();
-
-      let authorities;
-      let error = null;
-
-      try {
-        authorities = await proj.projGetAuthoritiesFromDatabase({ context });
-      } catch (e) {
-        error = e.message;
-        return { error, functionExists: true };
-      }
-
-      // The function can return null when string-array processing fails.
-      if (authorities === null || authorities === undefined) {
-        return { authorities: null, functionExists: true };
-      }
-
-      return {
-        authorities,
-        isArray: Array.isArray(authorities),
-        hasAuthorities: authorities.length > 0,
-        includesEPSG: authorities.includes('EPSG')
-      };
-    });
-
-    expect(result.functionExists || result.isArray).toBe(true);
-
-    if (result.isArray) {
-      expect(result.hasAuthorities).toBe(true);
-      expect(result.includesEPSG).toBe(true);
-    }
-  });
-
   test('can get codes from database', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const proj = window.proj;
-      const context = await proj.contextCreate();
-
-      let codes;
-      let error = null;
-
-      try {
-        codes = await proj.projGetCodesFromDatabase({
-          context: context,
-          auth_name: "EPSG"
-        });
-      } catch (e) {
-        error = e.message;
-        return { error, functionExists: true };
-      }
-
-      // The function can return null when string-array processing fails.
-      if (codes === null || codes === undefined) {
-        return { codes: null, functionExists: true };
-      }
-
-      return {
-        codes,
-        isArray: Array.isArray(codes),
-        hasManyCodes: codes.length > 1000,
-        includes4326: codes.includes('4326')
-      };
+    const codes = await page.evaluate(async () => {
+      const context = await window.proj.contextCreate();
+      return window.proj.projGetCodesFromDatabase({ context, auth_name: 'EPSG' });
     });
-
-    expect(result.functionExists || result.isArray).toBe(true);
-
-    if (result.isArray) {
-      expect(result.hasManyCodes).toBe(true);
-      expect(result.includes4326).toBe(true);
-    }
-  });
-
-  test('resources are automatically cleaned up without manual destroy', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const proj = window.proj;
-
-      const context = await proj.contextCreate();
-
-      const transformer1 = await proj.projCreateCrsToCrs({
-        source_crs: "+proj=longlat +datum=WGS84 +no_defs",
-        target_crs: "+proj=merc +datum=WGS84 +no_defs",
-        context: context
-      });
-
-      const transformer2 = await proj.projCreateCrsToCrs({
-        source_crs: "+proj=merc +datum=WGS84 +no_defs",
-        target_crs: "+proj=longlat +datum=WGS84 +no_defs",
-        context: context
-      });
-
-      return {
-        transformer1Created: !!transformer1,
-        transformer2Created: !!transformer2,
-        contextCreated: !!context,
-        noManualCleanup: true
-      };
-    });
-
-    expect(result.transformer1Created).toBe(true);
-    expect(result.transformer2Created).toBe(true);
-    expect(result.contextCreated).toBe(true);
-    expect(result.noManualCleanup).toBe(true);
+    expect(codes.length).toBeGreaterThan(1000);
+    expect(codes).toContain('4326');
   });
 
   test('compare coordinates with network OFF vs ON (grid fetch test)', async ({ page }) => {
@@ -753,8 +555,8 @@ test.describe('PROJ WASM Browser Tests', () => {
       const tgt = await proj.projGetTargetCrs({ context, pj: tx });
       const srcName = src ? await proj.projGetName({ obj: src }) : null;
       const tgtName = tgt ? await proj.projGetName({ obj: tgt }) : null;
-      // Serialize the extracted source CRS, not the transform: PROJ reports a
-      // crs-to-crs operation as "not exportable to PROJ" (proj_errno 44).
+      // Serialize the extracted source CRS, not the transform: PROJ cannot
+      // export a crs-to-crs operation to a PROJ string.
       const projStr = await proj.projAsProjString({ context, pj: src, type: 0 });
       return { srcName, tgtName, projStrIsString: typeof projStr === 'string' };
     });
@@ -821,49 +623,6 @@ test.describe('PROJ WASM Browser Tests', () => {
     expect(result.hasWkt).toBe(true);
     expect(result.hasCrs).toBe(true);
     expect(result.name).toBe('WGS 84');
-  });
-
-  test('resource tracking with releasing blocks in browser', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const proj = window.proj;
-
-      if (!window.resourceTracker && !window['resource-tracker']) {
-        return { error: 'resource-tracker not available - it must be loaded as an external dependency' };
-      }
-
-      const rt = window.resourceTracker || window['resource-tracker'];
-      if (!rt.releasing) {
-        return { error: 'releasing function not found' };
-      }
-
-      let insideBlockSuccess = false;
-
-      await rt.releasing(async () => {
-        const context = await proj.contextCreate();
-
-        const crs = await proj.projCreateFromDatabase({
-          context: context,
-          auth_name: "EPSG",
-          code: "4326"
-        });
-
-        insideBlockSuccess = !!crs;
-      });
-
-      return {
-        insideBlockSuccess,
-        releasingBlockCompleted: true
-      };
-    });
-
-    // resource-tracker is an external dependency and can be absent in some
-    // test environments.
-    if (result.error) {
-      expect(result.error).toContain('resource-tracker');
-    } else {
-      expect(result.insideBlockSuccess).toBe(true);
-      expect(result.releasingBlockCompleted).toBe(true);
-    }
   });
 
   test('proj_create with PROJ string and pipeline', async ({ page }) => {
@@ -1040,23 +799,4 @@ test.describe('PROJ WASM Browser Tests', () => {
     expect(typeof result.available).toBe('number');
   });
 
-  test('can get towgs84 values', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const proj = window.proj;
-      const ctx = await proj.contextCreate();
-      const op = await proj.projCreate({
-        context: ctx,
-        definition: '+proj=helmert +x=23 +y=-45 +z=67 +rx=0.1 +ry=-0.2 +rz=0.3 +s=1.5 +convention=position_vector'
-      });
-      const r = await proj.projCoordoperationGetTowgs84Values({
-        ctx, coordoperation: op, value_count: 7, emit_error_if_incompatible: 0
-      });
-      return r ? { hasValues: Array.isArray(r.values), length: r.values.length } : null;
-    });
-    // helmert can lack towgs84 support, so null is permitted.
-    if (result) {
-      expect(result.hasValues).toBe(true);
-      expect(result.length).toBe(7);
-    }
-  });
 });

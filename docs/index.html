@@ -554,25 +554,15 @@
                        <a href="https://www.graalvm.org/latest/reference-manual/wasm/">GraalWasm</a> fallback).</p>
                     <details>
                         <summary>How it works</summary>
-                        <p>PROJ runs directly in your browser using WebAssembly. The entire library, including its
-                           CRS database, runs client-side with no server communication required.</p>
-                        <p style="font-size: 0.9em; margin: 6px 0;"><strong>Build:</strong></p>
-                        <ul style="font-size: 0.9em; margin: 6px 0; padding-left: 20px;">
-                            <li>PROJ is compiled to WASM using <a href="https://emscripten.org/">Emscripten</a></li>
-                            <li>Clojure source is compiled to ES6 modules using <a href="https://github.com/squint-cljs/squint">squint</a></li>
-                            <li>PROJ C function bindings are automatically extracted from <code>fndefs.cljc</code> and exported from WASM</li>
-                            <li>Modules are bundled with <a href="https://esbuild.github.io/">esbuild</a></li>
-                        </ul>
-                        <p style="font-size: 0.9em; margin: 6px 0;"><strong>Runtime:</strong></p>
-                        <ul style="font-size: 0.9em; margin: 6px 0; padding-left: 20px;">
-                            <li>PROJ runs in Web Workers, keeping the main thread responsive</li>
-                            <li>One single-threaded WASM binary serves every lane. It needs no SharedArrayBuffer and no Cross-Origin Isolation, so it runs on ordinary static hosting with no special headers</li>
-                            <li>The worker pool is managed by <a href="https://www.npmjs.com/package/@wcohen/worker-router">worker-router</a>, which owns the call protocol through <a href="https://www.npmjs.com/package/comlink">comlink</a>. Each PROJ context is pinned to one worker, and the pool assigns workers in rotation</li>
-                            <li>Workers must be same-origin, so worker-router starts each worker from a small same-origin blob shim that imports the cross-origin script. This is what lets this demo load everything from a CDN</li>
-                            <li>The <code>proj.db</code> and <code>proj.ini</code> files are fetched at startup and written to Emscripten's virtual filesystem in each worker</li>
-                            <li>Grid shift files (NADCON, NTv2, and others) are fetched on demand from <a href="https://cdn.proj.org/">cdn.proj.org</a> when a transformation requires them</li>
-                            <li>C-allocated objects are cleaned up using <a href="https://www.npmjs.com/package/resource-tracker">resource-tracker</a></li>
-                        </ul>
+                        <p>PROJ runs in your browser as WebAssembly, in a pool of Web Workers.
+                           The page gets <code>proj.db</code> and <code>proj.ini</code> one time and gives them to each worker.
+                           When a transformation uses a grid file, the worker gets it from
+                           <a href="https://cdn.proj.org/">cdn.proj.org</a>.</p>
+                        <p><a href="https://emscripten.org/">Emscripten</a> compiles PROJ.
+                           <a href="https://github.com/squint-cljs/squint">squint</a> compiles the Clojure source, and
+                           <a href="https://esbuild.github.io/">esbuild</a> bundles it.
+                           <a href="https://www.npmjs.com/package/@wcohen/worker-router">worker-router</a> runs the workers.
+                           Because the WASM build is single-threaded, COOP and COEP headers are not necessary.</p>
                     </details>
                 </div>
             </aside>
@@ -775,7 +765,7 @@ const wkt = await proj.projAsWkt({ pj: crs, type: proj.PJ_WKT2_2019, options: nu
 console.log("\\nWKT2:2019:\\n" + wkt);`,
 
             'network-grids': `// Network grid fetching: NAD27 -> NAD83 (requires NADCON grid)
-const ctxOff = await proj.contextCreate({ network: false });
+const ctxOff = await proj.contextCreate();
 await proj.projContextSetEnableNetwork({ context: ctxOff, enabled: 0 });
 
 const ctxOn = await proj.contextCreate();
@@ -958,9 +948,9 @@ const t2 = await proj.proj_create_crs_to_crs({
     source_crs: "EPSG:4326", target_crs: "EPSG:3857"
 });
 const c2 = await proj.coord_array(1);
-await proj.setCoords(c2, [[42.3603, -71.0591, 0, 0]]);
+await proj.set_coords_BANG_(c2, [[42.3603, -71.0591, 0, 0]]);
 await proj.proj_trans_array({ p: t2, direction: proj.PJ_FWD, n: 1, coord: c2 });
-const r2 = await proj.get_coord_array(c2, 0);
+const r2 = await proj.get_coords(c2, 0);
 console.log("snake_case:", r2[0].toFixed(2), r2[1].toFixed(2));
 
 console.log("\\nBoth styles produce identical results.");`,
@@ -968,7 +958,7 @@ console.log("\\nBoth styles produce identical results.");`,
             'manual-context': `// Manual context creation
 // Most functions create a context automatically if you do not pass one.
 // Create an explicit context when you need to:
-//   - disable network grid fetching
+//   - set the network to off
 //   - pin multiple operations to the same worker
 //   - check per-context error state
 
@@ -978,8 +968,9 @@ const t1 = await proj.projCreateCrsToCrs({
 });
 console.log("Auto-context transformer created");
 
-// Explicit context with network disabled
-const ctxOffline = await proj.contextCreate({ network: false });
+// Explicit context with the network off
+const ctxOffline = await proj.contextCreate();
+await proj.projContextSetEnableNetwork({ context: ctxOffline, enabled: 0 });
 const t2 = await proj.projCreateCrsToCrs({
     context: ctxOffline, source_crs: "EPSG:4326", target_crs: "EPSG:3857"
 });
@@ -1051,7 +1042,7 @@ for (const wc of counts) {
     // --- Transforms ---
     const tasks = [];
     for (let i = 0; i < TASKS; i++) {
-        const ctx = await proj.contextCreate({ network: false });
+        const ctx = await proj.contextCreate();
         const t = await proj.projCreateCrsToCrs({
             source_crs: "EPSG:4326", target_crs: "EPSG:3857", context: ctx
         });
@@ -1080,7 +1071,7 @@ for (const wc of counts) {
     // --- CRS Creation ---
     const contexts = [];
     for (let i = 0; i < CRS_OPS; i++) {
-        contexts.push(await proj.contextCreate({ network: false }));
+        contexts.push(await proj.contextCreate());
     }
 
     const c1 = performance.now();

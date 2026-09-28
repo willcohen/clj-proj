@@ -18,9 +18,7 @@
   "CLJS counterpart to the JVM impl-iteration macro. CLJS has one
   implementation for each runtime: `:node` under Node, `:browser`
   under playwright. The test runner selects the runtime. The macro
-  makes sure that init ran, then runs the body once.
-
-  The enclosing deftest must carry `^:async`."
+  makes sure that init ran, then runs the body once."
   [& body]
   `(do
      (~'await (~'ensure-init!))
@@ -29,9 +27,7 @@
 (defmacro with-test-context
   "CLJS counterpart to the JVM `with-test-context` macro. The macro
   awaits `proj/context-create` and binds `ctx-binding` to the
-  resolved context, so ctx is the value directly, as on the JVM.
-
-  The enclosing deftest must carry `^:async`."
+  resolved context, so ctx is the value directly, as on the JVM."
   [[ctx-binding] & body]
   `(let [~ctx-binding (~'await (~'proj/context-create))]
      ~@body))

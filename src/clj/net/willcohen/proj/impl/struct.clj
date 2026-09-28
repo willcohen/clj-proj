@@ -27,20 +27,6 @@
            | [sizeof=96, dsize=96, align=8,
            |  nvsize=96, nvalign=8]")
 
-(def crs-list-parameters-layout
-  "      0 |   const int * types
-         8 |   size_t typesCount
-        16 |   int crs_area_of_use_contains_bbox
-        20 |   int bbox_valid
-        24 |   double west_lon_degree
-        32 |   double south_lat_degree
-        40 |   double east_lon_degree
-        48 |   double north_lat_degree
-        56 |   int allow_deprecated
-        64 |   const char * celestial_body_name
-           | [sizeof=72, dsize=72, align=8,
-           |  nvsize=72, nvalign=8]")
-
 (def unit-info-layout
   "      0 |   char * auth_name
          8 |   char * code
@@ -58,19 +44,14 @@
            | [sizeof=16, dsize=16, align=8,
            |  nvsize=16, nvalign=8]")
 
-
 (def crs-info-def* (delay (ffi-clang/defstruct-from-layout
                             :proj-crs-info crs-info-layout)))
-
-(def crs-list-parameters-def* (delay (ffi-clang/defstruct-from-layout
-                                       :proj-crs-list-parameters crs-list-parameters-layout)))
 
 (def unit-info-def* (delay (ffi-clang/defstruct-from-layout
                              :proj-unit-info unit-info-layout)))
 
 (def celestial-body-info-def* (delay (ffi-clang/defstruct-from-layout
                                        :proj-celestial-body-info celestial-body-info-layout)))
-
 
 (def coord-def (dt-struct/define-datatype! :proj-coord
                  [{:name :x :datatype :float64}

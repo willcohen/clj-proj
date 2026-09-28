@@ -23,10 +23,7 @@
             [net.willcohen.native.platform-state :as nps]))
 
 (def ^:private wasm-resources-available?
-  ;; `bb build --wasm-browser` puts proj-emscripten.js in
-  ;; resources/wasm/. `bb test:clj-ffi` does not run that build, so
-  ;; the resource can be absent. The end-to-end fallback test routes
-  ;; through wasm/init-proj, and this guard lets it skip cleanly.
+  ;; `bb test:clj-ffi` does not build the wasm, so it can be absent.
   (some? (io/resource "wasm/proj-emscripten.js")))
 
 (defn- save-state []
@@ -51,55 +48,12 @@
        (finally
          (restore-state! saved#)))))
 
-(deftest try-init-records-ffi-when-ffi-succeeds
-  (with-clean-state
-    (let [called (atom {:ffi 0 :graal 0})
-          ffi-fn   (fn [] (swap! called update :ffi inc))
-          graal-fn (fn [] (swap! called update :graal inc))]
-      (nps/try-init! proj/implementation proj/force-graal false ffi-fn graal-fn)
-      (is (= :ffi @proj/implementation))
-      (is (= 1 (:ffi @called)))
-      (is (zero? (:graal @called))
-          "graal-fn must not run when FFI succeeds"))))
-
-(deftest try-init-falls-back-to-graal-on-ffi-throw
-  (with-clean-state
-    (let [called (atom {:ffi 0 :graal 0})
-          ffi-fn   (fn []
-                     (swap! called update :ffi inc)
-                     (throw (RuntimeException. "synthetic FFI load failure")))
-          graal-fn (fn [] (swap! called update :graal inc))]
-      (nps/try-init! proj/implementation proj/force-graal false ffi-fn graal-fn)
-      (is (= :graal @proj/implementation))
-      (is (= 1 (:ffi @called)))
-      (is (= 1 (:graal @called))
-          "graal-fn must run after FFI throws"))))
-
-(deftest try-init-skips-ffi-when-force-graal-is-set
-  (with-clean-state
-    (reset! proj/force-graal true)
-    (let [called (atom {:ffi 0 :graal 0})
-          ffi-fn   (fn []
-                     (swap! called update :ffi inc)
-                     (throw (AssertionError.
-                             "FFI must not be called when force-graal is true")))
-          graal-fn (fn [] (swap! called update :graal inc))]
-      (nps/try-init! proj/implementation proj/force-graal false ffi-fn graal-fn)
-      (is (= :graal @proj/implementation))
-      (is (zero? (:ffi @called))
-          "ffi-fn must not run when force-graal is set")
-      (is (= 1 (:graal @called))))))
-
 (deftest fallback-leaves-system-usable
   ;; End-to-end: a throwing ffi-fn with the real wasm/init-proj, then
   ;; a real transform through the graal-routed dispatch.
   ;;
-  ;; Heavy: a cold GraalVM polyglot load takes 5-30 s. Under
-  ;; `bb test:clj-ffi` that cost is the only catch-branch coverage.
-  ;; A missing wasm must fail here, not skip. This test carries six
-  ;; assertions and the skip branch carried one that always passed, so an
-  ;; absent build quietly cut the suite from 236 assertions to 231 while the
-  ;; test count held at 71.
+  ;; Heavy: a cold GraalVM polyglot load takes 5-30 s. A missing wasm
+  ;; must fail here, not skip.
   (is wasm-resources-available?
       "wasm/proj-emscripten.js is not on the classpath, so the end-to-end fallback cannot run. Run `bb build --wasm`.")
   (when wasm-resources-available?

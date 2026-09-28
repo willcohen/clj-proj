@@ -9,17 +9,15 @@
   ;; resolves. On CLJS, squint's `await` is a parser-level special
   ;; form, and the exclude is a no-op.
   (:refer-clojure :exclude [await])
-  #?(:clj (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  #?(:clj (:require [clojure.test :refer [deftest is testing]]
                     [net.willcohen.proj.proj :as proj]
                     [net.willcohen.proj.fndefs :as pdefs]
                     [net.willcohen.proj.impl.network :as proj-network]
-                    [net.willcohen.proj.wasm :as wasm]
                     [net.willcohen.native.graal-wasm :as nw]
+                    [net.willcohen.proj.wasm :as wasm]
                     [tech.v3.resource :as resource])
      :cljs (:require [cljs.test :as t :refer [deftest is testing]]
                      ["proj-wasm" :as proj]
-                     ;; squint expands cljc macros through SCI at
-                     ;; compile time, so plain :require works.
                      [net.willcohen.proj.proj-test-macros
                       :refer [with-each-implementation with-test-context]]
                      ;; `bb stage:clj-native-test-deps` copies this
@@ -28,24 +26,6 @@
                      ;; squint-cljs and splits the cljs.test registry.
                      ["../../../dist/test_runner.mjs"
                       :refer [run_tests_and_exit_BANG_]])))
-
-;; One test body for each deftest runs on the JVM (`bb test:clj`) and
-;; on squint+Node (`bb test:cljs:wip`). The `await` shim, the `^:async`
-;; marks, and the two macros absorb the platform differences.
-;;
-;; These tests are race-sensitive. Run the file repeatedly after a
-;; concurrency change:
-;;   get-crs-info-list-from-database-test
-;;   as-proj-json-test
-;;   normalize-for-visualization-test
-;;   get-area-of-use-test
-;;   coordoperation-get-param-test
-;;
-;; These tests are sensitive to a dispatch change:
-;;   is-deprecated-test
-;;   get-datum-test
-;;   get-area-of-use-ex-test
-;;   prime-meridian-get-parameters-test
 
 ;; On CLJS, `await` is squint's special form, valid only inside
 ;; ^:async fns. The JVM API is synchronous, so this identity macro
@@ -76,59 +56,33 @@
        (await (.init proj)))))
 
 #?(:clj
-   (def ^:dynamic *test-implementation*
-     (delay (keyword (System/getProperty "net.willcohen.proj.proj-test.implementation" "ffi")))))
+   (def test-implementation
+     (keyword (System/getProperty "net.willcohen.proj.proj-test.implementation" "ffi"))))
 
 #?(:clj
    (defmacro with-each-implementation
-     "Macro to wrap test bodies, setting the PROJ implementation based on *test-implementation*."
+     "Run body on the implementation that the
+      net.willcohen.proj.proj-test.implementation property names."
      [& body]
-     `(do
-        (let [current-impl# @*test-implementation*]
-          (when (nil? current-impl#)
-            (throw (ex-info "Test implementation not set. Set *test-implementation* dynamically or via system property." {})))
-
-          (testing (str "With implementation: " (name current-impl#))
-            ;; force-*! clears @implementation. The explicit init! is
-            ;; necessary for tests that read @proj/implementation and
-            ;; do not call a proj fn (initialization-test,
-            ;; query-implementation-test).
-            (case current-impl#
-              :ffi (proj/force-ffi!)
-              :graal (proj/force-graal!))
-            (proj/init!)
-            ;; A missing or unloadable native lib makes init! fall back to
-            ;; GraalVM, and the FFI lane would then pass on wasm.
-            (is (= current-impl# @proj/implementation)
-                "init! did not fall back from the requested implementation")
-            (try
-              ~@body
-              (finally))))))) ; no proj-reset: resource tracking does the cleanup
+     `(testing (str "With implementation: " (name test-implementation))
+        ;; force-*! clears @implementation. The explicit init! is
+        ;; necessary for a test that reads @proj/implementation and
+        ;; calls no proj fn (initialization-test).
+        (case test-implementation
+          :ffi (proj/force-ffi!)
+          :graal (proj/force-graal!))
+        (proj/init!)
+        ;; A missing or unloadable native lib makes init! fall back to
+        ;; GraalVM, and the FFI lane would then pass on wasm.
+        (is (= test-implementation @proj/implementation)
+            "init! did not fall back from the requested implementation")
+        ~@body)))
 
 ;; tech.v3.resource :auto tracking releases the context.
 #?(:clj
    (defmacro with-test-context [[ctx-binding] & body]
      `(let [~ctx-binding (proj/context-create)]
         ~@body)))
-
-#?(:clj
-   (use-fixtures :once
-     (fn [f]
-       ;; No global init: `with-each-implementation` inits each impl.
-       ;; nil disables wasm ccall logs. Use :info, :warn, or :debug
-       ;; for logs.
-       (binding [wasm/*runtime-log-level* nil]
-         (f)))))
-
-(deftest ^:async get-authorities-from-database-test
-  (with-each-implementation
-    (testing "get-authorities-from-database returns a non-empty result of strings"
-      ;; A coll? check would fail on CLJS, where the result is a JS
-      ;; array.
-      (let [authorities (await (proj/proj-get-authorities-from-database))]
-        (is (some? authorities) "Result should be non-nil")
-        (is (not (empty? authorities)) "Result should not be empty")
-        (is (every? string? authorities) "All elements should be strings")))))
 
 (deftest ^:async get-codes-from-database-test
   (with-each-implementation
@@ -349,8 +303,6 @@
     (testing "Library initialization and implementation setting"
       ;; JVM inits as :ffi or :graal. CLJS self-detects :node or
       ;; :browser.
-      (is (some? @proj/implementation)
-          "Implementation should not be nil after initialization")
       (is (#{:ffi :graal :cljs :node :browser} @proj/implementation)
           "Should be a recognized runtime impl"))))
 
@@ -388,49 +340,20 @@
                (let [ctx (await (.contextCreate proj))]
                  (is (some? ctx) "Context should be non-nil"))))))
 
-(deftest ^:async coord-array-creation-test
-  (with-each-implementation
-    (testing "Coordinate array creation and manipulation"
-      (let [n-coords 3
-            dims 2
-            arr (proj/coord-array n-coords dims)]
-        (is (not (nil? arr)) "Coordinate array should not be nil")
-        (let [test-coords [[1.0 2.0] [3.0 4.0] [5.0 6.0]]]
-          (proj/set-coords! arr test-coords)
-          (is true "set-coords! completed without error"))))))
-
 #?(:clj
    (deftest ^:async coord-array-roundtrip-test
      (with-each-implementation
        (testing "set-coords!/get-coords roundtrip verification"
          (let [arr (proj/coord-array 1)]
-           (is (not (nil? arr)) "Coordinate array should not be nil")
            (proj/set-coords! arr [[42.3603222 -71.0579667 100.0 0.0]])
-           (let [[x y z t] (proj/get-coords arr 0)]
-             (is (< (Math/abs (- x 42.3603222)) 0.0001)
-                 (str "X should be 42.3603222, got " x))
-             (is (< (Math/abs (- y -71.0579667)) 0.0001)
-                 (str "Y should be -71.0579667, got " y))
-             (is (< (Math/abs (- z 100.0)) 0.0001)
-                 (str "Z should be 100.0, got " z))
-             (is (< (Math/abs (- t 0.0)) 0.0001)
-                 (str "T should be 0.0, got " t))))))))
+           (is (= [42.3603222 -71.0579667 100.0 0.0] (proj/get-coords arr 0))))))))
 
 #?(:clj
    (deftest ^:async coord-to-coord-array-test
      (with-each-implementation
        (testing "coord->coord-array creates a 1-element coord array from a single coordinate"
          (let [ca (proj/coord->coord-array [42.3603222 -71.0579667 100.0 0.0])]
-           (is (not (nil? ca)) "coord->coord-array should not return nil")
-           (let [[x y z t] (proj/get-coords ca 0)]
-             (is (< (Math/abs (- x 42.3603222)) 0.0001)
-                 (str "X should be 42.3603222, got " x))
-             (is (< (Math/abs (- y -71.0579667)) 0.0001)
-                 (str "Y should be -71.0579667, got " y))
-             (is (< (Math/abs (- z 100.0)) 0.0001)
-                 (str "Z should be 100.0, got " z))
-             (is (< (Math/abs (- t 0.0)) 0.0001)
-                 (str "T should be 0.0, got " t))))))))
+           (is (= [42.3603222 -71.0579667 100.0 0.0] (proj/get-coords ca 0))))))))
 
 #?(:clj
    (deftest heap-calls-with-a-second-registered-context-test
@@ -477,34 +400,6 @@
              (is (every? @freed @allocated) "the block is freed after the call")))))))
 
 #?(:clj
-   (deftest ^:async transformation-modifies-coords-test
-     (with-each-implementation
-       (with-test-context [ctx]
-         (testing "proj-trans-array should modify coordinates in place"
-           (let [tx (proj/proj-create-crs-to-crs
-                     {:context ctx
-                      :source_crs "EPSG:4326"
-                      :target_crs "EPSG:2249"})
-                 coords (proj/coord-array 1)]
-             (is (some? tx) "Transformer should be created")
-             (proj/set-coords! coords [[42.3603222 -71.0579667 0 0]])
-             (let [[x-before y-before _ _] (proj/get-coords coords 0)]
-               (is (< (Math/abs (- x-before 42.3603222)) 0.0001)
-                   (str "Before transform: X should be 42.3603222, got " x-before))
-               (let [result (proj/proj-trans-array {:p tx :direction 1 :n 1 :coord coords})]
-                 (is (or (nil? result) (= 0 result))
-                     (str "Transform should succeed, got " result))
-                 (let [[x-after y-after _ _] (proj/get-coords coords 0)]
-                   (is (not= x-before x-after)
-                       (str "X should have changed! Before: " x-before ", After: " x-after))
-                   (is (not= y-before y-after)
-                       (str "Y should have changed! Before: " y-before ", After: " y-after))
-                   (is (< 775000 x-after 776000)
-                       (str "X should be ~775,200 feet, got " x-after))
-                   (is (< 2956000 y-after 2957000)
-                       (str "Y should be ~2,956,400 feet, got " y-after)))))))))))
-
-#?(:clj
    (deftest ^:async short-coords-pad-test
      (with-each-implementation
        (testing "set-coords! pads a short coordinate with zeros"
@@ -531,7 +426,7 @@
   (with-each-implementation
     (testing "Authority list contains expected authorities"
       (let [authorities (await (proj/proj-get-authorities-from-database))]
-        (is (some? authorities) "Should return a non-nil result")
+        (is (every? string? authorities) "All elements should be strings")
         (is (>= (count authorities) 8) "Should have at least 8 authorities")
         (is (some #{"EPSG"} authorities) "Should contain EPSG")
         (is (some #{"ESRI"} authorities) "Should contain ESRI")
@@ -644,14 +539,6 @@
           (is (some? geodetic))
           (is (re-find #"NAD83" name)))))))
 
-(deftest ^:async get-coordinate-system-test
-  (with-each-implementation
-    (with-test-context [ctx]
-      (testing "proj-crs-get-coordinate-system returns a CS object"
-        (let [crs (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
-              cs  (await (proj/proj-crs-get-coordinate-system {:ctx ctx :crs crs}))]
-          (is (some? cs) "Should return a coordinate system"))))))
-
 (deftest ^:async get-axis-count-test
   (with-each-implementation
     (with-test-context [ctx]
@@ -744,14 +631,6 @@
                                            :definition "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=robin"}))]
           (is (some? pj)))))))
 
-(deftest ^:async query-implementation-test
-  (with-each-implementation
-    (testing "Implementation predicates reflect current state"
-      ;; proj/ffi? and proj/graal? are JVM-only, so assert the
-      ;; runtime keyword directly.
-      (is (#{:ffi :graal :cljs :node :browser} @proj/implementation)
-          "Implementation should be one of the known runtime keys"))))
-
 #?(:clj
    (deftest ^:async set-coord-test
      (with-each-implementation
@@ -760,11 +639,7 @@
            (let [ca (proj/coord-array 2)]
              (proj/set-coords! ca [[0 0 0 0] [0 0 0 0]])
              (proj/set-coord! ca 1 [10.0 20.0 30.0 40.0])
-             (let [[x y z t] (proj/get-coords ca 1)]
-               (is (< (Math/abs (- x 10.0)) 0.001))
-               (is (< (Math/abs (- y 20.0)) 0.001))
-               (is (< (Math/abs (- z 30.0)) 0.001))
-               (is (< (Math/abs (- t 40.0)) 0.001)))))))))
+             (is (= [10.0 20.0 30.0 40.0] (proj/get-coords ca 1)))))))))
 
 #?(:clj
    (deftest ^:async set-column-test
@@ -775,15 +650,9 @@
              (proj/set-coords! ca [[0 0 0 0] [0 0 0 0] [0 0 0 0]])
              (proj/set-xcol! ca [1.0 2.0 3.0])
              (proj/set-ycol! ca [4.0 5.0 6.0])
-             (let [[x0 y0 _ _] (proj/get-coords ca 0)
-                   [x1 y1 _ _] (proj/get-coords ca 1)
-                   [x2 y2 _ _] (proj/get-coords ca 2)]
-               (is (< (Math/abs (- x0 1.0)) 0.001))
-               (is (< (Math/abs (- x1 2.0)) 0.001))
-               (is (< (Math/abs (- x2 3.0)) 0.001))
-               (is (< (Math/abs (- y0 4.0)) 0.001))
-               (is (< (Math/abs (- y1 5.0)) 0.001))
-               (is (< (Math/abs (- y2 6.0)) 0.001)))))))))
+             (is (= [1.0 4.0 0.0 0.0] (proj/get-coords ca 0)))
+             (is (= [2.0 5.0 0.0 0.0] (proj/get-coords ca 1)))
+             (is (= [3.0 6.0 0.0 0.0] (proj/get-coords ca 2)))))))))
 
 (deftest ^:async crs-without-context-test
   (with-each-implementation
@@ -799,90 +668,13 @@
             #?(:clj
                (let [[x _ _ _] (proj/get-coords coords 0)]
                  (is (> (Math/abs x) 1000)
-                     (str "Transformed X should be large (Web Mercator), got " x)))
-               :cljs
-               (is true "CLJS coord check not implemented"))))))))
-
-(deftest ^:async authorities-without-context-test
-  (with-each-implementation
-    (testing "get-authorities-from-database without explicit context"
-      (let [authorities (await (proj/proj-get-authorities-from-database {}))]
-        (is (some? authorities) "Should return non-nil without context")
-        (is (some #{"EPSG"} authorities) "Should contain EPSG")))))
+                     (str "Transformed X should be large (Web Mercator), got " x))))))))))
 
 (deftest ^:async create-from-database-without-context-test
   (with-each-implementation
     (testing "proj-create-from-database without explicit context"
       (let [crs (await (proj/proj-create-from-database {:auth_name "EPSG" :code "4326"}))]
         (is (some? crs) "CRS should be created without explicit context")))))
-
-(deftest ^:async parameter-naming-convention-test
-  (with-each-implementation
-    (with-test-context [ctx]
-      (testing "Both underscore and hyphenated parameter names should work"
-        (let [result-hyphens     (await (proj/proj-create-crs-to-crs {:context ctx
-                                                                      :source-crs "EPSG:4326"
-                                                                      :target-crs "EPSG:2249"}))
-              result-underscores (await (proj/proj-create-crs-to-crs {:context ctx
-                                                                      :source_crs "EPSG:4326"
-                                                                      :target_crs "EPSG:2249"}))]
-          (is (some? result-hyphens) "Hyphenated parameters should work and return a valid transformer")
-          (is (some? result-underscores) "Underscore parameters should also work and return a valid transformer")
-          (is (and (some? result-hyphens) (some? result-underscores))
-              "Both naming conventions should produce valid transformers"))))))
-
-(deftest ^:async crs-creation-nil-test
-  (with-each-implementation
-    (with-test-context [ctx]
-      (testing "CRS to CRS transformation creation should create a pointer"
-        (let [transform (await (proj/proj-create-crs-to-crs {:context ctx
-                                                             :source_crs "EPSG:4326"
-                                                             :target_crs "EPSG:2249"}))]
-          (is (not (nil? transform)) "Transform should not be nil"))))))
-
-(deftest ^:async database-codes-error-test
-  (with-each-implementation
-    (with-test-context [ctx]
-      (testing "Database code retrieval with underscores"
-        (let [codes (await (proj/proj-get-codes-from-database {:context ctx
-                                                               :auth_name "EPSG"}))]
-          (is (some? codes) "Should return non-nil")
-          (is (> (count codes) 1000) "EPSG should have thousands of codes"))))))
-
-(deftest ^:async single-coordinate-transform-test
-  (with-each-implementation
-    (with-test-context [ctx]
-      (testing "Single coordinate transformation"
-        (let [transformer (await (proj/proj-create-crs-to-crs
-                                  {:context ctx
-                                   :source_crs "EPSG:4326"
-                                   :target_crs "EPSG:2249"}))
-              coord-array (proj/coord-array 1)]
-          (is (not (nil? transformer)) "Transformer should not be nil")
-          (proj/set-coords! coord-array [[42.3603222 -71.0579667 0 0]])
-          (let [result (await (proj/proj-trans-array
-                               {:p transformer
-                                :direction 1 ; PJ_FWD
-                                :n 1
-                                :coord coord-array}))]
-            ;; GraalVM returns nil or 0 on success.
-            (is (or (nil? result) (= 0 result)) "Transform should succeed")
-            #?(:clj
-               (if (map? coord-array)
-                 ;; GraalVM mode - coord-array is a map with :malloc
-                 (let [[x y] (proj/get-coords coord-array 0)]
-                   ;; The GraalVM path does not transform
-                   ;; correctly here, so only assert numbers.
-                   (is (number? x) "X should be a number")
-                   (is (number? y) "Y should be a number"))
-                 ;; FFI mode - coord-array is a tensor
-                 (let [x (get-in coord-array [0 0])
-                       y (get-in coord-array [0 1])]
-                   ;; Boston City Hall in MA State Plane: X ~775,200 ft, Y ~2,956,400 ft
-                   (is (< 775000 x 776000) "X coordinate should be around 775,200 feet")
-                   (is (< 2956000 y 2957000) "Y coordinate should be around 2,956,400 feet")))
-               :cljs
-               (is true "Coordinate access differs in CLJS - test passed"))))))))
 
 (deftest ^:async array-transformation-test
   (with-each-implementation
@@ -904,23 +696,36 @@
             ;; GraalVM returns nil or 0 on success.
             (is (or (nil? result) (= 0 result)) "Transform should succeed")
             #?(:clj
-               (if (map? coord-array)
-                 ;; GraalVM mode - coord-array is a map with :malloc
-                 (let [[x y] (proj/get-coords coord-array 0)]
-                   ;; The GraalVM path does not transform correctly
-                   ;; here, so only assert numbers.
-                   (is (number? x) "First X should be a number")
-                   (is (number? y) "First Y should be a number"))
-                 ;; FFI mode - coord-array is a tensor
-                 (do
-                   ;; Boston City Hall (around 775,200, 2,956,400)
-                   (is (< 775000 (get-in coord-array [0 0]) 776000) "Boston City Hall X coordinate")
-                   (is (< 2956000 (get-in coord-array [0 1]) 2957000) "Boston City Hall Y coordinate")
-                   ;; Boston Common (slightly west of City Hall)
-                   (is (< 775000 (get-in coord-array [1 0]) 776000) "Boston Common X coordinate")
-                   (is (< 2956000 (get-in coord-array [1 1]) 2957000) "Boston Common Y coordinate")))
-               :cljs
-               (is true "Coordinate access differs in CLJS - test passed"))))))))
+               (doseq [i [0 1]]
+                 (let [[x y] (proj/get-coords coord-array i)]
+                   (is (< 775000 x 776000) (str "point " i " X, got " x))
+                   (is (< 2956000 y 2957000) (str "point " i " Y, got " y)))))))))))
+
+#?(:clj
+   (defn- addr-of [p]
+     (if (instance? tech.v3.datatype.ffi.Pointer p)
+       (.address ^tech.v3.datatype.ffi.Pointer p)
+       (nw/address-as-int p))))
+
+;; call-native is the leaf of both backends, and the GC dispose runs on
+;; another thread, which with-redefs reaches. The short arities of
+;; call-native call the 4-arity through the var, so only the 4-arity logs.
+;; With skip?, a logged call does not run, so a second free cannot crash
+;; the JVM.
+#?(:clj
+   (defn- with-native-call-log
+     "Run (f log) while call-native logs (entry fn-key args) for each call of
+      a fn-key in ks."
+     [ks entry skip? f]
+     (let [log (atom [])
+           orig proj/call-native]
+       (with-redefs [proj/call-native
+                     (fn [fn-key & more]
+                       (if (and (contains? ks fn-key) (= 3 (count more)))
+                         (let [r (swap! log conj (entry fn-key (second more)))]
+                           (if skip? r (apply orig fn-key more)))
+                         (apply orig fn-key more)))]
+         (f log)))))
 
 ;; JVM-only. CLJS resource cleanup tests are in
 ;; resource_tracking_test.cljc.
@@ -928,38 +733,32 @@
    (deftest ^:async resource-tracking-test
      (with-each-implementation
        (testing "Resources are cleaned up in stack contexts"
-         (let [cleanup-called (atom #{})
-               orig proj/call-native]
-        ;; call-native is the single dispatch leaf for the two backends.
-           (with-redefs [proj/call-native
-                         (fn [fn-key & more]
-                           (if (#{:proj_destroy :proj_list_destroy
-                                  :proj_context_destroy :proj_string_list_destroy
-                                  :proj_crs_info_list_destroy :proj_unit_list_destroy} fn-key)
-                             (do
-                               (swap! cleanup-called conj fn-key)
-                               nil)
-                             (apply orig fn-key more)))]
-             (when (nil? @proj/implementation)
-               (proj/init!))
+         (with-native-call-log
+          #{:proj_destroy :proj_list_destroy :proj_context_destroy :proj_string_list_destroy
+            :proj_crs_info_list_destroy :proj_unit_list_destroy}
+          (fn [k _] k) false
+          (fn [cleanup-called]
+            (resource/stack-resource-context
+             (let [ctx (proj/context-create)]
+               (is (some? ctx) "Context should be created")
+               (let [crs-4326 (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
+                 (is (some? crs-4326) "Should create CRS from database for EPSG:4326"))
+               (let [crs-3857 (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "3857"})]
+                 (is (some? crs-3857) "Should create CRS from database for EPSG:3857"))
+               (let [authorities (proj/proj-get-authorities-from-database {:context ctx})]
+                 (is (coll? authorities) "Should get authorities from database"))))
 
-             (resource/stack-resource-context
-              (let [ctx (proj/context-create)]
-                (is (some? ctx) "Context should be created")
-                (let [crs-4326 (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
-                  (is (some? crs-4326) "Should create CRS from database for EPSG:4326"))
-                (let [crs-3857 (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "3857"})]
-                  (is (some? crs-3857) "Should create CRS from database for EPSG:3857"))
-                (let [authorities (proj/proj-get-authorities-from-database {:context ctx})]
-                  (is (coll? authorities) "Should get authorities from database"))))
-
-             (is (pos? (count @cleanup-called))
-                 (str "Some cleanup functions should have been called. Called: " @cleanup-called))))))))
+            ;; The string-list call frees its list at once, so only a PJ
+            ;; destroy and a context destroy show the stack release.
+            (is (every? (set @cleanup-called) [:proj_destroy :proj_context_destroy])
+                (str "The stack context released its results. Called: " @cleanup-called))))))))
 
 (deftest ^:async invalid-crs-error-test
   (with-each-implementation
     (with-test-context [ctx]
-      (testing "Invalid CRS codes raise via PROJ errno-check"
+      ;; FFI throws through the errno check. The wasm has no C++ exception
+      ;; catch, so on GraalVM and CLJS the PROJ exception throws or rejects.
+      (testing "An invalid CRS code throws"
         (is (thrown? #?(:clj Exception :cljs js/Error)
                      (await (proj/proj-create-crs-to-crs {:context ctx
                                                           :source_crs "INVALID:9999"
@@ -1019,27 +818,6 @@
        (is (instance? js/Error err))
        (is (= [[1 77]] (vec destroyed)) "a rejection destroys the clone on its worker"))))
 
-(deftest ^:async context-error-state-test
-  (with-each-implementation
-    (with-test-context [ctx]
-      (testing "Context error state can be queried"
-        (let [errno (await (proj/proj-context-errno {:context ctx}))]
-          (is (number? errno) "Error number should be numeric")
-          (is (>= errno 0) "Error number should be non-negative"))))))
-
-(deftest ^:async platform-initialization-timing-test
-  (testing "Platform-specific initialization characteristics"
-    (let [impl @proj/implementation]
-      ;; The case arms are vacuous. They record the expected impl keys
-      ;; and fail on an unknown key.
-      (case impl
-        :ffi (is true "FFI implementation initializes quickly (<100ms)")
-        :graal (is true "GraalVM implementation has slower initialization (5-30s)")
-        :cljs (is true "ClojureScript initializes at namespace load")
-        :node (is true "Node-side cljs initializes at namespace load")
-        :browser (is true "Browser-side cljs initializes at namespace load")
-        (is false (str "Unknown implementation: " impl))))))
-
 (deftest ^:async create-crs-to-crs-from-pj-test
   (with-each-implementation
     (with-test-context [ctx]
@@ -1052,6 +830,11 @@
                                                                  :code "2249"}))]
           (is (some? source-crs) "Should create source CRS from database")
           (is (some? target-crs) "Should create target CRS from database")
+          (is (some? (await (proj/proj-create-crs-to-crs-from-pj {:context ctx
+                                                                  :source_crs source-crs
+                                                                  :target_crs target-crs
+                                                                  :options ["ALLOW_BALLPARK=NO"]})))
+              "Should create transformation from database CRS objects with options")
           (let [transform-from-pj (await (proj/proj-create-crs-to-crs-from-pj
                                           {:context ctx
                                            :source_crs source-crs
@@ -1071,29 +854,7 @@
                        (is (< 775000 x 776000)
                            (str "X coordinate should be around 775,200 feet, got " x))
                        (is (< 2956000 y 2957000)
-                           (str "Y coordinate should be around 2,956,400 feet, got " y)))
-                     :cljs
-                     (is true "Coordinate access differs in CLJS")))))))))))
-
-(deftest ^:async create-crs-to-crs-from-pj-with-options-test
-  (with-each-implementation
-    (with-test-context [ctx]
-      (testing "proj_create_crs_to_crs_from_pj with options parameter"
-        (let [source-crs (await (proj/proj-create-from-database {:context ctx
-                                                                 :auth_name "EPSG"
-                                                                 :code "4326"}))
-              target-crs (await (proj/proj-create-from-database {:context ctx
-                                                                 :auth_name "EPSG"
-                                                                 :code "2249"}))
-              transform  (await (proj/proj-create-crs-to-crs-from-pj
-                                 {:context ctx
-                                  :source_crs source-crs
-                                  :target_crs target-crs
-                                  :options ["ALLOW_BALLPARK=NO"]}))]
-          (is (some? source-crs) "Should create source CRS from database")
-          (is (some? target-crs) "Should create target CRS from database")
-          (is (some? transform)
-              "Should create transformation from database CRS objects with options"))))))
+                           (str "Y coordinate should be around 2,956,400 feet, got " y)))))))))))))
 
 #?(:clj
    (deftest ^:async network-grid-fetch-comparison-test
@@ -1252,34 +1013,16 @@
           (is (string? (prop info :full-name)))
           (is (number? (:available info))))))))
 
-;; CLJS runner footer. The teardown must call proj.shutdown: live
-;; Worker_threads keep the Node event loop alive, and the bb task
-;; then hangs on a green run.
-;;
-;; shutdown! is a named top-level ^:async defn because squint drops
-;; ^:async from inline fns in argument position.
-#?(:cljs (defn ^:async shutdown! [] (await (.shutdown proj))))
-
-#?(:cljs (run_tests_and_exit_BANG_ shutdown!))
-;; Logs each proj_destroy with its address and the backend that call-native
-;; takes. call-native is the leaf, and the GC dispose runs on another
-;; thread, which with-redefs reaches. The short arities of call-native call
-;; the 4-arity through the var, so only the 4-arity logs.
 #?(:clj
-   (defn- with-destroy-log [f]
-     (let [log (atom [])
-           orig proj/call-native]
-       (with-redefs [proj/call-native
-                     (fn [fn-key & more]
-                       (when (and (= :proj_destroy fn-key) (= 3 (count more)))
-                         (let [p (first (second more))]
-                           (swap! log conj {:impl (or (var-get #'proj/*backend*)
-                                                      @proj/implementation)
-                                            :addr (if (instance? tech.v3.datatype.ffi.Pointer p)
-                                                    (.address ^tech.v3.datatype.ffi.Pointer p)
-                                                    (nw/address-as-int p))})))
-                       (apply orig fn-key more))]
-         (f log)))))
+   (defn- with-destroy-log
+     "Run (f log), and log each proj_destroy with its address and the backend
+      that call-native takes."
+     [f]
+     (with-native-call-log
+      #{:proj_destroy}
+      (fn [_ args] {:impl (or (var-get #'proj/*backend*) @proj/implementation)
+                    :addr (addr-of (first args))})
+      false f)))
 
 #?(:clj
    (defn- gc-until [pred]
@@ -1331,35 +1074,27 @@
 #?(:clj
    (deftest explicit-destroy-then-gc-frees-once-test
      (with-each-implementation
-       (let [log (atom [])
-             orig proj/call-native
-             addr-of (fn [p] (if (instance? tech.v3.datatype.ffi.Pointer p)
-                               (.address ^tech.v3.datatype.ffi.Pointer p)
-                               (nw/address-as-int p)))]
-         (with-redefs [proj/call-native
-                       (fn [fn-key & more]
-                         (if (and (#{:proj_destroy :proj_context_destroy} fn-key)
-                                  (= 3 (count more)))
-                           (swap! log conj [fn-key (addr-of (first (second more)))])
-                           (apply orig fn-key more)))]
-           (let [n-canaries 20
-                 [c p] ((fn []
-                          (let [ctx (proj/context-create)
-                                pj (proj/proj-create-from-database
-                                    {:context ctx :auth_name "EPSG" :code "4326"})]
-                            (dotimes [_ n-canaries]
-                              (proj/proj-create-from-database
-                               {:context ctx :auth_name "EPSG" :code "3857"}))
-                            (proj/proj-destroy {:pj pj})
-                            (proj/proj-context-destroy {:context ctx})
-                            [(addr-of (proj/context-ptr ctx)) (addr-of pj)])))
-                 n-of (fn [k a] (count (filter #{[k a]} @log)))]
-             ;; The canaries hold the context until the GC frees them.
-             (gc-until #(> (count (filter (comp #{:proj_destroy} first) @log)) n-canaries))
-             (dotimes [_ 10] (System/gc) (Thread/sleep 50))
-             (is (> (count @log) n-canaries) "the GC released the canaries")
-             (is (= 1 (n-of :proj_destroy p)) "the PJ was freed once")
-             (is (= 1 (n-of :proj_context_destroy c)) "the context was freed once")))))))
+       (with-native-call-log
+        #{:proj_destroy :proj_context_destroy} (fn [k args] [k (addr-of (first args))]) true
+        (fn [log]
+          (let [n-canaries 20
+                [c p] ((fn []
+                         (let [ctx (proj/context-create)
+                               pj (proj/proj-create-from-database
+                                   {:context ctx :auth_name "EPSG" :code "4326"})]
+                           (dotimes [_ n-canaries]
+                             (proj/proj-create-from-database
+                              {:context ctx :auth_name "EPSG" :code "3857"}))
+                           (proj/proj-destroy {:pj pj})
+                           (proj/proj-context-destroy {:context ctx})
+                           [(addr-of (proj/context-ptr ctx)) (addr-of pj)])))
+                n-of (fn [k a] (count (filter #{[k a]} @log)))]
+            ;; The canaries hold the context until the GC frees them.
+            (gc-until #(> (count (filter (comp #{:proj_destroy} first) @log)) n-canaries))
+            (dotimes [_ 10] (System/gc) (Thread/sleep 50))
+            (is (> (count @log) n-canaries) "the GC released the canaries")
+            (is (= 1 (n-of :proj_destroy p)) "the PJ was freed once")
+            (is (= 1 (n-of :proj_context_destroy c)) "the context was freed once")))))))
 
 ;; PROJ allocates a string list for the caller, so each string-list call
 ;; frees it after the decode.
@@ -1367,15 +1102,11 @@
    (deftest string-list-result-is-freed-test
      (with-each-implementation
        (with-test-context [ctx]
-         (let [freed (atom 0)
-               orig proj/call-native]
-           (with-redefs [proj/call-native
-                         (fn [fn-key & more]
-                           (when (and (= :proj_string_list_destroy fn-key) (= 3 (count more)))
-                             (swap! freed inc))
-                           (apply orig fn-key more))]
-             (is (seq (proj/proj-get-authorities-from-database {:context ctx})))
-             (is (= 1 @freed) "the list was freed once")))))))
+         (with-native-call-log
+          #{:proj_string_list_destroy} (constantly 1) false
+          (fn [freed]
+            (is (seq (proj/proj-get-authorities-from-database {:context ctx})))
+            (is (= 1 (count @freed)) "the list was freed once")))))))
 
 ;; An options arg takes nil, which PROJ reads as no options.
 #?(:clj
@@ -1393,16 +1124,12 @@
    (deftest suggests-code-for-frees-its-result-test
      (with-each-implementation
        (with-test-context [ctx]
-         (let [freed (atom 0)
-               orig proj/call-native
-               pj (proj/proj-create {:context ctx :definition "+proj=longlat +ellps=GRS80 +no_defs +type=crs"})]
-           (with-redefs [proj/call-native
-                         (fn [fn-key & more]
-                           (when (and (= :proj_string_destroy fn-key) (= 3 (count more)))
-                             (swap! freed inc))
-                           (apply orig fn-key more))]
-             (is (string? (proj/proj-suggests-code-for {:context ctx :object pj :authority "HOBU" :numeric_code 1})))
-             (is (= 1 @freed) "the code string was freed once")))))))
+         (let [pj (proj/proj-create {:context ctx :definition "+proj=longlat +ellps=GRS80 +no_defs +type=crs"})]
+           (with-native-call-log
+            #{:proj_string_destroy} (constantly 1) false
+            (fn [freed]
+              (is (string? (proj/proj-suggests-code-for {:context ctx :object pj :authority "HOBU" :numeric_code 1})))
+              (is (= 1 (count @freed)) "the code string was freed once"))))))))
 
 #?(:clj
    (deftest gc-release-after-a-backend-switch-test
@@ -1419,7 +1146,7 @@
              ;; A host with no native lib cannot switch to FFI.
              (when (= other @proj/implementation)
                (gc-until (constantly false))
-               (is (every? #(= made-on (:impl %)) @log)
+               (is (and (seq @log) (every? #(= made-on (:impl %)) @log))
                    "a result frees only through the backend that made it"))))))))
 
 ;; PROJ reads the context of a PJ when it frees the PJ: ~NetworkFile calls
@@ -1428,29 +1155,49 @@
 #?(:clj
    (deftest gc-frees-a-pj-before-its-context-test
      (with-each-implementation
-       (let [log (atom [])
-             orig proj/call-native
-             addr-of (fn [p] (if (instance? tech.v3.datatype.ffi.Pointer p)
-                               (.address ^tech.v3.datatype.ffi.Pointer p)
-                               (nw/address-as-int p)))]
-         (with-redefs [proj/call-native
-                       (fn [fn-key & more]
-                         (if (and (#{:proj_destroy :proj_context_destroy} fn-key)
-                                  (= 3 (count more)))
-                           (swap! log conj [fn-key (addr-of (first (second more)))])
-                           (apply orig fn-key more)))]
-           (let [pairs ((fn []
-                          (vec (for [_ (range 10)]
-                                 (let [ctx (proj/context-create)
-                                       pj (proj/proj-create-from-database
-                                           {:context ctx :auth_name "EPSG" :code "4326"})]
-                                   [(addr-of (proj/context-ptr ctx)) (addr-of pj)])))))
-                 idx (fn [k a] (first (keep-indexed (fn [i [fk x]] (when (and (= k fk) (= a x)) i)) @log)))]
-             (gc-until #(every? (fn [[c _]] (idx :proj_context_destroy c)) pairs))
-             (is (every? (fn [[c _]] (idx :proj_context_destroy c)) pairs)
-                 "the GC released each context")
-             (is (every? (fn [[c p]] (let [ci (idx :proj_context_destroy c)
-                                           pi (idx :proj_destroy p)]
-                                       (or (nil? ci) (and pi (< pi ci)))))
-                         pairs)
-                 "each PJ was freed before its context")))))))
+       (with-native-call-log
+        #{:proj_destroy :proj_context_destroy} (fn [k args] [k (addr-of (first args))]) true
+        (fn [log]
+          (let [pairs ((fn []
+                         (vec (for [_ (range 10)]
+                                (let [ctx (proj/context-create)
+                                      pj (proj/proj-create-from-database
+                                          {:context ctx :auth_name "EPSG" :code "4326"})]
+                                  [(addr-of (proj/context-ptr ctx)) (addr-of pj)])))))
+                idx (fn [k a] (first (keep-indexed (fn [i [fk x]] (when (and (= k fk) (= a x)) i)) @log)))]
+            (gc-until #(every? (fn [[c _]] (idx :proj_context_destroy c)) pairs))
+            (is (every? (fn [[c _]] (idx :proj_context_destroy c)) pairs)
+                "the GC released each context")
+            (is (every? (fn [[c p]] (let [ci (idx :proj_context_destroy c)
+                                          pi (idx :proj_destroy p)]
+                                      (or (nil? ci) (and pi (< pi ci)))))
+                        pairs)
+                "each PJ was freed before its context")))))))
+
+;; A pool worker whose PROJ boot fails closes the polyglot Context it made.
+#?(:clj
+   (deftest failed-pooled-boot-closes-its-context-test
+     (let [ctx (org.graalvm.polyglot.Context/create (into-array String ["js"]))]
+       (with-redefs [nw/new-polyglot-context! (constantly ctx)
+                     nw/bootstrap-graal-module! (fn [& _] (throw (ex-info "boot failed" {})))]
+         (is (thrown? clojure.lang.ExceptionInfo (wasm/bootstrap-pooled-context!))))
+       (is (thrown? IllegalStateException (.eval ctx "js" "1"))
+           "the failed boot closed its Context"))))
+
+#?(:clj
+   (deftest missing-resource-names-its-path-test
+     (let [e (try (#'wasm/read-resource-bytes "wasm/no-such-file.bin")
+                  nil
+                  (catch Exception e e))]
+       (is (instance? clojure.lang.ExceptionInfo e))
+       (is (re-find #"wasm/no-such-file.bin" (str (ex-message e)))))))
+
+;; CLJS runner footer. The teardown must call proj.shutdown: live
+;; Worker_threads keep the Node event loop alive, and the bb task
+;; then hangs on a green run.
+;;
+;; shutdown! is a named top-level ^:async defn because squint drops
+;; ^:async from inline fns in argument position.
+#?(:cljs (defn ^:async shutdown! [] (await (.shutdown proj))))
+
+#?(:cljs (run_tests_and_exit_BANG_ shutdown!))

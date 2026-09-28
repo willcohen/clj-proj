@@ -33,47 +33,21 @@
 (defn jar [_]
   (clean nil)
   (pom nil)
-  ;; Compile Java sources
   (b/javac {:src-dirs ["src/java"]
             :class-dir class-dir
             :basis @basis
             :javac-opts ["--release" "25"]})
-  (b/copy-dir {:src-dirs ["src/clj" "src/cljc" "resources"]
+  (b/copy-dir {:src-dirs ["src/clj" "resources"]
+               :target-dir class-dir})
+  ;; src/cljc/net/willcohen/proj is also the npm package root.
+  (b/copy-dir {:src-dirs ["src/cljc"]
+               :include "net/willcohen/proj/*.cljc"
                :target-dir class-dir})
   (b/copy-file {:src "LICENSE" :target (str class-dir "/META-INF/LICENSE")})
   (b/copy-file {:src "THIRD-PARTY-NOTICES.md"
                 :target (str class-dir "/META-INF/THIRD-PARTY-NOTICES.md")})
-  ;; Delete npm/node related files that shouldn't be in the jar
-  (b/delete {:path "target/classes/net/willcohen/proj/node_modules"})
-  (b/delete {:path "target/classes/net/willcohen/proj/dist"})
-  (b/delete {:path "target/classes/net/willcohen/proj/package.json"})
-  (b/delete {:path "target/classes/net/willcohen/proj/package-lock.json"})
-  (b/delete {:path "target/classes/net/willcohen/proj/esbuild.config.mjs"})
-  (b/delete {:path "target/classes/net/willcohen/proj/.npmignore"})
-  ;; Delete JavaScript build artifacts. The npm package ships the worker
-  ;; JS; the JVM reads only wasm/proj-{emscripten.js,loader.mjs} above.
-  (b/delete {:path "target/classes/net/willcohen/proj/proj.mjs"})
-  (b/delete {:path "target/classes/net/willcohen/proj/fndefs.mjs"})
-  (b/delete {:path "target/classes/net/willcohen/proj/macros.mjs"})
-  (b/delete {:path "target/classes/net/willcohen/proj/wasm.mjs"})
-  (b/delete {:path "target/classes/net/willcohen/proj/handler.mjs"})
-  (b/delete {:path "target/classes/net/willcohen/proj/proj-loader.mjs"})
-  (b/delete {:path "target/classes/net/willcohen/proj/proj-handler.mjs"})
-  (b/delete {:path "target/classes/net/willcohen/proj/proj-handler-overrides.mjs"})
-  (b/delete {:path "target/classes/net/willcohen/proj/squint.edn"})
-  (b/delete {:path "target/classes/net/willcohen/proj/proj-emscripten.wasm.map"})
-  ;; Delete other non-jar files
-  (b/delete {:path "target/classes/net/willcohen/proj/README.md"})
-  (b/delete {:path "target/classes/net/willcohen/proj/LICENSE"})
-  (b/delete {:path "target/classes/net/willcohen/proj/wasm.cljc.bak"})
-  ;; Delete WASM files (they should be in resources/wasm if needed)
-  (b/delete {:path "target/classes/net/willcohen/proj/proj-emscripten.js"})
-  (b/delete {:path "target/classes/net/willcohen/proj/proj-emscripten.wasm"})
   ;; Build-time input for `bb gen-handler`, read from the repo, not the classpath
   (b/delete {:path "target/classes/proj-handler-classification.edn"})
-  ;; Delete duplicate/misplaced files
   (b/delete {:path "target/classes/.keep"})
-  (b/delete {:path "target/classes/net/willcohen/proj/proj"})  ; duplicate proj.db
-  (b/delete {:path "target/classes/net/willcohen/proj/sqlite3.wasm"})
   (b/jar {:class-dir class-dir
           :jar-file jar-file}))

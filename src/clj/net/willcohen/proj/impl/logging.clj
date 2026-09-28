@@ -5,14 +5,9 @@
 ;; SPDX-License-Identifier: MIT
 
 (ns net.willcohen.proj.impl.logging
-  "PROJ logging callback for the FFI backend. Routes PROJ's C-level log
-  messages to the JVM through a dt-ffi foreign interface that matches
-  PROJ's PJ_LOG_FUNC signature (void*, int, const char*). The interface
-  compiles to a Panama upcall stub on the :jdk backend.
-
-  FFI backend only. GraalVM uses PROJ's default logging (output through
-  the polyglot context's stdout/stderr). Browser and Node.js workers set
-  up logging through addFunction in proj-handler-overrides.mjs."
+  "PROJ logging callback for the FFI backend, a Panama upcall of PJ_LOG_FUNC.
+  GraalVM keeps PROJ's default logging, and the Node.js and browser workers
+  set up theirs in proj-handler-overrides.mjs."
   (:require [net.willcohen.proj.fndefs :as fndefs]
             [net.willcohen.native.callbacks :as cb]
             [net.willcohen.native.platform :as nplatform]
@@ -23,10 +18,7 @@
 (set! *warn-on-reflection* true)
 
 (def ^:private nfn
-  "Resolve a generated dt-ffi native fn by fndef key.
-  define-library-functions interns these at load time, so resolution
-  occurs at runtime. proj.cljc's require graph loads impl.native
-  transitively before any call here."
+  "Resolve a generated dt-ffi native fn by fndef key (interned at load time)."
   (nplatform/make-native-fn-resolver 'net.willcohen.proj.impl.native))
 
 (def ^:dynamic *runtime-log-level*
@@ -46,22 +38,14 @@
     1 (log/error msg)
     (when *runtime-log-level* (log/log *runtime-log-level* msg))))
 
-(defn- ptr->string
-  "Read a (possibly null) C char* Pointer to a String."
-  [p]
-  (when (and p (not (zero? (ptr-value/ptr-value p))))
-    (dt-ffi/c->string p)))
-
 (defn- log-upcall
-  "Adapt a (level, message-string) handler into the PJ_LOG_FUNC IFn. The
-  C message arrives as a char* Pointer. Null messages are ignored."
+  "Adapt a (level, message) handler into the PJ_LOG_FUNC IFn. A NULL message
+  is ignored."
   [log-fn]
   (fn [_user-data level msg-ptr]
-    (when-let [msg (ptr->string msg-ptr)]
-      (log-fn level msg))))
+    (when (and msg-ptr (not (zero? (ptr-value/ptr-value msg-ptr))))
+      (log-fn level (dt-ffi/c->string msg-ptr)))))
 
-;; The registered callback (instance + pointer) must stay GC-reachable for as
-;; long as PROJ holds the function pointer.
 (defonce ^:private log-callback-holder (atom nil))
 
 (defn get-log-callback
@@ -70,12 +54,8 @@
   later calls return that instance and ignore log-fn. The cache keeps
   the instance reachable, so the native function pointer stays valid.
 
-  The swap! is what makes that safe under concurrency. proj/context-create
-  calls setup-logging!, and the workload pool creates one context for each
-  worker thread, so two threads can reach a nil holder together. A
-  check-then-reset! there hands one thread a Pointer whose instance the
-  other thread's reset! then drops, and the stub dangles once it is
-  collected."
+  swap!, not check-then-reset!: pool workers create contexts concurrently,
+  and a lost reset! would let GC free a stub that PROJ still calls."
   ([] (get-log-callback nil))
   ([log-fn]
    (:ptr (swap! log-callback-holder
@@ -89,6 +69,5 @@
   then set the default level to PJ_LOG_ERROR. Bind *runtime-log-level*
   for more output."
   [ctx-ptr]
-  (let [cb ((nfn :proj_log_func) ctx-ptr nil (get-log-callback))]
-    ((nfn :proj_log_level) ctx-ptr (int fndefs/PJ_LOG_ERROR))
-    cb))
+  ((nfn :proj_log_func) ctx-ptr nil (get-log-callback))
+  ((nfn :proj_log_level) ctx-ptr (int fndefs/PJ_LOG_ERROR)))

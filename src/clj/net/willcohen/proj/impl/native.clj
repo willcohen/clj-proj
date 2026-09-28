@@ -14,7 +14,6 @@
 
 (def fn-defs (nplatform/rehydrate-fn-defs fn-defs-data/fndefs))
 
-;; Holds {:file :path :libname :singleton}, or {} when extraction failed.
 ;; PROJ reads proj.db, proj.ini, and the grid files from the directory
 ;; that holds the extracted library. Thus they come out adjacent to it,
 ;; and proj.cljc passes that :path as the database path.
@@ -29,10 +28,6 @@
 
 (defn init-proj
   []
-  ;; The @proj atom already holds the extracted files. This call does the
-  ;; final load, selects :jdk, and binds the singleton to the absolute
-  ;; path of the library.
   (nplatform/init-jdk-library! (:singleton @proj) (:file @proj)))
 
-;; No PROJ fn-def sets :check-error?, so no error-check fn is given.
 (nplatform/define-library-fns! fn-defs proj)

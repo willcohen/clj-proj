@@ -5,24 +5,8 @@
 ;; SPDX-License-Identifier: MIT
 
 (ns net.willcohen.proj.impl.network
-  "Network callbacks for PROJ grid fetch through Java HttpClient.
-
-  Two callback systems:
-  - GraalVM WASM: ProxyExecutable callbacks installed in the wasm function
-    table through Module.addFunction
-  - native FFI: callback interfaces registered through
-    proj_context_set_network_callbacks
-
-  The two share handle management, HttpClient, and range request logic.
-
-  Four callbacks implement PROJ's network interface:
-  - open:       initial HTTP range request, returns a handle
-  - close:      removes the handle from state
-  - get_header: returns a stored header value
-  - read_range: later range requests with an existing handle
-
-  Handle state (URL plus response headers) lives in the `handles` atom,
-  keyed by integer handle ID."
+  "Network callbacks for PROJ grid fetch through Java HttpClient, for the
+  GraalVM wasm backend (Module.addFunction) and the FFI backend (upcalls)."
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
             [net.willcohen.native.http :as http]
@@ -63,52 +47,61 @@
   (doseq [ptr (get-in @handles [id :header-ptrs])]
     (nw/module-execute module "_free" [ptr])))
 
-(defn- make-range-request
-  "Delegate the HTTP range GET to net.willcohen.native.http. Adapt its
-  {:status :headers :body-bytes} shape to the {:status :headers :body}
-  shape that the PROJ callbacks consume."
-  [url offset size-to-read]
-  (let [{:keys [status headers body-bytes]}
-        (http/range-request {:url url :offset offset :size size-to-read})]
+(defn- fetch-range
+  "GET size bytes of url from offset. On a 200 or 206, pass a non-empty body
+  to write! and return [bytes-read headers]. Otherwise pass \"HTTP <status>\"
+  to err! and return nil. write! and err! write the caller's memory, so they
+  run only inside the callback."
+  [tag url offset size write! err!]
+  (let [{:keys [status headers ^bytes body-bytes]}
+        (http/range-request {:url url :offset offset :size size})]
     (when (zero? status)
       (log/error "Network request failed" {:url url}))
-    {:status status :headers headers :body body-bytes}))
+    (if (#{200 206} status)
+      (let [n (if body-bytes (alength body-bytes) 0)]
+        (when (pos? n) (write! body-bytes))
+        [n headers])
+      (do (log/warn (str tag " HTTP error") {:status status :url url})
+          (err! (str "HTTP " status))
+          nil))))
+
+(defn- open!
+  "The body of both open callbacks. Returns the new handle id, or nil."
+  [tag url offset size write! write-size! err!]
+  (log/debug (str tag ": open") {:url url :offset offset :size size})
+  (when-let [[n headers] (fetch-range (str tag ": open") url offset size write! err!)]
+    (write-size! n)
+    (let [id (create-handle! url headers)]
+      (log/debug (str tag ": opened") {:id id :bytes n})
+      id)))
+
+(defn- read-range!
+  "The body of both read_range callbacks. Returns the byte count, or 0. It
+  replaces the stored headers, since Content-Range changes with each request."
+  [tag id offset size write! err!]
+  (if-let [url (:url (get-handle id))]
+    (do (log/debug (str tag ": readRange") {:handle id :offset offset :size size})
+        (if-let [[n headers] (fetch-range (str tag ": readRange") url offset size write! err!)]
+          (do (swap! handles assoc-in [id :headers] headers)
+              (long n))
+          0))
+    (do (log/warn (str tag ": readRange invalid handle") {:id id})
+        0)))
 
 (defn- create-open-callback
-  "Create the 'open' ProxyExecutable for PROJ network access.
-  It makes an initial HTTP range request for a grid file URL, copies the
-  response bytes into the WASM heap through nw/heap-write-bytes!, writes
-  the response size to out_size_ptr through Emscripten setValue, and
-  returns a handle ID. The handle (URL plus response headers) goes into
-  the `handles` atom for get_header and read_range.
-
-  The callback closes over `module`, the module it was installed
-  against: a pooled Context's callbacks must not reach the default
-  module."
+  "Create the 'open' ProxyExecutable. The callback closes over `module`,
+  the module it was installed against: a pooled Context's callbacks must
+  not reach the default module."
   [module]
   (reify ProxyExecutable
     (execute [_ args]
       (try
-        (let [url-ptr (nw/value->long (aget args 1))
-              offset (nw/value->long (aget args 2))
-              size-to-read (nw/value->long (aget args 3))
-              buffer-ptr (nw/value->long (aget args 4))
-              out-size-ptr (nw/value->long (aget args 5))
-              url (nw/utf8->string module url-ptr)
-              _ (log/debug "GRAAL-NET: open" {:url url :offset offset :size size-to-read})
-              response (make-range-request url offset size-to-read)]
-          (if (#{200 206} (:status response))
-            (let [^bytes body (:body response)
-                  bytes-read (if body (alength body) 0)]
-              (when (and body (pos? bytes-read))
-                (nw/heap-write-bytes! module buffer-ptr body))
-              (nw/module-execute module "setValue" [out-size-ptr bytes-read "i32"])
-              (let [handle-id (create-handle! url (:headers response))]
-                (log/debug "GRAAL-NET: opened" {:id handle-id :bytes bytes-read})
-                handle-id))
-            (do
-              (log/warn "GRAAL-NET: HTTP error" {:status (:status response) :url url})
-              0)))
+        (let [[_ url-ptr offset size buf out-size] (mapv nw/value->long args)]
+          (or (open! "GRAAL-NET" (nw/utf8->string module url-ptr) offset size
+                     #(nw/heap-write-bytes! module buf %)
+                     #(nw/module-execute module "setValue" [out-size % "i32"])
+                     (constantly nil))
+              0))
         (catch Exception e
           (log/error e "GRAAL-NET: open failed")
           0)))))
@@ -130,13 +123,9 @@
           nil)))))
 
 (defn- create-get-header-callback
-  "Create the 'get_header' ProxyExecutable for PROJ network access.
-  It reads the header name from WASM memory through UTF8ToString, looks
-  up the value in the handle's stored headers (from the initial open or
-  the most recent read_range), and writes the result string to WASM
-  through stringToNewUTF8. PROJ reads the string after the callback
-  returns, so the string lives until the close of the handle, as the
-  strings of PROJ's own callbacks do."
+  "Create the 'get_header' ProxyExecutable. PROJ reads the string after the
+  callback returns, so the string lives until the close of the handle, as
+  the strings of PROJ's own callbacks do."
   [module]
   (reify ProxyExecutable
     (execute [_ args]
@@ -158,38 +147,15 @@
           0)))))
 
 (defn- create-read-range-callback
-  "Create the 'read_range' ProxyExecutable for PROJ network access.
-  It serves later range requests for a resource that open already
-  opened, with the same HTTP flow as open but an existing handle. It
-  updates the stored headers after each request, because Content-Range
-  changes for each request."
+  "Create the 'read_range' ProxyExecutable."
   [module]
   (reify ProxyExecutable
     (execute [_ args]
       (try
-        (let [handle-id (nw/value->int (aget args 1))
-              offset (nw/value->long (aget args 2))
-              size-to-read (nw/value->long (aget args 3))
-              buffer-ptr (nw/value->long (aget args 4))
-              handle (get-handle handle-id)
-              url (:url handle)]
-          (if url
-            (do
-              (log/debug "GRAAL-NET: readRange" {:handle handle-id :offset offset :size size-to-read})
-              (let [response (make-range-request url offset size-to-read)]
-                (if (#{200 206} (:status response))
-                  (let [^bytes body (:body response)
-                        bytes-read (if body (alength body) 0)]
-                    (when (and body (pos? bytes-read))
-                      (nw/heap-write-bytes! module buffer-ptr body))
-                    (swap! handles assoc-in [handle-id :headers] (:headers response))
-                    bytes-read)
-                  (do
-                    (log/warn "GRAAL-NET: readRange HTTP error" {:status (:status response)})
-                    0))))
-            (do
-              (log/warn "GRAAL-NET: readRange invalid handle" {:id handle-id})
-              0)))
+        (let [[_ id offset size buf] (mapv nw/value->long args)]
+          (read-range! "GRAAL-NET" id offset size
+                       #(nw/heap-write-bytes! module buf %)
+                       (constantly nil)))
         (catch Exception e
           (log/error e "GRAAL-NET: readRange failed")
           0)))))
@@ -219,10 +185,8 @@
    [:read-range "iiijiiiii"]])
 
 (defn setup-network-callbacks!
-  "Set up network callbacks for a GraalVM PROJ context.
-  It installs the four ProxyExecutables in the wasm function table through
-  Module.addFunction and registers those pointers with PROJ, so grid fetches
-  skip PROJ's libcurl and XHR path."
+  "Set up network callbacks for a GraalVM PROJ context, so grid fetches skip
+  PROJ's libcurl and XHR path."
   [ctx-ptr]
   (log/info "Setting up GraalVM network callbacks...")
   (let [module (or (some-> nw/*wasm-context* nw/get-module) @wasm/p)
@@ -242,10 +206,7 @@
       (log/warn "Failed to register network callbacks" {:result result}))
     result))
 
-;; define-callback-interface compiles to a Panama upcall stub on the :jdk
-;; backend. PROJ callback pointers and out-params flow through dt-ffi
-;; Pointers and dtype native buffers. size_t and unsigned long long params
-;; are modeled as :int64 (correct on 64-bit).
+;; size_t and unsigned long long are :int64, correct on 64-bit hosts only.
 
 ;; PROJ_NETWORK_HANDLE* open(ctx, const char* url, unsigned long long offset,
 ;;   size_t size_to_read, void* buffer, size_t* out_size_read,
@@ -270,16 +231,6 @@
   "Resolve a generated dt-ffi native fn by fndef key (interned at load time)."
   (nplatform/make-native-fn-resolver 'net.willcohen.proj.impl.native))
 
-(defn- write-buffer!
-  "Copy the bytes of body into the caller's buffer at buffer-ptr."
-  [buffer-ptr ^bytes body]
-  (ffi-mem/copy-bytes! (ffi-mem/ptr-addr buffer-ptr) body))
-
-(defn- write-size!
-  "Write v into out-size-ptr[0] as a native size_t (int64)."
-  [out-size-ptr v]
-  (ffi-mem/put-i64! (ffi-mem/ptr-addr out-size-ptr) 0 v))
-
 (defn- write-error-string!
   "Write a null-terminated, truncated msg into the caller's out_error_string."
   [out-err-ptr max-size msg]
@@ -292,29 +243,21 @@
 
 (defn- native-open
   [_ctx url-ptr offset size-to-read buffer-ptr out-size-ptr err-max out-err-ptr _user]
-  (try
-    (let [url (dt-ffi/c->string url-ptr)
-          _ (log/debug "NET: open" {:url url :offset offset :size size-to-read})
-          response (make-range-request url offset size-to-read)]
-      (if (#{200 206} (:status response))
-        (let [^bytes body (:body response)
-              bytes-read (if body (alength body) 0)]
-          (when (and body (pos? bytes-read)) (write-buffer! buffer-ptr body))
-          (write-size! out-size-ptr bytes-read)
-          (let [handle-id (create-handle! url (:headers response))]
-            (log/debug "NET: opened" {:id handle-id :bytes bytes-read})
-            ;; PROJ treats the return as an opaque PROJ_NETWORK_HANDLE* and
-            ;; only gives it back to close/get_header/read_range, which
-            ;; recover the id with ptr-addr. PROJ never dereferences it.
-            (dt-ffi/->pointer (long handle-id))))
-        (do
-          (log/warn "NET: HTTP error" {:status (:status response) :url url})
-          (write-error-string! out-err-ptr err-max (str "HTTP " (:status response)))
-          0)))
-    (catch Exception e
-      (log/error e "NET: open failed")
-      (write-error-string! out-err-ptr err-max (or (.getMessage e) "error"))
-      0)))
+  (let [err! #(write-error-string! out-err-ptr err-max %)]
+    (try
+      (if-let [id (open! "NET" (dt-ffi/c->string url-ptr) offset size-to-read
+                         #(ffi-mem/copy-bytes! (ffi-mem/ptr-addr buffer-ptr) %)
+                         #(ffi-mem/put-i64! (ffi-mem/ptr-addr out-size-ptr) 0 %)
+                         err!)]
+        ;; PROJ treats the return as an opaque PROJ_NETWORK_HANDLE* and
+        ;; only gives it back to close/get_header/read_range, which
+        ;; recover the id with ptr-addr. PROJ never dereferences it.
+        (dt-ffi/->pointer (long id))
+        0)
+      (catch Exception e
+        (log/error e "NET: open failed")
+        (err! (or (.getMessage e) "error"))
+        0))))
 
 (defn- native-close
   [_ctx handle-ptr _user]
@@ -327,14 +270,8 @@
       (log/error e "NET: close failed")
       nil)))
 
-;; The returned C string must stay valid until PROJ reads it, before the
-;; next callback on this thread. Keep the most recent native buffer
-;; reachable, which prevents GC.
-;;
-;; One slot for each thread, because the workload pool runs a PROJ context
-;; on every worker thread and grid fetches run concurrently. A single shared
-;; slot let one thread drop the buffer another thread had just handed to
-;; PROJ but that PROJ had not yet read.
+;; PROJ copies the value before the next callback on its thread, so keep
+;; the newest buffer for each thread reachable.
 (defonce ^:private last-header-buf (ThreadLocal.))
 
 (defn- native-get-header
@@ -356,43 +293,19 @@
 
 (defn- native-read-range
   [_ctx handle-ptr offset size-to-read buffer-ptr err-max out-err-ptr _user]
-  (try
-    (let [handle-id (ffi-mem/ptr-addr handle-ptr)
-          url (:url (get-handle handle-id))]
-      (if url
-        (do
-          (log/debug "NET: readRange" {:handle handle-id :offset offset :size size-to-read})
-          (let [response (make-range-request url offset size-to-read)]
-            (if (#{200 206} (:status response))
-              (let [^bytes body (:body response)
-                    bytes-read (if body (alength body) 0)]
-                (when (and body (pos? bytes-read)) (write-buffer! buffer-ptr body))
-                (swap! handles assoc-in [handle-id :headers] (:headers response))
-                (long bytes-read))
-              (do
-                (log/warn "NET: readRange HTTP error" {:status (:status response)})
-                (write-error-string! out-err-ptr err-max (str "HTTP " (:status response)))
-                0))))
-        (do
-          (log/warn "NET: readRange invalid handle" {:id handle-id})
-          0)))
-    (catch Exception e
-      (log/error e "NET: readRange failed")
-      (write-error-string! out-err-ptr err-max (or (.getMessage e) "error"))
-      0)))
+  (let [err! #(write-error-string! out-err-ptr err-max %)]
+    (try
+      (read-range! "NET" (ffi-mem/ptr-addr handle-ptr) offset size-to-read
+                   #(ffi-mem/copy-bytes! (ffi-mem/ptr-addr buffer-ptr) %)
+                   err!)
+      (catch Exception e
+        (log/error e "NET: readRange failed")
+        (err! (or (.getMessage e) "error"))
+        0))))
 
-;; One registration serves every context. The four callbacks take the ctx
-;; as their first argument and ignore it, and they read their per-request
-;; state from the `handles` atom, so they hold nothing context-specific.
-;;
-;; The delay is load-bearing, not an optimization. Each registered callback
-;; (a {:ptr :inst} from callbacks/register-callback!) must stay GC-reachable
-;; while PROJ holds its function pointer, and PROJ holds it for the life of
-;; every context the pointer was registered on. Registering per context into
-;; a single holder kept only the newest set, so with two or more contexts --
-;; which the workload pool always has, one for each worker thread -- every
-;; earlier context pointed at upcall stubs that GC was free to collect.
-;; defonce so an ns reload does not drop instances that live contexts use.
+;; One registration serves every context: the callbacks ignore ctx and keep
+;; request state in handles. PROJ holds these pointers for each context's
+;; life, so the instances must stay reachable, across ns reloads too.
 (defonce ^:private native-callbacks
   (delay {:open-cb   (cb/register-callback! @open-iface   native-open)
           :close-cb  (cb/register-callback! @close-iface  native-close)

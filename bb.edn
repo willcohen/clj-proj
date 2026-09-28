@@ -13,18 +13,37 @@
              [clojure.java.shell :as shell]
              [net.willcohen.native.build :as nb])
 
-  :init (do (def proj-source {:type :tag :ref "9.9.0"})
-            ;; zig builds each on the host: bb build --native --target <os>-<arch>[-musl].
+  :init (do (def proj-version "9.9.0")
             (def cross-platforms ["linux/amd64" "linux/aarch64" "linux/amd64-musl"
                                   "linux/aarch64-musl" "windows/amd64"])
             (def sqlite-version-url "3510200")
             (def sqlite-year "2026")
             (def zlib-version "1.3.2")
-            (def zlib-url (str "https://github.com/madler/zlib/releases/download/v"
-                               zlib-version "/zlib-" zlib-version ".tar.gz"))
             (def libtiff-version "4.7.1")
+            (def zlib-dir (str "zlib-" zlib-version))
+            (def sqlite-dir (str "sqlite-autoconf-" sqlite-version-url))
+            (def libtiff-dir (str "libtiff-v" libtiff-version))
+            ;; Each entry is [archive url extracted-dir]. PROJ is last, so
+            ;; --local-proj can drop it.
+            (def source-archives
+              [[(str zlib-dir ".tar.gz")
+                (str "https://github.com/madler/zlib/releases/download/v" zlib-version "/" zlib-dir ".tar.gz")
+                zlib-dir]
+               [(str sqlite-dir ".tar.gz")
+                (str "https://sqlite.org/" sqlite-year "/" sqlite-dir ".tar.gz")
+                sqlite-dir]
+               [(str libtiff-dir ".tar.gz")
+                (str "https://gitlab.com/libtiff/libtiff/-/archive/v" libtiff-version "/" libtiff-dir ".tar.gz")
+                libtiff-dir]
+               [(str proj-version ".tar.gz")
+                (str "https://github.com/OSGeo/PROJ/archive/refs/tags/" proj-version ".tar.gz")
+                (str "PROJ-" proj-version)]])
             (def path-sep (System/getProperty "path.separator"))
             (def clj-cmd (str (or (fs/which "clojure") (fs/which "clj") "clojure")))
+            (defn clj-classpath [] (str/trim (:out (tasks/shell {:out :string} clj-cmd "-Spath"))))
+            (defn project-version []
+              (second (re-find (re-pattern "def version \"([^\"]+)\"") (slurp "build.clj"))))
+            (defn jar-file [] (str "target/proj-" (project-version) ".jar"))
 
             ;; The :graal wasm guest JIT-compiles only on GraalVM CE (libgraal).
             ;; On other JDKs, the guest runs interpreted and the fallback is silent.
@@ -54,30 +73,49 @@
                   (println "! Activate it before :graal JVM tasks:")
                   (println "!   direnv allow          # one-time. Each shell in the repo then uses it")
                   (println "!   (or add direnv to your shell, or: nix develop --command bb <task>)")
-                  (println)))))
+                  (println))))
+
+            ;; Without -XX:+EnableJVMCI, the polyglot context runs interpreted
+            ;; and the tests become approximately ten times slower.
+            (defn clj-tests! [impl]
+              (tasks/shell clj-cmd
+                           (str "-J-Dnet.willcohen.proj.proj-test.implementation=" impl)
+                           "-J-XX:+UnlockExperimentalVMOptions"
+                           "-J-XX:+EnableJVMCI"
+                           "-J-Dpolyglot.engine.WarnInterpreterOnly=false"
+                           "-M:test"))
+
+            (defn java-tests! [& args]
+              (apply tasks/shell "java"
+                     "-XX:+UnlockExperimentalVMOptions"
+                     "-XX:+EnableJVMCI"
+                     "--enable-native-access=ALL-UNNAMED"
+                     "-Dpolyglot.engine.WarnInterpreterOnly=false"
+                     "-cp" (str "target/test-classes" path-sep (clj-classpath))
+                     "net.willcohen.proj.PROJTest"
+                     args))
+
+            (defn task-opts
+              "Parse the args of the current task by its :spec. With --help,
+               print the options in `order` and exit."
+              [& order]
+              (let [task (tasks/current-task)
+                    opts (cli/parse-opts *command-line-args* {:spec (:spec task)})]
+                (when (:help opts)
+                  (println (str "\nUsage: bb " (:name task) " [options]\n"))
+                  (println "Options:")
+                  (println (cli/format-opts {:spec (:spec task) :order order}))
+                  (System/exit 0))
+                opts)))
 
   download-sources
   {:doc "Download source archives for zlib, sqlite, libtiff, and PROJ into target/"
-   :task (let [target-dir "target"
-               archives [[(str "zlib-" zlib-version ".tar.gz")
-                          zlib-url]
-                         [(str "sqlite-autoconf-" sqlite-version-url ".tar.gz")
-                          (str "https://sqlite.org/" sqlite-year "/sqlite-autoconf-" sqlite-version-url ".tar.gz")]
-                         [(str "libtiff-v" libtiff-version ".tar.gz")
-                          (str "https://gitlab.com/libtiff/libtiff/-/archive/v" libtiff-version "/libtiff-v" libtiff-version ".tar.gz")]
-                         [(str (:ref proj-source) ".tar.gz")
-                          (str "https://github.com/OSGeo/PROJ/archive/refs/tags/" (:ref proj-source) ".tar.gz")]]]
-           (fs/create-dirs target-dir)
-           (doseq [[filename url] archives]
-             (nb/download-archive url (fs/path target-dir filename))))}
+   :task (doseq [[archive url] source-archives]
+           (nb/download-archive url (fs/path "target" archive)))}
 
   download-ci-artifacts
   {:doc "Download native and WASM build artifacts from CI. Each artifact comes from the most recent run that made it. The gh CLI is necessary."
-   :task (let [artifact-names ["source-archives"
-                               "native-macos" "native-linux-amd64" "native-linux-aarch64"
-                               "native-linux-amd64-musl" "native-linux-aarch64-musl" "native-windows-amd64"
-                               "wasm-browser" "wasm-graal"]
-               dest-map {"source-archives" "target"
+   :task (let [dest-map {"source-archives" "target"
                          "native-macos" "resources/darwin-aarch64"
                          "native-linux-amd64" "resources/linux-amd64"
                          "native-linux-aarch64" "resources/linux-aarch64"
@@ -87,25 +125,19 @@
                          "wasm-graal" "resources/wasm"
                          "wasm-browser" "."}]
            (println "Downloading latest CI artifacts...")
-           (doseq [artifact-name artifact-names]
-             (let [dest (get dest-map artifact-name)
-                   tmp-dir (str (fs/create-temp-dir {:prefix (str "ci-" artifact-name "-")}))]
+           (doseq [[artifact-name dest] dest-map]
+             (let [tmp-dir (str (fs/create-temp-dir {:prefix (str "ci-" artifact-name "-")}))]
                (print (str "  " artifact-name " -> " dest " ... "))
                (flush)
-               (let [result (tasks/shell {:continue true} "gh" "run" "download" "-n" artifact-name "-D" tmp-dir)]
-                 (if (zero? (:exit result))
-                   (do
-                     (doseq [f (fs/glob tmp-dir "**")]
-                       (when (fs/regular-file? f)
-                         (let [rel (fs/relativize tmp-dir f)
-                               target (fs/path dest (str rel))]
-                           (fs/create-dirs (fs/parent target))
-                           (fs/copy f target {:replace-existing true}))))
-                     (fs/delete-tree tmp-dir)
-                     (println "ok"))
-                   (do
-                     (fs/delete-tree tmp-dir)
-                     (println "not found")))))))}
+               (let [ok? (zero? (:exit (tasks/shell {:continue true} "gh" "run" "download" "-n" artifact-name "-D" tmp-dir)))]
+                 (when ok?
+                   (doseq [f (fs/glob tmp-dir "**")]
+                     (when (fs/regular-file? f)
+                       (let [target (fs/path dest (str (fs/relativize tmp-dir f)))]
+                         (fs/create-dirs (fs/parent target))
+                         (fs/copy f target {:replace-existing true})))))
+                 (fs/delete-tree tmp-dir)
+                 (println (if ok? "ok" "not found"))))))}
 
   proj:clone
   {:doc "Clone the OSGeo/PROJ repository for local development. Use --branch to select a branch. Use --update to pull the latest changes."
@@ -116,24 +148,11 @@
           :help {:desc "Show this help message"
                  :alias :h}}
    :task
-   (let [opts (cli/parse-opts *command-line-args* {:spec (:spec (tasks/current-task))})
+   (let [opts (task-opts :branch :update :help)
          vendor-dir (fs/path "vendor")
          proj-dir (fs/path vendor-dir "PROJ")
          branch (or (:branch opts) "master")
          update? (:update opts)]
-
-     (when (:help opts)
-       (println "\nUsage: bb proj:clone [options]\n")
-       (println "Clone OSGeo/PROJ repository for local development and testing.")
-       (println "The repository will be cloned to vendor/PROJ (gitignored).\n")
-       (println "Options:")
-       (println (cli/format-opts {:spec (:spec (tasks/current-task))
-                                 :order [:branch :update :help]}))
-       (println "\nExamples:")
-       (println "  bb proj:clone                Clone master branch")
-       (println "  bb proj:clone --branch=dev   Clone dev branch")
-       (println "  bb proj:clone --update       Pull latest from current branch")
-       (System/exit 0))
 
      (fs/create-dirs vendor-dir)
 
@@ -171,18 +190,11 @@
 
   lint:deps
   {:doc "Index the Clojure classpath into .clj-kondo/.cache-cli so clj-kondo resolves dependency vars. Run again after a dependency version bump."
-   ;; clj-kondo resolves library vars only through this cache. The cache is
-   ;; not in git, so a new clone reports each dependency var as "Unresolved
-   ;; var". Only --dependencies fills the cache. It ignores --copy-configs,
-   ;; so the config import is its own pass: .clj-kondo/config.edn needs
-   ;; hooks.native.generated out of net.willcohen/native, and without it a
-   ;; fresh clone fails the lint with two hook-load errors.
-   ;;
-   ;; The cache directory is .clj-kondo/.cache-cli, not the default
-   ;; .clj-kondo/.cache. clojure-lsp writes the default one, and a library
-   ;; hook file that declares a library namespace (dtype-next, for
-   ;; tech.v3.tensor) lands there as a stub that hides the real vars.
-   :task (let [cp (str/trim (:out (shell/sh clj-cmd "-Spath")))]
+   ;; --dependencies ignores --copy-configs, so the import of the
+   ;; hooks.native.generated config is its own pass. Not the default .cache:
+   ;; clojure-lsp writes there, and its stub of a hooked library ns
+   ;; (dtype-next's tech.v3.tensor) hides the real vars.
+   :task (let [cp (clj-classpath)]
            (tasks/shell "clj-kondo" "--lint" cp "--copy-configs" "--skip-lint"
                         "--cache-dir" ".clj-kondo/.cache-cli")
            (tasks/shell "clj-kondo" "--lint" cp "--dependencies" "--parallel"
@@ -201,105 +213,77 @@
 
   clean
   {:doc "Delete generated artifacts. Use flags to select targets (--native, --wasm, --cross, --resources, --target). With no flags, delete all."
-   ;; CAUTION: no flags means --all, which also deletes resources/proj.db,
-   ;; resources/proj.ini, resources/grids, and resources/wasm. Only
-   ;; `bb build --wasm` writes those files again, so `bb test:node` after a
-   ;; bare `bb clean` fails on resources/proj.db. Use `bb clean --target`
-   ;; to keep the resources tree.
+   ;; No flags also deletes resources/proj.db, proj.ini and wasm/, which
+   ;; only `bb build` writes again. `--target` keeps them.
    :spec {:native {:desc "Clean native host artifacts."}
           :wasm {:desc "Clean WASM artifacts."}
           :cross {:desc "Clean all cross-compiled artifacts."}
           :cross-platform {:desc "Clean a specific cross-platform target (for example linux/amd64)."
                            :coerce :string}
-          :resources {:desc "Clean shared resources: proj.db, proj.ini, and downloaded grids."}
+          :resources {:desc "Clean resources/proj.db, proj.ini and grids."}
           :target {:desc "Clean only the target/ directory and keep resources/"}
           :all {:desc "Clean everything (default if no flags are given)."}
           :help {:desc "Show this help message"
                  :alias :h}}
    :task
-   (let [opts (cli/parse-opts *command-line-args* {:spec (:spec (tasks/current-task))})]
-     (when (:help opts)
-       (println "\nUsage: bb clean [options]\n")
-       (println "Options:")
-       (println (cli/format-opts {:spec (:spec (tasks/current-task))
-                                 :order [:native :wasm :cross :cross-platform
-                                         :resources :target :all :help]}))
-       (System/exit 0))
+   (let [opts (task-opts :native :wasm :cross :cross-platform :resources :target :all :help)
+         all? (or (:all opts) (empty? opts))
+         native? (or all? (:native opts))
+         wasm? (or all? (:wasm opts))
+         cross? (or all? (:cross opts) (:cross-platform opts))
+         resources? (or all? (:resources opts))
+         target-only? (:target opts)
+         proj-dir (str "PROJ-" proj-version)
 
-     (let [all? (or (:all opts) (empty? (dissoc opts :spec)))
-           native? (or all? (:native opts))
-           wasm? (or all? (:wasm opts))
-           cross? (or all? (:cross opts) (:cross-platform opts))
-           resources? (or all? (:resources opts))
-           target-only? (:target opts)
-           proj-dir (case (:type proj-source)
-                      :tag (str "PROJ-" (:ref proj-source))
-                      :sha "PROJ-git")
+         delete-if-exists (fn [path]
+                            (when (fs/exists? path)
+                              (println "Deleting" (str path))
+                              (fs/delete-tree path)))
 
-           delete-if-exists (fn [path]
-                              (when (fs/exists? path)
-                                (println "Deleting" (str path))
-                                (fs/delete-tree path)))
+         clean-target (fn [target-suffix]
+                        (delete-if-exists (fs/path "target" (str "sqlite-install-" target-suffix)))
+                        (delete-if-exists (fs/path "target" (str "zlib-install-" target-suffix)))
+                        (delete-if-exists (fs/path "target" (str "libtiff-install-" target-suffix)))
+                        (delete-if-exists (fs/path "target" (str "zig-" target-suffix)))
+                        (delete-if-exists (fs/path "target" proj-dir (str "proj-build-" target-suffix)))
+                        (delete-if-exists (fs/path "target" "PROJ-local" (str "proj-build-" target-suffix)))
+                        (delete-if-exists (fs/path "resources" target-suffix)))]
 
-           clean-target (fn [target-suffix]
-                          (delete-if-exists (fs/path "target" (str "sqlite-install-" target-suffix)))
-                          (delete-if-exists (fs/path "target" (str "zlib-install-" target-suffix)))
-                          (delete-if-exists (fs/path "target" (str "libtiff-install-" target-suffix)))
-                          (delete-if-exists (fs/path "target" (str "zig-" target-suffix)))
-                          (delete-if-exists (fs/path "target" proj-dir (str "proj-build-" target-suffix)))
-                          (delete-if-exists (fs/path "target" "PROJ-local" (str "proj-build-" target-suffix)))
-                          (delete-if-exists (fs/path "resources" target-suffix)))]
+     (when native?
+       (println "\nCleaning native host artifacts...")
+       (let [{:keys [os arch]} (nb/detect-host-platform)]
+         (clean-target (str (name os) "-" (name arch)))))
 
-       (when native?
-         (println "\nCleaning native host artifacts...")
-         (let [host-os (let [os-name (System/getProperty "os.name")]
-                         (cond
-                           (re-find (re-pattern "(?i)mac|darwin") os-name) :darwin
-                           (re-find (re-pattern "(?i)linux") os-name) :linux
-                           :else :unknown))
-               host-arch (let [os-arch (System/getProperty "os.arch")]
-                           (cond
-                             (re-find (re-pattern "(?i)aarch64|arm64") os-arch) :aarch64
-                             (re-find (re-pattern "(?i)amd64|x86_64") os-arch) :amd64
-                             :else :unknown))
-               library-dir (str (name host-os) "-" (name host-arch))]
-           (clean-target library-dir)))
+     (when wasm?
+       (println "\nCleaning WASM artifacts...")
+       (clean-target "wasm")
+       (clean-target "wasm-st")
+       ;; bb squint copies the wasm into dist/ and never deletes it. Without
+       ;; this step, a release rebuild keeps a stale --debug wasm in dist/.
+       (doseq [dir ["src/cljc/net/willcohen/proj" dist-dir]
+               f ["proj-emscripten.js" "proj-emscripten.wasm" "proj-emscripten.wasm.map"]]
+         (delete-if-exists (fs/path dir f))))
 
-       (when wasm?
-         (println "\nCleaning WASM artifacts...")
-         (clean-target "wasm")
-         (clean-target "wasm-st")
-         (doseq [f ["proj-emscripten.js" "proj-emscripten.wasm"
-                    "proj-emscripten.wasm.map"]]
-           (delete-if-exists (fs/path "src/cljc/net/willcohen/proj" f)))
-         (doseq [f ["proj-emscripten.js" "proj-emscripten.wasm" "proj-loader.mjs"]]
-           (delete-if-exists (fs/path "resources" "wasm" f)))
-         ;; bb squint copies wasm into dist/ and never deletes. Without this
-         ;; step, a release rebuild keeps a stale --debug wasm in dist/.
-         (doseq [f ["proj-emscripten.js" "proj-emscripten.wasm" "proj-emscripten.wasm.map"]]
-           (delete-if-exists (fs/path "src/cljc/net/willcohen/proj/dist" f))))
+     (when cross?
+       (println "\nCleaning cross-compiled artifacts...")
+       (let [target-platforms (if-let [p (:cross-platform opts)] [p] cross-platforms)]
+         (doseq [platform target-platforms]
+           (clean-target (str/replace platform "/" "-")))))
 
-       (when cross?
-         (println "\nCleaning cross-compiled artifacts...")
-         (let [target-platforms (if-let [p (:cross-platform opts)] [p] cross-platforms)]
-           (doseq [platform target-platforms]
-             (clean-target (str/replace platform "/" "-")))))
+     (when resources?
+       (println "\nCleaning shared resources...")
+       (delete-if-exists (fs/path "resources" "proj.db"))
+       (delete-if-exists (fs/path "resources" "proj.ini"))
+       (delete-if-exists (fs/path "resources" "grids")))
 
-       (when resources?
-         (println "\nCleaning shared resources...")
-         (delete-if-exists (fs/path "resources" "proj.db"))
-         (delete-if-exists (fs/path "resources" "proj.ini"))
-         (delete-if-exists (fs/path "resources" "grids"))
-         (delete-if-exists (fs/path "src" "js" "proj-emscripten" "src" "grids")))
+     (when target-only?
+       (println "\nCleaning target/ directory only...")
+       (delete-if-exists "target"))
 
-       (when target-only?
-         (println "\nCleaning target/ directory only...")
-         (delete-if-exists "target"))
+     (when all?
+       (delete-if-exists "target"))
 
-       (when all?
-         (delete-if-exists "target"))
-
-       (println "\nClean task finished.")))}
+     (println "\nClean task finished."))}
 
   dev
   {:doc "Run a local nREPL server for development, the same as 'clj -M:dev/repl'."
@@ -323,20 +307,9 @@
                               (println "Compiling Java sources and tests...")
                               (fs/create-dirs "target/test-classes")
                               (tasks/shell "javac" "--release" "25"
-                                           "-cp" (str "src/clj" path-sep "src/cljc" path-sep "resources" path-sep
-                                                      (str/join path-sep (map str (fs/glob "." "**/*.jar")))
-                                                      path-sep
-                                                      (-> (tasks/shell {:out :string} clj-cmd "-Spath")
-                                                          :out
-                                                          str/trim))
+                                           "-cp" (clj-classpath)
                                            "-d" "target/test-classes"
-                                           "src/java/net/willcohen/proj/PROJ.java")
-                              (tasks/shell "javac" "--release" "25"
-                                           "-cp" (str "target/test-classes" path-sep
-                                                      (-> (tasks/shell {:out :string} clj-cmd "-Spath")
-                                                          :out
-                                                          str/trim))
-                                           "-d" "target/test-classes"
+                                           "src/java/net/willcohen/proj/PROJ.java"
                                            "test/java/net/willcohen/proj/PROJTest.java")
                               (println "Java compilation complete."))}
 
@@ -344,42 +317,19 @@
                  :depends [compile-java-tests]
                  :task (do
                          (println "Running Java API tests (FFI)...")
-                         (tasks/shell "java"
-                                      "-XX:+UnlockExperimentalVMOptions"
-                                      "-XX:+EnableJVMCI"
-                                      "--enable-native-access=ALL-UNNAMED"
-                                      "-Dpolyglot.engine.WarnInterpreterOnly=false"
-                                      "-cp" (str "target/test-classes" path-sep "src/clj" path-sep "src/cljc" path-sep "resources" path-sep
-                                                 (-> (tasks/shell {:out :string} clj-cmd "-Spath")
-                                                     :out
-                                                     str/trim))
-                                      "net.willcohen.proj.PROJTest"))}
+                         (java-tests!))}
 
   test:java-graal {:doc "Run the Java API tests with the GraalVM backend."
                    :depends [compile-java-tests]
                    :task (do
                            (warn-unless-graalvm!)
                            (println "Running Java API tests (GraalVM)...")
-                           (tasks/shell "java"
-                                        "-XX:+UnlockExperimentalVMOptions"
-                                        "-XX:+EnableJVMCI"
-                                        "-Dpolyglot.engine.WarnInterpreterOnly=false"
-                                        "-cp" (str "target/test-classes" path-sep "src/clj" path-sep "src/cljc" path-sep "resources" path-sep
-                                                   (-> (tasks/shell {:out :string} clj-cmd "-Spath")
-                                                       :out
-                                                       str/trim))
-                                        "net.willcohen.proj.PROJTest"
-                                        "--graal"))}
+                           (java-tests! "--graal"))}
 
   test:clj-ffi {:doc "Run the Clojure tests for the FFI implementation. Java tests are not included."
                 :task (do
                         (println "Running Clojure FFI tests...")
-                        (tasks/shell clj-cmd
-                                     "-J-Dnet.willcohen.proj.proj-test.implementation=ffi"
-                                     "-J-XX:+UnlockExperimentalVMOptions"
-                                     "-J-XX:+EnableJVMCI"
-                                     "-J-Dpolyglot.engine.WarnInterpreterOnly=false"
-                                     "-M:test"))}
+                        (clj-tests! "ffi"))}
 
   test:ffi {:doc "Run the Clojure and Java tests for the FFI implementation."
             :depends [test:clj-ffi test:java-ffi]
@@ -389,133 +339,43 @@
                       :task (do
                               (warn-unless-graalvm!)
                               (println "Running Clojure GraalVM tests...")
-                              ;; Without -XX:+EnableJVMCI, the polyglot context runs interpreted
-                              ;; and the tests become approximately ten times slower.
-                              (tasks/shell clj-cmd
-                                           "-J-Dnet.willcohen.proj.proj-test.implementation=graal"
-                                           "-J-XX:+UnlockExperimentalVMOptions"
-                                           "-J-XX:+EnableJVMCI"
-                                           "-J-Dpolyglot.engine.WarnInterpreterOnly=false"
-                                           "-M:test"))}
+                              (clj-tests! "graal"))}
 
   test:graal {:doc "Run the Clojure and Java tests for the GraalVM implementation."
-              :task (let [java-result (do (println "\n=== Running Java GraalVM tests ===\n")
-                                          (try (run 'test:java-graal) :passed
-                                               (catch Exception e (println "Java GraalVM error:" (.getMessage e)) :failed)))
-                          clj-result (do (println "\n=== Running Clojure GraalVM tests ===\n")
-                                         (try (run 'test:clojure-graal) :passed
-                                              (catch Exception e (println "Clojure GraalVM error:" (.getMessage e)) :failed)))]
-                      (println "\n=== GraalVM Test Summary ===")
-                      (println "Java tests:" (name java-result))
-                      (println "Clojure tests:" (name clj-result))
-                      (when (or (= java-result :failed) (= clj-result :failed))
-                        (throw (ex-info "GraalVM tests failed" {:java java-result :clojure clj-result}))))}
+              :depends [test:java-graal test:clojure-graal]
+              :task (println "All GraalVM tests complete.")}
 
-  test:node {:doc "Run the Node.js test suite for proj-wasm. An alias for `bb test:cljs`.
-The cljs.test suites under test/cljc are authoritative. test/js holds only
-benchmark.test.mjs, which `bb test:bench-node` runs."
+  test:node {:doc "Run the Node.js suites (test:cljs)."
              :depends [test:cljs]}
 
   stage:clj-native-test-deps
-  {:doc "Copy clj-native helper .mjs files into test/cljc/dist/ so the
-cljs.test mirrors import them by relative path. A bare
-`clj-native/test-runner` import would resolve into the nested clj-native
-under test/cljc/node_modules/proj-wasm/node_modules/, which ships its
-own squint-cljs. That gives two squint-cljs ESM instances with two
-cljs.test registries, and `t/run-tests` reads only the topmost one. The
-staged copies still import 'squint-cljs/...' as bare specifiers, which
-test/cljc/node_modules/ resolves uniformly.
-:native-src is required here: the Clojars jar carries no .mjs, so the
-staged copies come from the installed ffi-wasm npm package."
+  {:doc "Copy the clj-native test helpers from the installed ffi-wasm into test/cljc/dist/."
+   ;; The Clojars jar has no .mjs.
    :task (nb/stage-test-deps!
           {:native-src "src/cljc/net/willcohen/proj/node_modules/ffi-wasm/src/cljc/net/willcohen/native"})}
 
-  squint:test:lru
-  {:doc "Compile test/cljc/lru_test.cljc -> lru_test.mjs.
-The suite examines the bounded-LRU helpers."
-   :depends [squint stage:clj-native-test-deps]
-   :task (nb/squint-compile! "test/cljc" "lru_test.cljc"
-                             {:binary "../../src/cljc/net/willcohen/proj/node_modules/.bin/squint"})}
-
-  squint:test:proj-handler
-  {:doc "Compile test/cljc/proj_handler_test.cljc -> proj_handler_test.mjs.
-The suite examines the generated handler's import shape, init, and ccall
-surface."
-   :depends [squint stage:clj-native-test-deps]
-   :task (nb/squint-compile! "test/cljc" "proj_handler_test.cljc"
-                             {:binary "../../src/cljc/net/willcohen/proj/node_modules/.bin/squint"})}
-
-  squint:test:resource-tracking
-  {:doc "Compile test/cljc/resource_tracking_test.cljc -> resource_tracking_test.mjs.
-The suite examines disposers, GC pressure, and the shutdown drain."
-   :depends [squint stage:clj-native-test-deps]
-   :task (nb/squint-compile! "test/cljc" "resource_tracking_test.cljc"
-                             {:binary "../../src/cljc/net/willcohen/proj/node_modules/.bin/squint"})}
-
-  squint:test:benchmark
-  {:doc "Compile test/cljc/benchmark_test.cljc -> benchmark_test.mjs.
-STUB: the scaffold exists so test:cljs can address every file by name.
-Performance numbers stay in test/js/benchmark.test.mjs."
-   :depends [squint]
-   :task (nb/squint-compile! "test/cljc" "benchmark_test.cljc"
-                             {:binary "../../src/cljc/net/willcohen/proj/node_modules/.bin/squint"})}
-
-  squint:test:proj-test-macros
-  {:doc "Compile test/cljc/net/willcohen/proj/proj_test_macros.cljc -> .mjs.
-
-The file holds the cljs-side macros (with-each-implementation,
-with-test-context) that proj_test.cljc requires. Squint expands them at
-compile time through SCI but still emits a runtime import of
-'./proj_test_macros.mjs' from proj_test.mjs, so the almost empty
-compiled .mjs must exist on disk for node."
-   :depends [squint]
-   :task (nb/squint-compile! "test/cljc" "net/willcohen/proj/proj_test_macros.cljc"
-                             {:binary "../../src/cljc/net/willcohen/proj/node_modules/.bin/squint"})}
-
-  squint:test:proj
-  {:doc "Compile the dual-runtime test file
-test/cljc/net/willcohen/proj/proj_test.cljc -> proj_test.mjs.
-The same file runs on the JVM through `bb test:ffi` and under node
-through `bb test:cljs`."
-   :depends [squint squint:test:proj-test-macros stage:clj-native-test-deps]
-   :task (nb/squint-compile! "test/cljc" "net/willcohen/proj/proj_test.cljc"
-                             {:binary "../../src/cljc/net/willcohen/proj/node_modules/.bin/squint"})}
-
   build:js:test
-  {:doc "Compile all cljs.test mirrors before `bb test:cljs` and `bb test:cljs:wip`."
-   :depends [squint:test:lru squint:test:proj-handler
-             squint:test:resource-tracking squint:test:benchmark squint:test:proj]}
+  {:doc "Compile the cljs.test suites in test/cljc."
+   :depends [squint stage:clj-native-test-deps]
+   ;; proj_test.mjs imports proj_test_macros.mjs at run time.
+   :task (doseq [f ["proj_handler_test.cljc"
+                    "resource_tracking_test.cljc"
+                    "net/willcohen/proj/proj_test_macros.cljc"
+                    "net/willcohen/proj/proj_test.cljc"]]
+           (nb/squint-compile! "test/cljc" f
+                               {:binary "../../src/cljc/net/willcohen/proj/node_modules/.bin/squint"}))}
 
   test:cljs
-  {:doc "Run the cljs.test suites:
-  - lru_test.cljc                  (bounded-LRU helpers)
-  - proj_handler_test.cljc         (generated handler surface)
-  - net/willcohen/proj/proj_test.cljc
-                                   (the PROJ API)
-  - resource_tracking_test.cljc    (disposers, GC pressure, shutdown drain)
-
-benchmark_test.cljc stays under `bb test:cljs:wip`. Performance numbers
-come from test/js/benchmark.test.mjs (`bb test:bench-node`), because
-cljs.test is not a good host for timing measurements. The
-resource_tracking_test FR-fires case skips itself when global.gc is not
-available, so a plain node run stays green."
+  {:doc "Run the cljs.test suites under node."
    :depends [squint build:js:test]
    :task (do
            (println "Installing test/cljc node deps...")
            (tasks/shell {:dir "test/cljc"} "npm" "install")
-           (tasks/shell "node" "test/cljc/lru_test.mjs")
            (tasks/shell "node" "test/cljc/proj_handler_test.mjs")
-           ;; proj_test imports proj-wasm through its file: symlink, which
-           ;; pulls proj's node_modules/squint-cljs into the module graph as a
-           ;; second squint ESM instance. squint 0.14 makes Atom and protocol
-           ;; identity per-instance, so a proj-created Atom fails IDeref in a
-           ;; test body. Fix: run with --preserve-symlinks and stash the
-           ;; proj-side squint copy, so the bundle resolves the single
-           ;; test-side copy. TEMPORARY: when ffi-wasm and worker-router
-           ;; publish as versioned deps, npm dedupes squint and this
-           ;; workaround becomes unnecessary. lru_test and proj_handler_test
-           ;; do not cross this boundary. resource_tracking_test crosses it
-           ;; but runs plain (see below).
+           ;; proj-wasm is a file: dep, so its own node_modules/squint-cljs
+           ;; would load as a second squint instance, and a proj-created Atom
+           ;; would fail IDeref in a test body. Stash that copy and preserve
+           ;; symlinks, so one squint-cljs loads.
            (let [proj-squint (fs/path "src/cljc/net/willcohen/proj/node_modules/squint-cljs")
                  stash       (fs/path "src/cljc/net/willcohen/proj/node_modules/.squint-cljs.testbak")]
              ;; Recover from a crashed previous run.
@@ -529,24 +389,9 @@ available, so a plain node run stays green."
                  (when (fs/exists? stash)
                    (when (fs/exists? proj-squint) (fs/delete-tree proj-squint))
                    (fs/move stash proj-squint)))))
-           ;; resource_tracking_test imports dist/proj.mjs by real path, so it
-           ;; runs without --preserve-symlinks. That flag makes the real-path
-           ;; import fail to resolve squint-cljs. Its cross-instance use stays
-           ;; inside its own squint instance, so the dual-instance boundary
-           ;; does not apply here.
+           ;; resource_tracking_test imports dist/proj.mjs by real path, which
+           ;; --preserve-symlinks breaks.
            (tasks/shell "node" "test/cljc/resource_tracking_test.mjs"))}
-
-  test:cljs:wip
-  {:doc "Run the cljs.test scaffolds, files whose bodies are TODO stubs.
-They fail until the port completes, but the run still initializes
-proj/dist and finds infrastructure breakage early. Only
-benchmark_test.cljc lives here, and its one placeholder deftest passes.
-`:continue true` lets the chain continue after a TODO failure."
-   :depends [squint build:js:test]
-   :task (do
-           (println "Installing test/cljc node deps...")
-           (tasks/shell {:dir "test/cljc"} "npm" "install")
-           (tasks/shell {:continue true} "node" "test/cljc/benchmark_test.mjs"))}
 
   test:npm {:doc "Run the test suite of the built npm package."
             :depends [squint]
@@ -566,9 +411,6 @@ benchmark_test.cljc lives here, and its one placeholder deftest passes.
 
   check:squint-pin
   {:doc "Make sure that the browser importmaps use the squint-cljs version that package.json pins."
-   ;; The browser test pages load squint-cljs from a CDN at an explicit
-   ;; version. The bundle is compiled against the package.json pin. No
-   ;; other check compares the two versions.
    :task (let [pin-re (re-pattern "\"squint-cljs\":\\s*\"\\^?([0-9][^\"]*)\"")
                map-re (re-pattern "squint-cljs@([0-9][^/\"]*)")
                pinned (second (re-find pin-re (slurp "src/cljc/net/willcohen/proj/package.json")))
@@ -593,12 +435,9 @@ benchmark_test.cljc lives here, and its one placeholder deftest passes.
                            (stage-browser-resources!)
                            (println "Setting up cdn-style test directory...")
                            (fs/create-dirs "test/browser/cdn-style/dist")
-                           ;; The cdn-style test has no npm install. Each module
-                           ;; that proj.mjs or the handler resolves at runtime,
-                           ;; through sibling-relative imports or importmap
-                           ;; entries, must ship in its dist/ copy. That
-                           ;; includes resource-tracker, so the test stays off
-                           ;; the network and on the installed version.
+                           ;; The cdn-style test has no npm install, so its dist/
+                           ;; must hold each module that proj.mjs and the
+                           ;; handler import at run time.
                            (doseq [f ["proj.mjs" "proj.mjs.map" "proj-emscripten.wasm"
                                       "proj.db" "proj.ini" "proj-emscripten.js"
                                       "proj-handler.mjs" "proj-handler-overrides.mjs"
@@ -611,19 +450,14 @@ benchmark_test.cljc lives here, and its one placeholder deftest passes.
                            (println "Installing Playwright dependencies...")
                            (tasks/shell {:dir "test/browser"} "npm" "install")
                            (println "Installing Playwright browsers...")
-                           ;; Name the browsers that playwright.config.js
-                           ;; declares. A bare `install` also fetches webkit and
-                           ;; deletes builds that no registered installation
-                           ;; references. The 1.61.1 @playwright/test pin
-                           ;; matches worker-router and cg-app, so all three
-                           ;; share one chromium build and a run downloads
-                           ;; nothing.
+                           ;; Only the browsers that playwright.config.js declares.
+                           ;; A bare `install` also fetches webkit and deletes
+                           ;; builds that no registered installation references.
                            (tasks/shell {:dir "test/browser"} "npx" "playwright" "install" "--with-deps" "chromium" "firefox")
                            (println "Running Playwright tests...")
                            (tasks/shell {:dir "test/browser"} "npm" "test"))}
 
-  test:linux {:doc "Run the FFI and GraalVM tests on Linux platforms through Docker or Podman.
-                   Use --platform linux/amd64 or --platform linux/aarch64 to select one platform."
+  test:linux {:doc "Run the JVM, Node and npm suites in Linux containers (--platform linux/amd64|linux/aarch64)."
               :task (do
                       (println "Running tests on Linux platforms via Docker/Podman...")
                       (let [container-cmd (or (fs/which "podman") (fs/which "docker"))]
@@ -636,9 +470,7 @@ benchmark_test.cljc lives here, and its one placeholder deftest passes.
                                   platforms (if-let [p (:platform opts)]
                                               [p]
                                               ["linux/amd64" "linux/aarch64"])
-                                  docker-image "clojure:tools-deps-trixie"
-                                  host-uid (str/trim (:out (tasks/shell {:out :string} "id -u")))
-                                  host-gid (str/trim (:out (tasks/shell {:out :string} "id -g")))]
+                                  docker-image "clojure:tools-deps-trixie"]
                               (doseq [platform platforms]
                                 (let [arch (last (str/split platform (re-pattern "/")))
                                       platform-key (str/replace platform "/" "-")]
@@ -648,9 +480,7 @@ benchmark_test.cljc lives here, and its one placeholder deftest passes.
                                       (println (str "Warning: Native library not found at " native-lib-path))))
                                   (try
                                     ;; TODO: install babashka in a temp dir, not the mounted project directory.
-                                    (tasks/shell {:extra-env {"HOST_UID" host-uid
-                                                              "HOST_GID" host-gid}}
-                                                 container-cmd "run" "--rm" "--platform" platform
+                                    (tasks/shell container-cmd "run" "--rm" "--platform" platform
                                                  "-v" (str (fs/cwd) ":/work") "-w" "/work"
                                                  "--env" "CI=true"
                                                  docker-image
@@ -681,8 +511,7 @@ benchmark_test.cljc lives here, and its one placeholder deftest passes.
 
   test:jar {:doc "Run the downstream-dependency tests against the built JAR."
             :depends [jar]
-            :task (let [version (second (re-find (re-pattern "def version \"([^\"]+)\"") (slurp "build.clj")))
-                        jar-path (str "target/proj-" version ".jar")
+            :task (let [jar-path (jar-file)
                         run-from-jar!
                         (fn [label extra-flags form]
                           (let [result (apply clojure.java.shell/sh
@@ -775,7 +604,7 @@ benchmark_test.cljc lives here, and its one placeholder deftest passes.
                     (println)
                     (println "4. Testing Java API from JAR...")
                     (let [test-dir "target/java-jar-test"
-                          clj-cp (-> (tasks/shell {:out :string} clj-cmd "-Spath") :out str/trim)]
+                          clj-cp (clj-classpath)]
                       (fs/create-dirs test-dir)
                       (spit (str test-dir "/JavaJarTest.java")
                             "import net.willcohen.proj.PROJ;
@@ -833,143 +662,53 @@ public class JavaJarTest {
           :cross {:desc "Build cross-compiled artifacts for default platforms."}
           :cross-platform {:desc "Build for a specific cross-platform target (for example linux/amd64)."
                            :coerce :string}
-          ;; --debug applies -O0 -g -gsource-map to sqlite, zlib, libtiff,
-          ;; proj and the emcc link, and -fsanitize=address to all but
-          ;; sqlite: an ASan-instrumented sqlite3VdbeExec exceeds wasm's
-          ;; per-function local limit. PROJ gets CMAKE_BUILD_TYPE=Debug, and
-          ;; the final link gets ASSERTIONS=2, STACK_OVERFLOW_CHECK=2,
-          ;; INITIAL_MEMORY=268435456 and ALLOW_MEMORY_GROWTH=0. ASan's wasm
-          ;; stack walker reads the proj-emscripten.wasm.map sidecar from
-          ;; -gsource-map for named C++ frames, not the DWARF from -g. The
-          ;; sidecar is staged next to the wasm and into dist/, or emscripten
-          ;; init hangs while it waits for the file.
-          :debug {:desc "Full debug build: -O0 -g, AddressSanitizer, ASSERTIONS=2. Much larger and approximately 5x slower. Do not ship them."}
+          :debug {:desc "WASM: -O0 -g, AddressSanitizer, ASSERTIONS=2, approximately 5x slower. Native: a Debug PROJ. Do not ship either."}
           :local-proj {:desc "Use local PROJ (default vendor/PROJ, or give a path)."}
-          :target {:desc "Internal use: select the target platform for compilation (for example windows-amd64)."
+          :target {:desc "The zig target of a --native build (for example linux-amd64-musl)."
                    :coerce :string}
           :help {:alias :h :desc "Show this help message."}}
-   :task (let [opts (cli/parse-opts *command-line-args* {:spec (:spec (tasks/current-task))})]
-           (when (:help opts)
-             (println "\nUsage: bb build [options]\n")
-             (println "Options:")
-             (println (cli/format-opts {:spec (:spec (tasks/current-task))
-                                       :order [:native :wasm :wasm-browser :wasm-graal
-                                               :cross :cross-platform :debug :local-proj
-                                               :target :help]}))
-             (System/exit 0))
+   :task (let [opts (task-opts :native :wasm :wasm-browser :wasm-graal
+                               :cross :cross-platform :debug :local-proj :target :help)]
 
-           (let [get-proj-source (fn [opts proj-source target-dir]
-                                   (if (:local-proj opts)
-                                     (let [local-proj-opt (:local-proj opts)
-                                           local-proj (if (or (= local-proj-opt true) (= local-proj-opt "true"))
-                                                        (fs/path "vendor" "PROJ")
-                                                        (fs/expand-home (str local-proj-opt)))
-                                           target-proj-dir "PROJ-local"]
-                                       (if (fs/exists? local-proj)
-                                         (do
-                                           (println (str "Using local PROJ from " local-proj))
-                                           (let [target-proj-path (fs/path target-dir target-proj-dir)]
-                                             (when (fs/exists? target-proj-path)
-                                               (println (str "Removing existing " target-proj-path))
-                                               (fs/delete-tree target-proj-path))
-                                             (println (str "Copying local PROJ to " target-proj-path "..."))
-                                             (if (fs/which "rsync")
-                                               (tasks/shell "rsync" "-av" "--exclude=.git"
-                                                            (str local-proj "/") (str target-proj-path "/"))
-                                               (fs/copy-tree local-proj target-proj-path {:replace-existing true}))
-                                             target-proj-dir))
-                                         (throw (ex-info "Local PROJ not found. Run 'bb proj:clone' first."
-                                                         {:local-proj-path (str local-proj)}))))
-                                     (let [{:keys [type ref]} proj-source]
-                                       (case type
-                                         :tag (str "PROJ-" ref)
-                                         :sha (let [git-dir (fs/path target-dir "PROJ-git")]
-                                                (if (fs/exists? git-dir)
-                                                  (do
-                                                    (println (str "Checking out PROJ SHA " ref "..."))
-                                                    (tasks/shell {:dir (str git-dir)} "git" "fetch" "origin")
-                                                    (tasks/shell {:dir (str git-dir)} "git" "checkout" ref))
-                                                  (do
-                                                    (println (str "Cloning PROJ repository..."))
-                                                    (fs/create-dirs target-dir)
-                                                    (tasks/shell {:dir target-dir}
-                                                                 "git" "clone"
-                                                                 "https://github.com/OSGeo/PROJ.git"
-                                                                 "PROJ-git")
-                                                    (println (str "Checking out SHA " ref "..."))
-                                                    (tasks/shell {:dir (str git-dir)} "git" "checkout" ref)))
-                                                "PROJ-git")))))
+           (let [target-dir "target"
+                 proj-dir (if-let [local-proj-opt (:local-proj opts)]
+                            (let [local-proj (if (or (= local-proj-opt true) (= local-proj-opt "true"))
+                                               (fs/path "vendor" "PROJ")
+                                               (fs/expand-home (str local-proj-opt)))
+                                  target-proj-path (fs/path target-dir "PROJ-local")]
+                              (when-not (fs/exists? local-proj)
+                                (throw (ex-info "Local PROJ not found. Run 'bb proj:clone' first."
+                                                {:local-proj-path (str local-proj)})))
+                              (println (str "Using local PROJ from " local-proj))
+                              (when (fs/exists? target-proj-path)
+                                (println (str "Removing existing " target-proj-path))
+                                (fs/delete-tree target-proj-path))
+                              (println (str "Copying local PROJ to " target-proj-path "..."))
+                              ;; rsync creates only the last dir of its destination.
+                              (fs/create-dirs target-dir)
+                              (if (fs/which "rsync")
+                                (tasks/shell "rsync" "-av" "--exclude=.git"
+                                             (str local-proj "/") (str target-proj-path "/"))
+                                (fs/copy-tree local-proj target-proj-path {:replace-existing true}))
+                              "PROJ-local")
+                            (str "PROJ-" proj-version))]
 
-                 detect-proj-version (fn [proj-source-path]
-                                       (if (fs/exists? (fs/path proj-source-path "CMakeLists.txt"))
-                                         (try
-                                           (let [cmake-content (slurp (fs/path proj-source-path "CMakeLists.txt"))
-                                                 version-match (re-find (re-pattern "set\\s*\\(\\s*PROJ_VERSION\\s+\"([^\"]+)\"") cmake-content)]
-                                             (if version-match
-                                               (second version-match)
-                                               "dev"))
-                                           (catch Exception _
-                                             "dev"))
-                                         "dev"))
+             (let [{native? :native, debug? :debug, target-str :target} opts
+                   wasm? (some opts [:wasm :wasm-browser :wasm-graal])
+                   {host-os :os host-arch :arch} (nb/detect-host-platform)
 
-                 prepare-local-proj (fn [proj-source-path]
-                                      (when (and (fs/exists? (fs/path proj-source-path "autogen.sh"))
-                                                 (not (fs/exists? (fs/path proj-source-path "configure"))))
-                                        (println "Running autogen.sh to prepare local PROJ build...")
-                                        (tasks/shell {:dir (str proj-source-path)} "./autogen.sh")))]
-
-             (let [{native? :native, wasm-all? :wasm, wasm-browser-flag :wasm-browser, wasm-graal-flag :wasm-graal, debug? :debug, target-str :target} opts
-                   wasm-browser? (or wasm-all? wasm-browser-flag)
-                   wasm-graal? (or wasm-all? wasm-graal-flag)
-                   wasm? (or wasm-browser? wasm-graal?)
-                   target-dir "target"
-                   zlib-archive (str "zlib-" zlib-version ".tar.gz")
-                   zlib-dir (str "zlib-" zlib-version)
-                   sqlite-archive (str "sqlite-autoconf-" sqlite-version-url ".tar.gz")
-                   sqlite-dir (str "sqlite-autoconf-" sqlite-version-url)
-                   libtiff-archive (str "libtiff-v" libtiff-version ".tar.gz")
-                   libtiff-dir (str "libtiff-v" libtiff-version)
-                   proj-archive (when (= (:type proj-source) :tag)
-                                  (str (:ref proj-source) ".tar.gz"))
-
-                   proj-dir (get-proj-source opts proj-source target-dir)
-
-                   host-os (let [os-name (System/getProperty "os.name")]
-                             (cond
-                               (re-find (re-pattern "(?i)mac|darwin") os-name) :darwin
-                               (re-find (re-pattern "(?i)linux") os-name) :linux
-                               :else :unknown))
-                   host-arch (let [os-arch (System/getProperty "os.arch")]
-                               (cond
-                                 (re-find (re-pattern "(?i)aarch64|arm64") os-arch) :aarch64
-                                 (re-find (re-pattern "(?i)amd64|x86_64") os-arch) :amd64
-                                 :else :unknown))
-
-                   download-file (fn [url dest] (nb/download-archive url dest))
-                   extract-archive (fn [archive-file extracted-dir base-dir]
-                                     (nb/extract-archive archive-file extracted-dir base-dir))
-
-                   get-safe-parallel-jobs nb/safe-parallel-jobs
-
-                   build-sqlite (fn [{:keys [type install-dir cc zig-env host-flag is-linux? is-windows? pthreads? debug?]}]
+                   build-sqlite (fn [{:keys [type install-dir cc zig-env host-flag is-linux? is-windows? debug?]}]
                                   (let [lib-path (fs/path install-dir "lib" "libsqlite3.a")]
                                     (when debug? (println "DEBUG: Checking for existing" (name type) "SQLite library at:" (str lib-path)))
                                     (when-not (fs/exists? lib-path)
-                                      (println "Building SQLite for" (name type) (if pthreads? "(pthreads)" "(single-threaded)") "...")
-                                      (let [build-dir (fs/path target-dir sqlite-dir (str "sqlite-build-" (name type) (when (and (= type :wasm) (not pthreads?)) "-st")))
-                                            src-dir (fs/path target-dir sqlite-dir)
+                                      (println "Building SQLite for" (name type) "...")
+                                      (let [build-dir (fs/path target-dir sqlite-dir (str "sqlite-build-" (name type) (when (= type :wasm) "-st")))
                                             configure-args (cond-> []
                                                              host-flag (conj host-flag)
                                                              (= type :wasm) (conj "--disable-shared" "--disable-editline" "--disable-readline")
                                                              (and (= type :native) is-linux?) (conj "--disable-shared" "--enable-static")
                                                              is-windows? (conj "--disable-shared" "--enable-static"))
-                                            ;; SQLITE_MAX_WORKER_THREADS=0 stops all pthread_create calls in
-                                            ;; SQLite. With the default (8) under emscripten, a sub-Worker's
-                                            ;; TLS init raced the parent in dlmalloc and hit musl's same-tid
-                                            ;; deadlock assert. CRS lookups in proj.db are small, so a serial
-                                            ;; sort has no cost.
-                                            wasm-cflags (str (when pthreads? "-pthread -DSQLITE_THREADSAFE=1 -DSQLITE_MAX_WORKER_THREADS=0 ")
-                                                             (when-not pthreads? "-DSQLITE_THREADSAFE=0 ")
+                                            wasm-cflags (str "-DSQLITE_THREADSAFE=0 "
                                                              ;; No -fsanitize=address here. ASan adds shadow locals for
                                                              ;; each C local, and sqlite3VdbeExec then exceeds wasm's
                                                              ;; per-function local limit ("local count too large" at
@@ -983,24 +722,22 @@ public class JavaJarTest {
                                                   (= type :wasm) (assoc "CFLAGS" wasm-cflags))]
                                         (nb/build-autotools-library
                                          {:type type
-                                          :src-dir src-dir
                                           :build-dir build-dir
                                           :install-dir install-dir
                                           :configure-args configure-args
                                           :env env})))))
 
-                   build-zlib (fn [{:keys [type install-dir cc zig-env host pthreads? debug?]}]
+                   build-zlib (fn [{:keys [type install-dir cc zig-env host debug?]}]
                                 (let [lib-path (fs/path install-dir "lib" "libz.a")]
                                   (when debug? (println "DEBUG: Checking for existing" (name type) "zlib library at:" (str lib-path)))
                                   (when-not (fs/exists? lib-path)
-                                    (println "Building zlib for" (name type) (if pthreads? "(pthreads)" "(single-threaded)") "...")
+                                    (println "Building zlib for" (name type) "...")
                                     (let [src-dir (fs/path target-dir zlib-dir)
                                           env (cond-> (merge {"CC" cc} zig-env)
                                                 ;; CHOST keeps configure from reading uname on a
                                                 ;; macOS host, and --static needs -fPIC for libproj.so.
                                                 zig-env (assoc "CHOST" host "CFLAGS" "-O2 -fPIC")
                                                 (= type :wasm) (assoc "AR" "emar" "RANLIB" "emranlib")
-                                                (and (= type :wasm) pthreads?) (assoc "CFLAGS" "-pthread")
                                                 (and (= type :wasm) debug?)
                                                 (update "CFLAGS" (fn [v] (str (or v "") " -O0 -g -gsource-map -fsanitize=address"))))
                                           patch-wasm-makefile
@@ -1026,30 +763,24 @@ public class JavaJarTest {
                                         :env env
                                         :post-configure (when (= type :wasm) patch-wasm-makefile)})))))
 
-                   build-libtiff (fn [{:keys [type install-dir zlib-install-dir cc cxx zig-env host-flag is-darwin? is-linux? is-windows? pthreads? debug?]}]
+                   build-libtiff (fn [{:keys [type install-dir zlib-install-dir cc cxx zig-env host-flag is-darwin? is-linux? debug?]}]
                                    (let [lib-path (fs/path install-dir "lib" "libtiff.a")]
                                      (when debug? (println "DEBUG: Checking for existing" (name type) "LibTIFF library at:" (str lib-path)))
                                      (when-not (fs/exists? lib-path)
-                                       (println "Building LibTIFF for" (name type) (if pthreads? "(pthreads)" "(single-threaded)") "...")
+                                       (println "Building LibTIFF for" (name type) "...")
                                        (let [src-dir (fs/path target-dir libtiff-dir)
-                                             configure-args (cond-> []
+                                             configure-args (cond-> ["--disable-zstd"
+                                                                     (str "--with-zlib-include-dir=" (fs/path zlib-install-dir "include"))
+                                                                     (str "--with-zlib-lib-dir=" (fs/path zlib-install-dir "lib"))]
                                                               host-flag (conj host-flag)
-                                                              (= type :native) (conj "--disable-shared" "--enable-static" "--disable-zstd")
+                                                              (= type :native) (conj "--disable-shared" "--enable-static")
                                                               zig-env (conj "--disable-cxx")
-                                                              (and (not= type :wasm) (not= type :native)) (conj "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs")
-                                                              (and (= type :native) zlib-install-dir) (conj (str "--with-zlib-include-dir=" (fs/path zlib-install-dir "include"))
-                                                                                                            (str "--with-zlib-lib-dir=" (fs/path zlib-install-dir "lib")))
-                                                              (= type :wasm) (conj (str "--with-zlib-include-dir=" (fs/path zlib-install-dir "include"))
-                                                                                   (str "--with-zlib-lib-dir=" (fs/path zlib-install-dir "lib"))
-                                                                                   "--disable-zstd" "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs" "--disable-ccitt"))
+                                                              (= type :wasm) (conj "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs" "--disable-ccitt"))
                                              env (cond-> (merge {"CC" cc "CXX" cxx} zig-env)
                                                    (and (= type :native) is-linux?) (assoc "CFLAGS" "-O2 -fPIC" "CXXFLAGS" "-O2 -fPIC")
                                                    (= type :wasm) (assoc "CPPFLAGS" "-DHAVE_FCNTL_H=1")
-                                                   (and (= type :wasm) pthreads?) (assoc "CFLAGS" "-pthread" "CXXFLAGS" "-pthread")
-                                                   (and (= type :wasm) debug?)
-                                                   (update "CFLAGS" (fn [v] (str (or v "") " -O0 -g -gsource-map -fsanitize=address")))
-                                                   (and (= type :wasm) debug?)
-                                                   (update "CXXFLAGS" (fn [v] (str (or v "") " -O0 -g -gsource-map -fsanitize=address"))))
+                                                   (and (= type :wasm) debug?) (assoc "CFLAGS" "-O0 -g -gsource-map -fsanitize=address"
+                                                                                      "CXXFLAGS" "-O0 -g -gsource-map -fsanitize=address"))
                                              patch-wasm-makefile
                                              (fn []
                                                ;; mkg3states is a native-only tool. For WASM, patch
@@ -1091,231 +822,149 @@ public class JavaJarTest {
                                            :env env
                                            :post-configure (when (= type :wasm) patch-wasm-makefile)})))))
 
-                   build-proj (fn [{:keys [type library-dir cc cxx zig host-flag is-darwin? is-linux? is-windows? sqlite-install-dir zlib-install-dir libtiff-install-dir pthreads? debug?]}]
-                                (let [wasm-suffix (if (and (= type :wasm) (not pthreads?)) "-st" "")
-                                      final-proj-lib (fs/path "resources" (if (= type :wasm) "wasm" library-dir)
-                                                              (cond (= type :wasm) (str "proj-emscripten" wasm-suffix ".js")
-                                                                    is-windows? "libproj.dll"
-                                                                    is-darwin? "libproj.dylib"
-                                                                    is-linux? "libproj.so"
-                                                                    :else "libproj.a"))
+                   build-proj (fn [{:keys [type library-dir final-proj-lib cc cxx zig is-darwin? is-linux? is-windows? sqlite-install-dir zlib-install-dir libtiff-install-dir debug?]}]
+                                (let [wasm-suffix (if (= type :wasm) "-st" "")
                                       build-dir (fs/path target-dir proj-dir (str "proj-build-" (if (= type :native) library-dir (name type)) wasm-suffix))]
-                                  (when debug? (println "DEBUG: Checking for existing" (name type) "PROJ library at:" (str final-proj-lib)))
-                                  (when-not (fs/exists? final-proj-lib)
-                                    (println "Building PROJ for" (name type) "...")
+                                  (println "Building PROJ for" (name type) "...")
 
-                                    ;; No -fwasm-exceptions yet. GraalWasm has implemented the
-                                    ;; exception handling proposal since 25.1, and node and
-                                    ;; current browsers support it. emscripten 6.0.6 could not
-                                    ;; link it (no _Unwind_CallPersonality in its libunwind).
-                                    ;; 6.0.9 links a two-line C++ probe, and node catches its
-                                    ;; throw. The switch needs its own run of the GraalWasm and
-                                    ;; browser suites.
-                                    (let [base-cxx-flags "-ftemplate-depth=256"
-                                          cmake-args (cond-> ["-DBUILD_APPS=OFF" "-DBUILD_PROJSYNC=OFF" "-DBUILD_CCT=OFF" "-DBUILD_GEOD=OFF" "-DBUILD_GIE=OFF" "-DBUILD_PROJINFO=OFF" "-DBUILD_TESTING=OFF"
-                                                              (str "-DCMAKE_BUILD_TYPE=" (if debug? "Debug" "Release"))
-                                                              "-DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=ON"
-                                                              "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
-                                                              (str "-DCMAKE_INSTALL_PREFIX=" build-dir)
-                                                              (str "-DCMAKE_CXX_FLAGS=" base-cxx-flags)
-                                                              (str "-DSQLite3_INCLUDE_DIR=" (fs/path sqlite-install-dir "include"))
-                                                              (str "-DSQLite3_LIBRARY=" (fs/path sqlite-install-dir "lib" "libsqlite3.a"))
-                                                              (str "-DTIFF_INCLUDE_DIR=" (fs/path libtiff-install-dir "include"))
-                                                              (str "-DTIFF_LIBRARY=" (fs/path libtiff-install-dir "lib" "libtiff.a"))
-                                                              (str "-DZLIB_INCLUDE_DIR=" (fs/path zlib-install-dir "include"))
-                                                              (str "-DZLIB_LIBRARY=" (fs/path zlib-install-dir "lib" "libz.a"))]
+                                  ;; No -fwasm-exceptions: emscripten 6.0.9 links it, but the
+                                  ;; GraalWasm and browser suites have not run with it.
+                                  (let [base-cxx-flags "-ftemplate-depth=256"
+                                        cmake-args (cond-> ["-DBUILD_APPS=OFF" "-DBUILD_PROJSYNC=OFF" "-DBUILD_CCT=OFF" "-DBUILD_GEOD=OFF" "-DBUILD_GIE=OFF" "-DBUILD_PROJINFO=OFF" "-DBUILD_TESTING=OFF"
+                                                            (str "-DCMAKE_BUILD_TYPE=" (if debug? "Debug" "Release"))
+                                                            "-DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=ON"
+                                                            "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+                                                            (str "-DCMAKE_INSTALL_PREFIX=" build-dir)
+                                                            (str "-DCMAKE_CXX_FLAGS=" base-cxx-flags)
+                                                            (str "-DSQLite3_INCLUDE_DIR=" (fs/path sqlite-install-dir "include"))
+                                                            (str "-DSQLite3_LIBRARY=" (fs/path sqlite-install-dir "lib" "libsqlite3.a"))
+                                                            (str "-DTIFF_INCLUDE_DIR=" (fs/path libtiff-install-dir "include"))
+                                                            (str "-DTIFF_LIBRARY=" (fs/path libtiff-install-dir "lib" "libtiff.a"))
+                                                            (str "-DZLIB_INCLUDE_DIR=" (fs/path zlib-install-dir "include"))
+                                                            (str "-DZLIB_LIBRARY=" (fs/path zlib-install-dir "lib" "libz.a"))]
 
-                                                       ;; The lib ships from the build tree, and the build rpath
-                                                       ;; of CMake names that dir.
-                                                       is-darwin? (conj "-DCMAKE_SKIP_BUILD_RPATH=ON")
-                                                       is-windows? (conj "-DBUILD_SHARED_LIBS=ON"
-                                                                         (str "-DCMAKE_CXX_STANDARD_LIBRARIES="
-                                                                              (fs/path zlib-install-dir "lib" "libz.a")))
+                                                     ;; The lib ships from the build tree, and the build rpath
+                                                     ;; of CMake names that dir.
+                                                     is-darwin? (conj "-DCMAKE_SKIP_BUILD_RPATH=ON")
 
-                                                       zig (into (:cmake-args zig))
-                                                       (= type :native) (conj "-DENABLE_CURL=OFF"
-                                                                              "-DENABLE_NETWORK=ON")
-                                                       (and (= type :native) is-darwin?) (conj "-DBUILD_SHARED_LIBS=ON"
-                                                                                               (str "-DCMAKE_CXX_STANDARD_LIBRARIES="
-                                                                                                    (fs/path zlib-install-dir "lib" "libz.a")))
-                                                       (and (= type :native) is-linux?) (conj "-DBUILD_SHARED_LIBS=ON"
-                                                                                              "-DCMAKE_FIND_LIBRARY_SUFFIXES=.a"
-                                                                                              "-DCMAKE_SKIP_RPATH=ON")
-                                                       ;; zig puts the debug info of libc++ into the lib: 55 MB, not 9.
-                                                       (and zig (not debug?)) (conj "-DCMAKE_SHARED_LINKER_FLAGS=-s")
-                                                       (and (= type :native) is-linux?) (conj (str "-DCMAKE_CXX_STANDARD_LIBRARIES="
-                                                                                                   (fs/path zlib-install-dir "lib" "libz.a")))
-                                                       (= type :wasm) (conj "-DBUILD_SHARED_LIBS=OFF"
-                                                                            "-DCMAKE_POLICY_DEFAULT_CMP0135=NEW"
-                                                                            "-DEMBED_RESOURCE_FILES=OFF"
-                                                                            "-DENABLE_CURL=OFF")
-                                                       (and (= type :wasm) pthreads?) (conj "-DENABLE_EMSCRIPTEN_FETCH=ON"
-                                                                                            (str "-DCMAKE_C_FLAGS=-pthread" (when debug? " -fsanitize=address"))
-                                                                                            (str "-DCMAKE_CXX_FLAGS=-pthread" (when debug? " -fsanitize=address")))
-                                                       (and (= type :wasm) (not pthreads?)) (conj "-DENABLE_EMSCRIPTEN_FETCH=OFF")
-                                                       (and (= type :wasm) (not pthreads?) debug?) (conj "-DCMAKE_C_FLAGS=-fsanitize=address"
-                                                                                                         (str "-DCMAKE_CXX_FLAGS=" base-cxx-flags " -fsanitize=address")))]
-                                      (let [cmake-env {"CXX" cxx "CC" cc "CMAKE_VERBOSE_MAKEFILE" "TRUE"}]
-                                        (try
-                                          (nb/build-cmake-library
-                                           {:type type
-                                            :src-dir (fs/absolutize (fs/path target-dir proj-dir))
-                                            :build-dir build-dir
-                                            :cmake-args cmake-args
-                                            :env cmake-env
-                                            :install? false})
-                                          (catch Exception e
-                                            (let [error-log (fs/path build-dir "CMakeFiles" "CMakeError.log")
-                                                  output-log (fs/path build-dir "CMakeFiles" "CMakeOutput.log")]
-                                              (when (fs/exists? error-log)
-                                                (println "=== CMake Error Log ===")
-                                                (println (slurp (str error-log))))
-                                              (when (fs/exists? output-log)
-                                                (println "=== CMake Output Log (last 100 lines) ===")
-                                                (let [lines (str/split-lines (slurp (str output-log)))]
-                                                  (println (str/join "\n" (take-last 100 lines)))))
-                                              (throw e))))))
-                                    (cond
-                                      (= type :wasm)
-                                      (let [_ (require 'net.willcohen.proj.fndefs)
-                                            fndefs-map (deref (resolve 'net.willcohen.proj.fndefs/fndefs))
+                                                     zig (into (:cmake-args zig))
+                                                     (= type :native) (conj "-DENABLE_CURL=OFF"
+                                                                            "-DENABLE_NETWORK=ON"
+                                                                            "-DBUILD_SHARED_LIBS=ON"
+                                                                            (str "-DCMAKE_CXX_STANDARD_LIBRARIES="
+                                                                                 (fs/path zlib-install-dir "lib" "libz.a")))
+                                                     (and (= type :native) is-linux?) (conj "-DCMAKE_FIND_LIBRARY_SUFFIXES=.a"
+                                                                                            "-DCMAKE_SKIP_RPATH=ON")
+                                                     ;; zig puts the debug info of libc++ into the lib: 55 MB, not 9.
+                                                     (and zig (not debug?)) (conj "-DCMAKE_SHARED_LINKER_FLAGS=-s")
+                                                     (= type :wasm) (conj "-DBUILD_SHARED_LIBS=OFF"
+                                                                          "-DCMAKE_POLICY_DEFAULT_CMP0135=NEW"
+                                                                          "-DEMBED_RESOURCE_FILES=OFF"
+                                                                          "-DENABLE_CURL=OFF"
+                                                                          "-DENABLE_EMSCRIPTEN_FETCH=OFF")
+                                                     (and (= type :wasm) debug?) (conj "-DCMAKE_C_FLAGS=-fsanitize=address"
+                                                                                       (str "-DCMAKE_CXX_FLAGS=" base-cxx-flags " -fsanitize=address")))]
+                                    (let [cmake-env {"CXX" cxx "CC" cc}]
+                                      (try
+                                        (nb/build-cmake-library
+                                         {:type type
+                                          :src-dir (fs/absolutize (fs/path target-dir proj-dir))
+                                          :build-dir build-dir
+                                          :cmake-args cmake-args
+                                          :env cmake-env})
+                                        (catch Exception e
+                                          (let [error-log (fs/path build-dir "CMakeFiles" "CMakeError.log")
+                                                output-log (fs/path build-dir "CMakeFiles" "CMakeOutput.log")]
+                                            (when (fs/exists? error-log)
+                                              (println "=== CMake Error Log ===")
+                                              (println (slurp (str error-log))))
+                                            (when (fs/exists? output-log)
+                                              (println "=== CMake Output Log (last 100 lines) ===")
+                                              (let [lines (str/split-lines (slurp (str output-log)))]
+                                                (println (str/join "\n" (take-last 100 lines)))))
+                                            (throw e))))))
+                                  (cond
+                                    (= type :wasm)
+                                    (let [_ (require 'net.willcohen.proj.fndefs)
+                                          fndefs-map (deref (resolve 'net.willcohen.proj.fndefs/fndefs))
 
-                                            proj-function-names (->> (keys fndefs-map)
-                                                                     (map name)
-                                                                     (map (fn [s] (str "_" (str/replace s "-" "_"))))
-                                                                     sort)
+                                          proj-function-names (->> (keys fndefs-map)
+                                                                   (map name)
+                                                                   (map (fn [s] (str "_" (str/replace s "-" "_"))))
+                                                                   sort)
 
-                                            emscripten-functions ["UTF8ArrayToString"
-                                                                  "UTF8ToString"
-                                                                  "___get_exception_message"
-                                                                  "_emscripten_stack_get_base"
-                                                                  "_emscripten_stack_get_current"
-                                                                  "_emscripten_stack_get_end"
-                                                                  "_emscripten_stack_get_free"
-                                                                  "_emscripten_stack_init"
-                                                                  "_emscripten_stack_set_limits"
-                                                                  "_free"
-                                                                  "lengthBytesUTF8"
-                                                                  "_malloc"]
+                                          emscripten-functions ["UTF8ArrayToString"
+                                                                "UTF8ToString"
+                                                                "___get_exception_message"
+                                                                "_emscripten_stack_get_base"
+                                                                "_emscripten_stack_get_current"
+                                                                "_emscripten_stack_get_end"
+                                                                "_emscripten_stack_get_free"
+                                                                "_emscripten_stack_init"
+                                                                "_emscripten_stack_set_limits"
+                                                                "_free"
+                                                                "lengthBytesUTF8"
+                                                                "_malloc"]
 
-                                            all-functions (concat emscripten-functions proj-function-names)
-                                            runtime-methods ["FS" "ENV" "HEAPF64" "HEAPU8" "err"
-                                                             "ccall" "cwrap" "stackAlloc" "stackSave" "stackRestore"
-                                                             "getValue" "setValue" "stringToNewUTF8" "stringToUTF8"
-                                                             "UTF8ToString" "addFunction"]]
-                                        (fs/copy (fs/path build-dir "data" "proj.db") (fs/path build-dir "proj.db"))
-                                        (fs/copy (fs/path build-dir "data" "proj.ini") (fs/path build-dir "proj.ini"))
-                                        (let [output-name (str "proj-emscripten" wasm-suffix ".js")
-                                              proj-src-include (str (fs/absolutize (fs/path target-dir proj-dir "src")))]
-                                          ;; No Asyncify: it hung tests after fetch completion and adds
-                                          ;; approximately 10% binary size. PROJ blocks freely inside a
-                                          ;; worker instead.
-                                          (println "Building" (if pthreads? "pthreads" "single-threaded") "WASM:" output-name)
-                                          (nb/emcc-link
-                                           {:build-dir build-dir
-                                            :output-name output-name
-                                            :objects ["lib/libproj.a"
-                                                      (str (fs/path libtiff-install-dir "lib" "libtiff.a"))
-                                                      (str (fs/path zlib-install-dir "lib" "libz.a"))
-                                                      (str (fs/path sqlite-install-dir "lib" "libsqlite3.a"))]
-                                            :optimization (if debug? "-O0" "-O2")
-                                            ;; ASan's wasm stack walker reads the -gsource-map sidecar,
-                                            ;; not the DWARF from -g, for named C++ frames. The
-                                            ;; .wasm.map sidecar must sit next to the wasm in dist/, or
-                                            ;; emscripten init hangs on its source-map runDependency
-                                            ;; (copied below and in esbuild.config.mjs).
-                                            :extra-flags (cond-> ["-I" proj-src-include "-s" "ASSERTIONS=1"]
-                                                           debug? (into ["-g"
-                                                                         "-gsource-map"
-                                                                         "-sASSERTIONS=2"
-                                                                         "-sSTACK_OVERFLOW_CHECK=2"
-                                                                         "-fsanitize=address"
-                                                                         "-sINITIAL_MEMORY=268435456"]))
-                                            :exported-functions all-functions
-                                            :exported-runtime-methods runtime-methods
-                                            :pthreads? pthreads?
-                                            :allow-memory-growth? (not debug?)
-                                            :maximum-memory 2147483648
-                                            :module-name "PROJModule"})))
+                                          all-functions (concat emscripten-functions proj-function-names)
+                                          runtime-methods ["FS" "ENV" "HEAPF64" "HEAPU8" "err"
+                                                           "ccall" "cwrap" "stackAlloc" "stackSave" "stackRestore"
+                                                           "getValue" "setValue" "stringToNewUTF8" "stringToUTF8"
+                                                           "UTF8ToString" "addFunction"]]
+                                      (let [output-name (str "proj-emscripten" wasm-suffix ".js")]
+                                        (println "Building WASM:" output-name)
+                                        (nb/emcc-link
+                                         {:build-dir build-dir
+                                          :output-name output-name
+                                          :objects ["lib/libproj.a"
+                                                    (str (fs/path libtiff-install-dir "lib" "libtiff.a"))
+                                                    (str (fs/path zlib-install-dir "lib" "libz.a"))
+                                                    (str (fs/path sqlite-install-dir "lib" "libsqlite3.a"))]
+                                          :optimization (if debug? "-O0" "-O2")
+                                          ;; ASan's wasm stack walker reads the -gsource-map sidecar,
+                                          ;; not the DWARF from -g, for named C++ frames. The
+                                          ;; .wasm.map sidecar must sit next to the wasm in dist/, or
+                                          ;; emscripten init hangs on its source-map runDependency.
+                                          :extra-flags (cond-> ["-s" "ASSERTIONS=1"]
+                                                         debug? (into ["-g"
+                                                                       "-gsource-map"
+                                                                       "-sASSERTIONS=2"
+                                                                       "-sSTACK_OVERFLOW_CHECK=2"
+                                                                       "-fsanitize=address"
+                                                                       "-sINITIAL_MEMORY=268435456"]))
+                                          :exported-functions all-functions
+                                          :exported-runtime-methods runtime-methods
+                                          :allow-memory-growth? (not debug?)
+                                          :maximum-memory 2147483648
+                                          :module-name "PROJModule"})))
 
-                                      (= type :native)
-                                      (let [find-proj-lib (fn [build-dir is-windows? is-darwin? is-linux?]
-                                                            (let [lib-dir (fs/path build-dir "lib")
-                                                                  bin-dir (fs/path build-dir "bin")]
-                                                              (cond
-                                                                is-windows?
-                                                                ;; Windows DLLs are in bin/, not lib/
-                                                                (->> (concat (fs/glob bin-dir "libproj*.dll")
-                                                                             (fs/glob bin-dir "proj*.dll"))
-                                                                     (map fs/file-name)
-                                                                     first)
-                                                                is-darwin?
-                                                                (->> (fs/glob lib-dir "libproj*.dylib")
-                                                                     (map fs/file-name)
-                                                                     first)
-                                                                is-linux?
-                                                                (->> (fs/glob lib-dir "libproj*.{a,so}")
-                                                                     (map fs/file-name)
-                                                                     first)
-                                                                :else
-                                                                (->> (fs/glob lib-dir "libproj*.a")
-                                                                     (map fs/file-name)
-                                                                     first))))
-
-                                            detected-lib (find-proj-lib build-dir is-windows? is-darwin? is-linux?)
-                                            fallback-version (detect-proj-version (fs/path target-dir proj-dir))
-                                            proj-lib-versioned (or detected-lib
-                                                                   (cond
-                                                                     is-windows? (str "proj-" (first (str/split fallback-version (re-pattern "\\."))) ".dll")
-                                                                     is-darwin? (str "libproj.25." fallback-version ".dylib")
-                                                                     is-linux? "libproj.a"
-                                                                     :else "libproj.a"))
-                                            _ (when debug?
-                                                (println (format "DEBUG: Detected PROJ library file: %s (in %s/lib/)"
-                                                                 (or detected-lib "none found - using fallback")
-                                                                 build-dir))
-                                                (when detected-lib
-                                                  (println (format "DEBUG: Using detected file: %s" proj-lib-versioned))))]
-
-                                        (let [dest-dir (fs/path "resources" library-dir)]
-                                          (println "Copying native build artifacts...")
-                                          (fs/create-dirs dest-dir)
-                                          (let [source-path (if is-windows?
-                                                              (fs/path build-dir "bin" proj-lib-versioned)
-                                                              (fs/path build-dir "lib" proj-lib-versioned))]
-                                            (when zig
-                                              (if is-windows?
-                                                (nb/check-windows-lib! library-dir source-path)
-                                                (nb/check-linux-lib! library-dir source-path)))
-                                            (when is-darwin?
-                                              (nb/check-darwin-lib! source-path))
-                                            (fs/copy source-path final-proj-lib {:replace-existing true}))
-                                          (fs/copy (fs/path build-dir "data" "proj.db") (fs/path "resources") {:replace-existing true})
-                                          (fs/copy (fs/path build-dir "data" "proj.ini") (fs/path "resources") {:replace-existing true})))))))]
+                                    (= type :native)
+                                    (let [lib-dir (fs/path build-dir (if is-windows? "bin" "lib"))
+                                          source-path (or (first (if is-windows?
+                                                                   (concat (fs/glob lib-dir "libproj*.dll")
+                                                                           (fs/glob lib-dir "proj*.dll"))
+                                                                   (fs/glob lib-dir (if is-darwin? "libproj*.dylib" "libproj*.{a,so}"))))
+                                                          (throw (ex-info "No PROJ library in the build dir"
+                                                                          {:lib-dir (str lib-dir)})))]
+                                      (println "Copying native build artifacts...")
+                                      (fs/create-dirs (fs/path "resources" library-dir))
+                                      (when zig
+                                        (if is-windows?
+                                          (nb/check-windows-lib! library-dir source-path)
+                                          (nb/check-linux-lib! library-dir source-path)))
+                                      (when is-darwin?
+                                        (nb/check-darwin-lib! source-path))
+                                      (fs/copy source-path final-proj-lib {:replace-existing true})
+                                      (fs/copy (fs/path build-dir "data" "proj.db") (fs/path "resources") {:replace-existing true})
+                                      (fs/copy (fs/path build-dir "data" "proj.ini") (fs/path "resources") {:replace-existing true})))))]
 
                (when debug?
                  (println "DEBUG: Detected host-os:" host-os)
                  (println "DEBUG: Detected host-arch:" host-arch))
 
-               (fs/create-dirs "target")
-
-               (download-file zlib-url (fs/path target-dir zlib-archive))
-               (extract-archive zlib-archive zlib-dir target-dir)
-
-               (download-file (str "https://sqlite.org/" sqlite-year "/" sqlite-archive) (fs/path target-dir sqlite-archive))
-               (extract-archive sqlite-archive sqlite-dir target-dir)
-
-               (download-file (str "https://gitlab.com/libtiff/libtiff/-/archive/v" libtiff-version "/" libtiff-archive) (fs/path target-dir libtiff-archive))
-               (extract-archive libtiff-archive libtiff-dir target-dir)
-
-               (when (and (not (:local-proj opts))
-                          (= (:type proj-source) :tag))
-                 (download-file (str "https://github.com/OSGeo/PROJ/archive/refs/tags/" proj-archive)
-                                (fs/path target-dir proj-archive))
-                 (extract-archive proj-archive (str "PROJ-" (:ref proj-source)) target-dir))
-
-               (when (:local-proj opts)
-                 (prepare-local-proj (fs/path target-dir proj-dir)))
+               (doseq [[archive url dir] (cond-> source-archives (:local-proj opts) butlast)]
+                 (nb/download-archive url (fs/path target-dir archive))
+                 (nb/extract-archive archive dir target-dir))
 
                (when native?
                  (let [[target-os-str target-arch-str] (if target-str (str/split target-str (re-pattern "-")) [nil nil])
@@ -1375,7 +1024,6 @@ public class JavaJarTest {
                                          :host-flag host-flag
                                          :is-darwin? is-darwin?
                                          :is-linux? is-linux?
-                                         :is-windows? is-windows?
                                          :debug? debug?})
 
                          (build-proj {:type :native
@@ -1383,7 +1031,7 @@ public class JavaJarTest {
                                       :cc cc
                                       :cxx cxx
                                       :zig zig
-                                      :host-flag host-flag
+                                      :final-proj-lib final-proj-lib
                                       :is-linux? is-linux?
                                       :is-darwin? is-darwin?
                                       :is-windows? is-windows?
@@ -1393,48 +1041,34 @@ public class JavaJarTest {
                                       :debug? debug?}))))))
 
                (when wasm?
-                 (let [sqlite-install-dir-wasm (fs/absolutize (fs/path target-dir "sqlite-install-wasm"))
-                       zlib-install-dir-wasm (fs/absolutize (fs/path target-dir "zlib-install-wasm"))
-                       libtiff-install-dir-wasm (fs/absolutize (fs/path target-dir "libtiff-install-wasm"))
-                       sqlite-install-dir-wasm-st (fs/absolutize (fs/path target-dir "sqlite-install-wasm-st"))
+                 (let [sqlite-install-dir-wasm-st (fs/absolutize (fs/path target-dir "sqlite-install-wasm-st"))
                        zlib-install-dir-wasm-st (fs/absolutize (fs/path target-dir "zlib-install-wasm-st"))
                        libtiff-install-dir-wasm-st (fs/absolutize (fs/path target-dir "libtiff-install-wasm-st"))
                        dest-resources "resources"
                        dest-resources-wasm (fs/path dest-resources "wasm")
                        dest-js-src "src/cljc/net/willcohen/proj"
-                       proj-build-dir-wasm (fs/path target-dir proj-dir "proj-build-wasm")
                        proj-build-dir-wasm-st (fs/path target-dir proj-dir "proj-build-wasm-st")]
 
                    (println "--> Starting WASM build...")
                    (fs/create-dirs dest-resources-wasm)
                    (fs/create-dirs dest-js-src)
 
-                   ;; One single-threaded WASM build serves the JS handler
-                   ;; (Node + browser) and GraalVM/JVM. There is no pthreads
-                   ;; build: the network path uses host callbacks registered
-                   ;; through addFunction, so ENABLE_EMSCRIPTEN_FETCH, the only
-                   ;; reason for -pthread, has no use. pthreads also
-                   ;; hung `node --test` at worker teardown and forced
-                   ;; COOP/COEP in the browser.
-                   ;; This guard is output existence, so nothing else invalidates
-                   ;; it: a changed compiler flag or a new PROJ version leaves
-                   ;; the old wasm in place. Say so instead of exiting 0 on a
-                   ;; stale artifact.
+                   ;; One single-threaded build serves Node, the browser and GraalVM.
+                   ;; pthreads hung `node --test` at worker teardown and forced COOP/COEP.
                    (if (fs/exists? (fs/path proj-build-dir-wasm-st "proj-emscripten-st.js"))
                      (println "Reusing the existing single-threaded WASM build."
                               "Run `bb clean --wasm` first to pick up changed"
                               "build flags or C sources.")
                      (do
                        (println "Building single-threaded WASM dependencies...")
-                       (build-sqlite {:type :wasm :install-dir sqlite-install-dir-wasm-st :cc "emcc" :pthreads? false :debug? debug?})
-                       (build-zlib {:type :wasm :install-dir zlib-install-dir-wasm-st :cc "emcc" :pthreads? false :debug? debug?})
+                       (build-sqlite {:type :wasm :install-dir sqlite-install-dir-wasm-st :cc "emcc" :debug? debug?})
+                       (build-zlib {:type :wasm :install-dir zlib-install-dir-wasm-st :cc "emcc" :debug? debug?})
                        (build-libtiff {:type :wasm :install-dir libtiff-install-dir-wasm-st :zlib-install-dir zlib-install-dir-wasm-st
                                        :cc "emcc" :cxx "em++" :host-flag "--host=wasm32"
-                                       :is-darwin? (= host-os :darwin) :is-linux? (= host-os :linux) :pthreads? false :debug? debug?})
-                       (build-proj {:type :wasm :library-dir "wasm" :cc "emcc" :cxx "em++"
-                                    :is-darwin? (= host-os :darwin) :is-windows? false
+                                       :is-darwin? (= host-os :darwin) :debug? debug?})
+                       (build-proj {:type :wasm :cc "emcc" :cxx "em++"
                                     :sqlite-install-dir sqlite-install-dir-wasm-st :zlib-install-dir zlib-install-dir-wasm-st
-                                    :libtiff-install-dir libtiff-install-dir-wasm-st :pthreads? false :debug? debug?})))
+                                    :libtiff-install-dir libtiff-install-dir-wasm-st :debug? debug?})))
 
                    ;; The emcc build emits proj-emscripten-st.js, which names
                    ;; proj-emscripten-st.wasm internally. Consumers load the
@@ -1450,13 +1084,11 @@ public class JavaJarTest {
                        (doseq [dest [dest-js-src dest-resources-wasm]]
                          (spit (str (fs/path dest "proj-emscripten.js")) patched-js)
                          (fs/copy wasm-src (fs/path dest "proj-emscripten.wasm") {:replace-existing true})
-                         ;; Stage the --debug source-map sidecar, or emscripten
-                         ;; init hangs while it waits for the file.
                          (when (fs/exists? map-src)
                            (spit (str (fs/path dest "proj-emscripten.wasm.map"))
                                  (str/replace (slurp (str map-src)) "proj-emscripten-st.wasm" "proj-emscripten.wasm"))))
-                       (fs/copy (fs/path proj-build-dir-wasm-st "proj.db") dest-resources {:replace-existing true})
-                       (fs/copy (fs/path proj-build-dir-wasm-st "proj.ini") dest-resources {:replace-existing true})))
+                       (fs/copy (fs/path proj-build-dir-wasm-st "data" "proj.db") dest-resources {:replace-existing true})
+                       (fs/copy (fs/path proj-build-dir-wasm-st "data" "proj.ini") dest-resources {:replace-existing true})))
 
                    (when (fs/exists? (fs/path dest-js-src "proj-loader.mjs"))
                      (fs/copy (fs/path dest-js-src "proj-loader.mjs") dest-resources-wasm {:replace-existing true}))))
@@ -1468,18 +1100,16 @@ public class JavaJarTest {
                             (:local-proj opts) (conj "--local-proj" (str (:local-proj opts)))
                             (:debug opts) (conj "--debug")))))
                (println "Build task finished."))))}
+
   gen-handler
-  {:doc "Regenerate src/cljc/net/willcohen/proj/proj-handler.mjs with clj-native's
-gen-handler-source and resources/proj-handler-classification.edn. The
-hand-written half lives in proj-handler-overrides.mjs."
+  {:doc "Regenerate proj-handler.mjs from resources/proj-handler-classification.edn."
    :requires ([net.willcohen.native.gen-handler :as gh])
    :task (do
            (println "Regenerating proj-handler.mjs from classification.edn...")
            (let [classification (edn/read-string
                                  (slurp "resources/proj-handler-classification.edn"))
                  out-path "src/cljc/net/willcohen/proj/proj-handler.mjs"
-                 ;; classification.edn carries :destroy-fns, so fndefs is empty
-                 ;; here. TODO: derive the list from fndefs metadata.
+                 ;; classification.edn carries :destroy-fns, so fndefs is empty.
                  fndefs {}]
              (gh/write-handler! fndefs classification out-path)
              (println (str "Wrote " out-path))))}
@@ -1491,10 +1121,8 @@ hand-written half lives in proj-handler-overrides.mjs."
                   (let [proj-dir "src/cljc/net/willcohen/proj"
                         files ["fndefs.cljc" "macros.cljc" "wasm.cljc" "proj.cljc" "handler.cljc"]]
 
-                    ;; dist/ is overwritten in place, never wiped. A wipe
-                    ;; (fs/delete-tree) left a window in which a concurrent
-                    ;; consumer of dist/proj.mjs got ERR_MODULE_NOT_FOUND. For
-                    ;; a clean dist/, run `bb clean --target` first.
+                    ;; Overwrite dist/ in place. A wipe leaves a window in which a
+                    ;; concurrent import of dist/proj.mjs fails.
                     (fs/create-dirs (fs/path proj-dir "dist"))
 
                     (println "Installing npm dependencies...")
@@ -1538,7 +1166,7 @@ hand-written half lives in proj-handler-overrides.mjs."
                 (tasks/shell "python3" "-m" "http.server" "8080"))}
 
   pom
-  {:doc "Generate or update pom.xml."
+  {:doc "Write target/classes/META-INF/maven/net.willcohen/proj/pom.xml."
    :task (do
            (println "Generating pom.xml...")
            (tasks/shell clj-cmd "-T:build" "pom")
@@ -1546,19 +1174,16 @@ hand-written half lives in proj-handler-overrides.mjs."
 
   jar
   {:doc "Build the project JAR."
-   :depends [pom]
    :task (do
            (println "Building JAR file...")
            (tasks/shell clj-cmd "-T:build" "jar")
            (babashka.fs/copy "target/classes/META-INF/maven/net.willcohen/proj/pom.xml" "pom.xml" {:replace-existing true})
-           (let [version (second (re-find (re-pattern "def version \"([^\"]+)\"") (slurp "build.clj")))]
-             (println (str "JAR built: target/proj-" version ".jar"))))}
+           (println (str "JAR built: " (jar-file))))}
 
   clojars-deploy
   {:doc "Deploy the JAR to Clojars."
    :depends [jar]
-   :task (let [version (second (re-find (re-pattern "def version \"([^\"]+)\"") (slurp "build.clj")))
-               artifact (str "target/proj-" version ".jar")]
+   :task (let [artifact (jar-file)]
            (println (str "Deploying " artifact " to Clojars..."))
            (tasks/shell clj-cmd "-X:deploy" ":artifact" (pr-str artifact))
            (println "Deployed to Clojars"))}
@@ -1574,23 +1199,6 @@ hand-written half lives in proj-handler-overrides.mjs."
   test:all
   {:doc "Run all test suites."
    :depends [test:ffi test:graal test:node test:playwright test:jar test:npm]}
-
-  test:bench-node
-  {:doc "Run the Node.js multi-worker benchmark (not part of test:all)."
-   :task (do
-           (println "Running Node.js multi-worker benchmark...")
-           (tasks/shell "node" "--test" "test/js/benchmark.test.mjs"))}
-
-  test:bench-browser
-  {:doc "Run the Playwright multi-worker benchmark in a browser (not part of test:all)."
-   :task (do
-           (println "Running browser multi-worker benchmark...")
-           (stage-browser-resources!)
-           (tasks/shell {:dir "test/browser"} "npx" "playwright" "test" "tests/benchmark.spec.js"))}
-
-  test:bench
-  {:doc "Run all multi-worker benchmarks (Node.js and browser, not part of test:all)."
-   :depends [test:bench-node test:bench-browser]}
 
   build:all
   {:doc "Build all artifacts (native, wasm, and cross-platform)."
@@ -1615,10 +1223,10 @@ hand-written half lives in proj-handler-overrides.mjs."
                         :source-paths ["src/cljc/net/willcohen/proj/proj.cljc"]}}
 
   jar-contents {:doc "List all files in the JAR."
-                :task (let [version (second (re-find (re-pattern "def version \"([^\"]+)\"") (slurp "build.clj")))]
+                :task (do
                         (println "\nJAR contents:")
                         (println "=============")
-                        (tasks/shell "jar" "tf" (str "target/proj-" version ".jar"))
+                        (tasks/shell "jar" "tf" (jar-file))
                         (println))}
 
   npm-contents {:doc "List the files that the npm package will contain."
@@ -1635,7 +1243,7 @@ hand-written half lives in proj-handler-overrides.mjs."
   deploy:dry-run
   {:doc "Show what deploy will do: version, git status, JAR contents, and npm dry-run."
    :depends [jar squint]
-   :task (let [version (second (re-find (re-pattern "def version \"([^\"]+)\"") (slurp "build.clj")))]
+   :task (let [version (project-version)]
            (println (str "\n=== Deploy dry-run for " version " ===\n"))
 
            (println "npm auth:")
@@ -1671,7 +1279,7 @@ hand-written half lives in proj-handler-overrides.mjs."
            (println (str "Ready to deploy " version ". Run: bb deploy")))}
 
   deploy {:doc "Tag, push, and deploy to Clojars and npm. Run after you commit the release changes."
-          :task (let [version (second (re-find (re-pattern "def version \"([^\"]+)\"") (slurp "build.clj")))
+          :task (let [version (project-version)
                       npm-pkg "proj-wasm"
                       tag version]
                   (println (str "Deploying " version "..."))
@@ -1710,11 +1318,8 @@ hand-written half lives in proj-handler-overrides.mjs."
                           (do
                             (println (str "Bumping version to " new-version "..."))
                             (println)
-                            ;; build.clj is the authoritative version. Every
-                            ;; other file is rewritten from the version it
-                            ;; holds, so a non-alpha version bumps too.
                             (let [build-content (slurp "build.clj")
-                                  old-version (second (re-find (re-pattern "def version \"([^\"]+)\"") build-content))]
+                                  old-version (project-version)]
                               (when-not old-version
                                 (println "Could not read the current version from build.clj.")
                                 (System/exit 1))

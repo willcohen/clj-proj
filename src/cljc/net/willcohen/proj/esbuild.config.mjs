@@ -5,16 +5,10 @@
 // SPDX-License-Identifier: MIT
 
 import * as esbuild from 'esbuild';
-import { mkdirSync, copyFileSync, readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { mkdirSync, copyFileSync, writeFileSync, unlinkSync, existsSync } from 'fs';
 
 mkdirSync('dist', { recursive: true });
 
-// Always overwrite. An existsSync guard here kept stale wasm in dist/ across
-// rebuilds.
 console.log('Copying WASM file to dist...');
 try {
   copyFileSync('proj-emscripten.wasm', 'dist/proj-emscripten.wasm');
@@ -64,21 +58,12 @@ try {
   // at this local copy of the installed resource-tracker.
   copyFileSync('node_modules/resource-tracker/resource.mjs',
                'dist/resource-tracker.mjs');
-  // The bootstrap sourcemap is optional. An unguarded copy threw and stopped
-  // the copies above.
   if (existsSync('node_modules/worker-router/dist/worker-bootstrap.mjs.map')) {
     copyFileSync('node_modules/worker-router/dist/worker-bootstrap.mjs.map',
                  'dist/worker-bootstrap.mjs.map');
   }
 } catch (err) {
   console.warn('Warning: Could not copy worker-router worker-bootstrap:', err.message);
-}
-
-// The proj-handler bundle below overwrites this copy.
-try {
-  copyFileSync('proj-handler.mjs', 'dist/proj-handler.mjs');
-} catch (err) {
-  console.warn('Warning: Could not copy proj-handler files:', err.message);
 }
 
 try {
@@ -96,35 +81,11 @@ try {
   console.warn('Warning: Could not copy clj-native handler_runtime.mjs:', err.message);
 }
 
-const squintImportPlugin = {
-  name: 'squint-imports',
-  setup(build) {
-    build.onResolve({ filter: /^(net\.willcohen\.proj\.|wasm$|fndefs$)/ }, args => {
-      const importMap = {
-        'wasm': './wasm.mjs',
-        'fndefs': './fndefs.mjs',
-        'net.willcohen.proj.wasm': './wasm.mjs',
-        'net.willcohen.proj.fndefs': './fndefs.mjs',
-        'net.willcohen.proj.proj-loader': './proj-loader.mjs',
-      };
-      
-      const mapped = importMap[args.path];
-      if (mapped) {
-        return {
-          path: resolve(dirname(args.importer), mapped),
-          external: false
-        };
-      }
-    });
-
-  }
-};
-
 // Externalizes `ffi-wasm/handler-runtime` and rewrites the specifier to
 // `./handler-runtime.mjs` in every bundle. The ES module loader caches by
 // URL, so all bundles in a JS context share one module instance and one
 // logState. Inlined copies split logState: __setLogConfig writes one copy
-// while ctx.dbg reads another.
+// while dbg reads another.
 const handlerRuntimeExternalPlugin = {
   name: 'handler-runtime-external',
   setup(build) {
@@ -137,8 +98,8 @@ const handlerRuntimeExternalPlugin = {
   }
 };
 
-// worker-router's bundle uses the `node:` prefix form (Node 20+). Emscripten's
-// conditional loader uses the bare form. Match the two.
+// platform 'neutral' does not know the Node builtins, which the Emscripten
+// glue and clj-native's helpers import, with or without the `node:` prefix.
 const emscriptenNodePlugin = {
   name: 'emscripten-node',
   setup(build) {
@@ -149,29 +110,18 @@ const emscriptenNodePlugin = {
 };
 
 const buildConfig = {
-  entryPoints: ['./proj.mjs'],
   bundle: true,
   format: 'esm',
   platform: 'neutral',
   mainFields: ['module', 'main'],
   outfile: 'dist/proj.mjs',
   external: [
-    './proj-emscripten.wasm',
     'squint-cljs/core.js',
     'squint-cljs/src/squint/string.js',
     'resource-tracker',
-    // worker-router and comlink resolve at runtime through node_modules or
-    // the page importmap. comlink must stay resolvable at runtime for
-    // worker-router's import.meta.resolve('comlink').
     'worker-router',
-    'comlink',
-    'comlink/dist/esm/node-adapter.mjs'
   ],
-  plugins: [squintImportPlugin, emscriptenNodePlugin, handlerRuntimeExternalPlugin],
-  loader: {
-    '.js': 'js',
-    '.mjs': 'js',
-  },
+  plugins: [emscriptenNodePlugin, handlerRuntimeExternalPlugin],
   keepNames: true,
   metafile: true,
   sourcemap: true,
@@ -181,23 +131,12 @@ async function build() {
   try {
     console.log('Building proj-wasm bundle...');
 
-    const shimContent = `
-// Shims for esbuild to provide globals that macro-expanded code expects.
-// These modules are resolved by the 'squint-imports' plugin.
-import * as fndefsModule from 'fndefs';
-import * as wasmModule from 'wasm';
-export const fndefs = fndefsModule;
-export const wasm = wasmModule;
-export const js = globalThis;
-`;
-    writeFileSync('./esbuild-shims.mjs', shimContent);
-
     // The wrapper entry re-exports proj.mjs plus the fndefs constants
     // (PJ_FWD, PROJ_VERSION_*). proj.cljc does not reference the constants,
     // so esbuild tree-shakes them without this.
     const entryContent = `
 export * from './proj.mjs';
-export * from 'fndefs';
+export * from './fndefs.mjs';
 `;
     writeFileSync('./esbuild-entry.mjs', entryContent);
 
@@ -207,11 +146,9 @@ export * from 'fndefs';
     const result = await esbuild.build({
       ...buildConfig,
       entryPoints: ['./esbuild-entry.mjs'],
-      inject: ['./esbuild-shims.mjs'],
     });
 
     try {
-      unlinkSync('./esbuild-shims.mjs');
       unlinkSync('./esbuild-entry.mjs');
     } catch (e) {
       console.warn('Could not clean up temp files:', e.message);
@@ -240,7 +177,6 @@ export * from 'fndefs';
       plugins: [handlerRuntimeExternalPlugin],
       keepNames: true,
       sourcemap: true,
-      allowOverwrite: true,
     });
     console.log('proj-handler.mjs bundled to dist/proj-handler.mjs');
 
@@ -258,16 +194,9 @@ export * from 'fndefs';
       platform: 'neutral',
       mainFields: ['module', 'main'],
       outfile: 'dist/proj-handler-overrides.mjs',
-      external: [
-        // The dynamic import of ./proj-emscripten.js must resolve at runtime
-        // against dist/. xhr2 is Node-only, loaded through createRequire.
-        './proj-emscripten.js',
-        'xhr2',
-      ],
       plugins: [emscriptenNodePlugin, handlerRuntimeExternalPlugin],
       keepNames: true,
       sourcemap: true,
-      allowOverwrite: true,
     });
     console.log('proj-handler-overrides.mjs bundled to dist/proj-handler-overrides.mjs');
   } catch (error) {

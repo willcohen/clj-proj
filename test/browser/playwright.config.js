@@ -17,7 +17,7 @@ module.exports = defineConfig({
   },
 
   projects: [
-    // Test WITHOUT COOP/COEP headers (single-threaded mode)
+    // Test WITHOUT COOP/COEP headers
     {
       name: 'chromium-isolated',
       use: {
@@ -25,7 +25,7 @@ module.exports = defineConfig({
         baseURL: 'http://localhost:8080',
       },
     },
-    // Test WITH COOP/COEP headers (pthreads mode)
+    // Test WITH COOP/COEP headers
     {
       name: 'chromium-shared',
       use: {
@@ -52,14 +52,14 @@ module.exports = defineConfig({
   ],
 
   webServer: [
-    // Server WITHOUT COOP/COEP (single-threaded mode)
+    // Server WITHOUT COOP/COEP
     {
       command: 'node server.mjs',
       port: 8080,
       env: { PORT: '8080', COOP_COEP: 'false' },
       reuseExistingServer: !process.env.CI,
     },
-    // Server WITH COOP/COEP (pthreads mode)
+    // Server WITH COOP/COEP
     {
       command: 'node server.mjs',
       port: 8081,

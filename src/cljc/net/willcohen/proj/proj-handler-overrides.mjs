@@ -5,36 +5,17 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * proj-handler-overrides.mjs - Library-specific overrides for clj-native's
- * gen-handler-source generator.
- *
- * This is the hand-written half of the proj worker-router handler. It
- * supplies the imports, the module-level state, the helpers, the init body,
- * and the methods bag. The generator emits a thin proj-handler.mjs that
- * wires these overrides into the shared makeHandler runtime. That runtime
- * owns workerQueue serialization, the in-flight counter, the destroy
- * barrier, and idempotent-init caching.
- *
- * Per-worker state (module, contexts, nextContextId, logCallbackPtr,
- * logLevel) lives in module-level `let` bindings. worker-router imports the
- * generated handler module once for each worker, so each worker gets its own
- * copy.
+ * The hand-written half of the proj worker-router handler: the init body and
+ * the methods. The generated proj-handler.mjs wraps them in clj-native's
+ * makeHandler, which runs the calls of a worker one at a time. Module-level
+ * state is per worker, because each worker imports its own copy.
  *
  * This file runs from two different directories. Read every shipped asset
  * through resolveAsset with the [['.'], ['dist']] candidate list, and add
  * new assets the same way. A path built from __dirname alone works in one
  * layout and fails in the other.
- *
- * Known sub-worker spawn: in Node.js the XHR polyfill routes Emscripten's
- * synchronous XHR through clj-native's http-bridge (ffi-wasm/http-bridge).
- * The bridge spawns one fetch worker for each process and round-trips over
- * SharedArrayBuffer + Atomics.
  */
 
-// These helpers hold no mutable state, so a top-level import is safe.
-// Modules with shared state (handler_runtime's logState) must come through
-// the substrate ctx in init(). A direct import can give this module its own
-// logState copy.
 import { resolveAsset, loadEmscriptenModule } from 'ffi-wasm/handler-paths';
 import { stageFiles } from 'ffi-wasm/handler-fs';
 import { heapHelpers } from 'ffi-wasm/handler-heap';
@@ -45,21 +26,14 @@ import {
   moduleDestroy,
 } from 'ffi-wasm/http-bridge';
 
-// NET-DBG logs are off by default: through Playwright's CDP console capture,
-// per-tile logs add multi-second overhead in a hot benchmark loop. Set
-// globalThis.__PROJ_NET_DBG__ = true (worker or page scope) to activate them.
-const NET_DBG = typeof globalThis !== 'undefined' && globalThis.__PROJ_NET_DBG__ === true;
-
 let module = null;
 let contexts = new Map();
 let nextContextId = 1;
 let logCallbackPtr = null;
 let logLevel = 0;
 
-// Handle state for the network callbacks. PROJ's libcurl + emscripten XHR
-// shim locks a context-internal pthread mutex again on the same thread
-// during grid loads, which fires pthread_mutex_timedlock's `own == self`
-// assertion. The callbacks below bypass libcurl.
+// The wasm build has no curl and no emscripten FETCH, so the network
+// callbacks below are PROJ's only network transport.
 let nextHandleId = 1;
 const handles = new Map();
 
@@ -71,13 +45,11 @@ async function installNodeXhrPolyfill() {
   if (!isNode || typeof globalThis.XMLHttpRequest !== 'undefined') return;
 
   const { pathToFileURL } = await import('url');
-  const { join } = await import('path');
 
-  // clj-native's http-bridge owns the SharedArrayBuffer round trip and the
-  // fetch worker. Only the fetch worker lets Emscripten's synchronous
-  // XMLHttpRequest block in Node.js.
-  const { dir: assetDir } = await resolveAsset(import.meta.url, 'fetch_worker.mjs', [['.'], ['dist']]);
-  const workerUrl = pathToFileURL(join(assetDir, 'fetch_worker.mjs'));
+  // Node.js has no XMLHttpRequest. makeRangeRequest blocks on the http-bridge
+  // fetch worker instead.
+  const { path } = await resolveAsset(import.meta.url, 'fetch_worker.mjs', [['.'], ['dist']]);
+  const workerUrl = pathToFileURL(path);
 
   const syncFetch = await createSyncFetch({ workerUrl });
   await installXhrPolyfill({ syncFetch });
@@ -134,6 +106,39 @@ function writeErrorString(errStrPtr, errMaxSize, msg) {
   module.HEAPU8[errStrPtr + n] = 0;
 }
 
+// Copies a range response into the wasm buffer. Returns the byte count, or
+// null after it writes the error string.
+function copyRange(response, bufferPtr, sizeToRead, errMaxSize, errStrPtr) {
+  if (response.status !== 200 && response.status !== 206) {
+    writeErrorString(errStrPtr, errMaxSize, response.error
+      ? `Network error: ${response.error.message ?? response.error}`
+      : `HTTP ${response.status}`);
+    return null;
+  }
+  const bytesRead = Math.min(response.body.length, sizeToRead);
+  if (bytesRead > 0) {
+    module.HEAPU8.set(response.body.subarray(0, bytesRead), bufferPtr);
+  }
+  return bytesRead;
+}
+
+// An i64 offset arrives as a BigInt. A grid-file offset is far inside 2^53.
+function netOpen(_ctx, urlPtr, offset, sizeToRead, bufferPtr, outSizePtr, errMaxSize, errStrPtr) {
+  try {
+    const url = module.UTF8ToString(urlPtr);
+    const response = makeRangeRequest(url, Number(offset), sizeToRead);
+    const bytesRead = copyRange(response, bufferPtr, sizeToRead, errMaxSize, errStrPtr);
+    if (bytesRead === null) return 0;
+    if (outSizePtr) module.setValue(outSizePtr, bytesRead, 'i32');
+    const id = nextHandleId++;
+    handles.set(id, { url, headers: response.headers });
+    return id;
+  } catch (e) {
+    writeErrorString(errStrPtr, errMaxSize, e?.message ?? String(e));
+    return 0;
+  }
+}
+
 // PROJ reads a header string after get_header returns. The strings of a
 // handle live until its close, as the strings of PROJ's own callbacks do.
 export function headerValuePtr(mod, entry, name) {
@@ -149,92 +154,31 @@ export function releaseHandleStrings(mod, entry) {
   if (entry) entry.headerPtrs = [];
 }
 
-function installProjNetCallbacks() {
-  if (globalThis.__proj_net_open) return;
-  if (NET_DBG) console.log('[NET-DBG] INSTALL proj-net callbacks on globalThis');
+function netClose(_ctx, handle) {
+  releaseHandleStrings(module, handles.get(handle));
+  handles.delete(handle);
+}
 
-  globalThis.__proj_net_open = (
-    ctx, urlPtr, offset, sizeToRead, bufferPtr, outSizePtr,
-    errMaxSize, errStrPtr, _userData,
-  ) => {
-    try {
-      const url = module.UTF8ToString(urlPtr);
-      const response = makeRangeRequest(url, offset, sizeToRead);
-      if (response.status !== 200 && response.status !== 206) {
-        const errMsg = response.error
-          ? `Network error: ${response.error.message ?? response.error}`
-          : `HTTP ${response.status}`;
-        if (NET_DBG) console.log(`[NET-DBG] OPEN-FAIL ctx=${ctx} url=${url} offset=${offset} size=${sizeToRead} status=${response.status} err=${errMsg}`);
-        writeErrorString(errStrPtr, errMaxSize, errMsg);
-        return 0;
-      }
-      const bytesRead = Math.min(response.body.length, sizeToRead);
-      if (bytesRead > 0) {
-        module.HEAPU8.set(response.body.subarray(0, bytesRead), bufferPtr);
-      }
-      if (outSizePtr) module.setValue(outSizePtr, bytesRead, 'i32');
-      const id = nextHandleId++;
-      handles.set(id, { url, headers: response.headers });
-      if (NET_DBG) console.log(`[NET-DBG] OPEN-OK ctx=${ctx} h=${id} url=${url} offset=${offset} size=${sizeToRead} bytes=${bytesRead}`);
-      return id;
-    } catch (e) {
-      if (NET_DBG) console.log(`[NET-DBG] OPEN-THROW ctx=${ctx} err=${e?.message ?? e}`);
-      writeErrorString(errStrPtr, errMaxSize, e?.message ?? String(e));
-      return 0;
-    }
-  };
+function netGetHeader(_ctx, handle, namePtr) {
+  return headerValuePtr(module, handles.get(handle), module.UTF8ToString(namePtr));
+}
 
-  globalThis.__proj_net_close = (ctx, handle, _userData) => {
-    if (NET_DBG) console.log(`[NET-DBG] CLOSE ctx=${ctx} h=${handle}`);
-    releaseHandleStrings(module, handles.get(handle));
-    handles.delete(handle);
-  };
-
-  globalThis.__proj_net_get_header = (ctx, handle, namePtr, _userData) => {
+function netReadRange(_ctx, handle, offset, sizeToRead, bufferPtr, errMaxSize, errStrPtr) {
+  try {
     const entry = handles.get(handle);
     if (!entry) {
-      if (NET_DBG) console.log(`[NET-DBG] HDR-NOENTRY ctx=${ctx} h=${handle}`);
+      writeErrorString(errStrPtr, errMaxSize, 'Invalid handle');
       return 0;
     }
-    const name = module.UTF8ToString(namePtr);
-    const ptr = headerValuePtr(module, entry, name);
-    if (!ptr && NET_DBG) console.log(`[NET-DBG] HDR-MISS ctx=${ctx} h=${handle} name=${name}`);
-    return ptr;
-  };
-
-  globalThis.__proj_net_read_range = (
-    ctx, handle, offset, sizeToRead, bufferPtr,
-    errMaxSize, errStrPtr, _userData,
-  ) => {
-    try {
-      const entry = handles.get(handle);
-      if (!entry) {
-        if (NET_DBG) console.log(`[NET-DBG] READ-NOENTRY ctx=${ctx} h=${handle} offset=${offset} size=${sizeToRead}`);
-        writeErrorString(errStrPtr, errMaxSize, 'Invalid handle');
-        return 0;
-      }
-      const response = makeRangeRequest(entry.url, offset, sizeToRead);
-      if (response.status !== 200 && response.status !== 206) {
-        const errMsg = response.error
-          ? `Network error: ${response.error.message ?? response.error}`
-          : `HTTP ${response.status}`;
-        if (NET_DBG) console.log(`[NET-DBG] READ-FAIL ctx=${ctx} h=${handle} url=${entry.url} offset=${offset} size=${sizeToRead} status=${response.status} err=${errMsg}`);
-        writeErrorString(errStrPtr, errMaxSize, errMsg);
-        return 0;
-      }
-      const bytesRead = Math.min(response.body.length, sizeToRead);
-      if (bytesRead > 0) {
-        module.HEAPU8.set(response.body.subarray(0, bytesRead), bufferPtr);
-      }
-      entry.headers = response.headers;
-      if (NET_DBG) console.log(`[NET-DBG] READ-OK ctx=${ctx} h=${handle} url=${entry.url} offset=${offset} size=${sizeToRead} bytes=${bytesRead}`);
-      return bytesRead;
-    } catch (e) {
-      if (NET_DBG) console.log(`[NET-DBG] READ-THROW ctx=${ctx} h=${handle} err=${e?.message ?? e}`);
-      writeErrorString(errStrPtr, errMaxSize, e?.message ?? String(e));
-      return 0;
-    }
-  };
+    const response = makeRangeRequest(entry.url, Number(offset), sizeToRead);
+    const bytesRead = copyRange(response, bufferPtr, sizeToRead, errMaxSize, errStrPtr);
+    if (bytesRead === null) return 0;
+    entry.headers = response.headers;
+    return bytesRead;
+  } catch (e) {
+    writeErrorString(errStrPtr, errMaxSize, e?.message ?? String(e));
+    return 0;
+  }
 }
 
 // Signatures are PROJ's own callback types under wasm32, where pointers and
@@ -245,23 +189,11 @@ function networkCallbackPointers() {
   // One set per module, not per context: each addFunction call grows the
   // wasm function table, and context_create runs per context.
   if (netCallbackPtrs) return netCallbackPtrs;
-  installProjNetCallbacks();
-  // An i64 parameter reaches JS as a BigInt, and the range arithmetic below
-  // mixes offsets with Numbers, so narrow it here. An offset is a position in
-  // a grid file, so it is far inside 2^53.
-  const openFn = globalThis.__proj_net_open;
-  const readFn = globalThis.__proj_net_read_range;
   netCallbackPtrs = {
-    open: module.addFunction(
-      (ctx, urlPtr, offset, sizeToRead, bufferPtr, outSizePtr, errMaxSize, errStrPtr, userData) =>
-        openFn(ctx, urlPtr, Number(offset), sizeToRead, bufferPtr, outSizePtr, errMaxSize, errStrPtr, userData),
-      'iiijiiiiii'),
-    close: module.addFunction(globalThis.__proj_net_close, 'viii'),
-    getHeader: module.addFunction(globalThis.__proj_net_get_header, 'iiiii'),
-    readRange: module.addFunction(
-      (ctx, handle, offset, sizeToRead, bufferPtr, errMaxSize, errStrPtr, userData) =>
-        readFn(ctx, handle, Number(offset), sizeToRead, bufferPtr, errMaxSize, errStrPtr, userData),
-      'iiijiiiii'),
+    open: module.addFunction(netOpen, 'iiijiiiiii'),
+    close: module.addFunction(netClose, 'viii'),
+    getHeader: module.addFunction(netGetHeader, 'iiiii'),
+    readRange: module.addFunction(netReadRange, 'iiijiiiii'),
   };
   return netCallbackPtrs;
 }
@@ -278,33 +210,24 @@ function readStringArray(mod, listPtr) {
   return strings;
 }
 
-function readOutParams(mod, outParamAllocs) {
-  const result = {};
-  for (const { ptr, size, field } of outParamAllocs) {
-    switch (field.type) {
-      case 'double':
-        result[field.key] = mod.getValue(ptr, 'double');
-        break;
-      case 'int':
-        result[field.key] = mod.getValue(ptr, 'i32');
-        break;
-      case 'string': {
-        const strPtr = mod.getValue(ptr, '*');
-        result[field.key] = strPtr ? mod.UTF8ToString(strPtr) : null;
-        break;
-      }
-      case 'double-array': {
-        const n = size / 8;
-        const values = [];
-        for (let j = 0; j < n; j++) {
-          values.push(mod.getValue(ptr + j * 8, 'double'));
-        }
-        result[field.key] = values;
-        break;
-      }
+// A NULL string reads as null.
+function readField(mod, addr, type) {
+  switch (type) {
+    case 'string': {
+      const strPtr = mod.getValue(addr, '*');
+      return strPtr ? mod.UTF8ToString(strPtr) : null;
     }
+    case 'int': return mod.getValue(addr, 'i32');
+    case 'boolean': return mod.getValue(addr, 'i32') !== 0;
+    case 'double': return mod.getValue(addr, 'double');
   }
-  return result;
+}
+
+function readOutParams(mod, outParamAllocs) {
+  return Object.fromEntries(outParamAllocs.map(({ ptr, size, field }) => [field.key,
+    field.type === 'double-array'
+      ? Array.from({ length: size / 8 }, (_, j) => mod.getValue(ptr + j * 8, 'double'))
+      : readField(mod, ptr, field.type)]));
 }
 
 function freeOutParams(mod, outParamAllocs) {
@@ -312,31 +235,11 @@ function freeOutParams(mod, outParamAllocs) {
 }
 
 function readStructList(mod, listPtr, count, structFields) {
-  const readStr = (ptr) => (ptr ? mod.UTF8ToString(ptr) : null);
-  const entries = [];
-  for (let i = 0; i < count; i++) {
+  return Array.from({ length: count }, (_, i) => {
     const s = mod.getValue(listPtr + i * 4, '*');
-    const entry = {};
-    for (const field of structFields) {
-      const { key, type, offset } = field;
-      switch (type) {
-        case 'string':
-          entry[key] = readStr(mod.getValue(s + offset, '*'));
-          break;
-        case 'int':
-          entry[key] = mod.getValue(s + offset, 'i32');
-          break;
-        case 'double':
-          entry[key] = mod.getValue(s + offset, 'double');
-          break;
-        case 'boolean':
-          entry[key] = mod.getValue(s + offset, 'i32') !== 0;
-          break;
-      }
-    }
-    entries.push(entry);
-  }
-  return entries;
+    return Object.fromEntries(
+      structFields.map(({ key, type, offset }) => [key, readField(mod, s + offset, type)]));
+  });
 }
 
 // A NULL-terminated char** of `strings` in one block: the pointer slots,
@@ -356,9 +259,6 @@ function allocStringArray(mod, strings) {
   return base;
 }
 
-// Reads each coord buffer back out of the wasm heap and frees it. Runs
-// before decodeCallResult, because a PROJ destroy in that step can grow the
-// heap and move the buffers.
 function readCoordDataAndFree(mod, coordAllocations) {
   const coordData = [];
   for (const alloc of coordAllocations) {
@@ -370,10 +270,8 @@ function readCoordDataAndFree(mod, coordAllocations) {
   return coordData;
 }
 
-// Allocates everything the call needs in the wasm heap and patches `args`
-// in place to point at it. Mirrors decodeCallResult, which
-// reads the same allocations back out and frees them. Returns the handles
-// that decodeCallResult and readCoordDataAndFree need.
+// Allocates what the call needs in the wasm heap, and points `args` at it in
+// place. decodeCallResult and readCoordDataAndFree free it.
 function prepareCallArgs(mod, args, opts) {
   const { projReturns, coordArrays, stringArrays, outFields, structParamsCreate } = opts;
 
@@ -383,30 +281,22 @@ function prepareCallArgs(mod, args, opts) {
     return ptr;
   });
 
-  let coordAllocations = null;
-  if (coordArrays && coordArrays.length > 0) {
-    coordAllocations = [];
-    for (const ca of coordArrays) {
-      const mallocPtr = mod._malloc(ca.numFloats * 8);
-      const heapOffset = mallocPtr / 8;
-      mod.HEAPF64.set(ca.data, heapOffset);
-      args[ca.argIdx] = mallocPtr;
-      coordAllocations.push({ mallocPtr, heapOffset, numFloats: ca.numFloats });
-    }
-  }
+  const coordAllocations = coordArrays?.length ? coordArrays.map((ca) => {
+    const mallocPtr = mod._malloc(ca.numFloats * 8);
+    const heapOffset = mallocPtr / 8;
+    mod.HEAPF64.set(ca.data, heapOffset);
+    args[ca.argIdx] = mallocPtr;
+    return { mallocPtr, heapOffset, numFloats: ca.numFloats };
+  }) : null;
 
-  let outParamAllocs = null;
-  if (projReturns === 'out-params' && outFields) {
-    outParamAllocs = [];
-    for (const field of outFields) {
-      const size = field.type === 'double-array'
-        ? args[field.countArgIdx] * 8
-        : (field.type === 'double' ? 8 : 4);
-      const ptr = mod._malloc(size);
-      outParamAllocs.push({ ptr, size, field });
-      args[field.argIdx] = ptr;
-    }
-  }
+  const outParamAllocs = projReturns === 'out-params' && outFields ? outFields.map((field) => {
+    const size = field.type === 'double-array'
+      ? args[field.countArgIdx] * 8
+      : (field.type === 'double' ? 8 : 4);
+    const ptr = mod._malloc(size);
+    args[field.argIdx] = ptr;
+    return { ptr, size, field };
+  }) : null;
 
   let paramsPtrLocal = null;
   if (projReturns === 'struct-list') {
@@ -504,20 +394,15 @@ export const methods = {
     module.ccall('proj_context_set_enable_network', 'number',
       ['number', 'number'], [ptr, enableNetwork]);
     if (enableNetwork) {
-      // Custom callbacks, so grid fetches skip PROJ's libcurl and XHR shim,
-      // whose re-entrant context mutex deadlocks during grid loads.
       const cb = networkCallbackPointers();
-      const netRc = module.ccall('proj_context_set_network_callbacks', 'number',
+      module.ccall('proj_context_set_network_callbacks', 'number',
         ['number', 'number', 'number', 'number', 'number', 'number'],
         [ptr, cb.open, cb.close, cb.getHeader, cb.readRange, 0]);
-      if (NET_DBG) console.log(`[NET-DBG] SETUP-NET ctx-ptr=${ptr} rc=${netRc}`);
     }
-    if (logCallbackPtr) {
-      module.ccall('proj_log_func', null,
-        ['number', 'number', 'number'], [ptr, 0, logCallbackPtr]);
-      module.ccall('proj_log_level', 'number',
-        ['number', 'number'], [ptr, PJ_LOG_ERROR]);
-    }
+    module.ccall('proj_log_func', null,
+      ['number', 'number', 'number'], [ptr, 0, logCallbackPtr]);
+    module.ccall('proj_log_level', 'number',
+      ['number', 'number'], [ptr, PJ_LOG_ERROR]);
     const ctxId = nextContextId++;
     contexts.set(ctxId, ptr);
     return { ctxId, ptr };
@@ -540,13 +425,8 @@ export const methods = {
   // With extra.errnoCheck, args[0] is the context: reset its errno, and
   // after a NULL or empty result give the errno of this call.
   ccall: async (fnName, returnType, argTypes, args, extra = {}) => {
-    const { projReturns, coordArrays, stringArrays, outFields, structParamsCreate,
-      structParamsDestroy, structDestroyFn, structFields } = extra;
-
     const { coordAllocations, stringArrayPtrs, outParamAllocs, paramsPtrLocal } =
-      prepareCallArgs(module, args,
-        { projReturns, coordArrays, stringArrays, outFields, structParamsCreate });
-
+      prepareCallArgs(module, args, extra);
     const ctx = extra.errnoCheck ? args[0] : null;
     if (ctx !== null) resetErrno(ctx);
     let rawResult;
@@ -558,23 +438,14 @@ export const methods = {
     const errno = ctx !== null && (rawResult === 0 || rawResult === '' || rawResult == null)
       ? module.ccall('proj_context_errno', 'number', ['number'], [ctx])
       : 0;
-
     const coordData = coordAllocations
       ? readCoordDataAndFree(module, coordAllocations)
       : null;
-
-    const value = decodeCallResult(module, rawResult, {
-      projReturns, args, outParamAllocs, paramsPtrLocal,
-      structParamsDestroy, structDestroyFn, structFields,
-    });
-
+    const value = decodeCallResult(module, rawResult,
+      { ...extra, args, outParamAllocs, paramsPtrLocal });
     return coordAllocations || ctx !== null ? { result: value, coordData, errno } : value;
   },
 
-  // heapHelpers supplies malloc/free/heap*_get/heap*_set/get_value/
-  // set_value/string_to_utf8/utf8_to_string/utf8_byte_length. heap*_get
-  // returns a typed-array slice, which structured clone moves without
-  // per-element boxing.
   ...heapHelpers(() => module),
 
   read_string_array: async (ptr, _count) => readStringArray(module, ptr),
@@ -593,10 +464,7 @@ export async function init(initArgs, ctx) {
   await installNodeXhrPolyfill();
   module = await loadProjModule();
   errnoPj = 0;
-  // After this call, the substrate merges {heap-bytes, brk} into BUSY-INC /
-  // BUSY-DEC events.
   ctx?.attachEmscriptenModule?.(module);
-  installProjNetCallbacks();
 
   const files = { 'proj.db': args.dbBytes };
   if (args.iniBytes) files['proj.ini'] = args.iniBytes;

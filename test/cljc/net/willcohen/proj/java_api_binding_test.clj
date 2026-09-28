@@ -13,10 +13,6 @@
    and no lint signal. The Java side then fails at call time with
    `IllegalStateException: Attempting to call unbound fn`.
 
-   This test reads the names out of PROJ.java and resolves each one
-   against the namespace, so a rename fails here with the name in the
-   message.
-
    JVM-only. The .clj extension keeps the file out of the squint
    compile. cognitect.test-runner finds it through `-d test/cljc/net`
    in the deps.edn :test alias."
@@ -28,9 +24,9 @@
 (def ^:private proj-java-path "src/java/net/willcohen/proj/PROJ.java")
 
 (defn- get-var-names
-  "Return every name that PROJ.java passes to getVar."
+  "Return every var name that PROJ.java looks up through fn."
   [source]
-  (->> (re-seq (re-pattern "getVar\\(\"([^\"]+)\"\\)") source)
+  (->> (re-seq (re-pattern "\\bfn\\(\"([^\"]+)\"\\)") source)
        (map second)
        distinct
        sort))
@@ -45,11 +41,11 @@
       (let [names (get-var-names (slurp source-file))]
         (testing "PROJ.java names at least one Clojure var"
           (is (seq names)
-              "Found no getVar calls. The extraction pattern is stale."))
-        (testing "every getVar name resolves in net.willcohen.proj.proj"
+              "Found no fn calls. The extraction pattern is stale."))
+        (testing "every fn name resolves in net.willcohen.proj.proj"
           (let [missing (remove #(ns-resolve 'net.willcohen.proj.proj (symbol %))
                                 names)]
             (is (empty? missing)
-                (str "PROJ.java calls getVar for vars that do not exist in "
+                (str "PROJ.java calls fn for vars that do not exist in "
                      "net.willcohen.proj.proj: " (str/join ", " missing)
                      ". Either restore the var or update PROJ.java."))))))))
