@@ -916,6 +916,7 @@ jobs:
     name: CI Pass
     if: always()
     needs:
+      - lint
       - test-java-macos
       - test-java-linux-amd64
       - test-java-linux-aarch64
@@ -934,6 +935,7 @@ jobs:
       - name: Check results
         run: |
           results=(
+            "${{ needs.lint.result }}"
             "${{ needs.test-java-macos.result }}"
             "${{ needs.test-java-linux-amd64.result }}"
             "${{ needs.test-java-linux-aarch64.result }}"
@@ -949,6 +951,7 @@ jobs:
             "${{ needs.test-playwright-windows.result }}"
           )
           names=(
+            "lint"
             "test-java-macos" "test-java-linux-amd64" "test-java-linux-aarch64" "test-java-linux-musl" "test-java-windows"
             "test-wasm-macos" "test-wasm-linux-amd64" "test-wasm-linux-aarch64" "test-wasm-windows"
             "test-playwright-macos" "test-playwright-linux-amd64" "test-playwright-linux-aarch64" "test-playwright-windows"

@@ -225,6 +225,19 @@
          (is (= "proj_string_list_destroy" (aget (aget calls 0) 0)))
          (is (= 1234 (aget (aget calls 0) 1)))))
 
+     ;; PROJ allocates the string of an owned-string result for the caller, so
+     ;; the worker frees it after the read.
+     (deftest ^:async owned-string-result-is-freed
+       (let [overrides (await (js/import overrides-path))
+             calls #js []
+             mod #js {:UTF8ToString (fn [_] "7")
+                      :ccall (fn [c-name _ _ args] (.push calls #js [c-name (aget args 0)]))}
+             result ((.-decodeCallResult overrides) mod 5678 #js {:projReturns "owned-string"})]
+         (is (= "7" result))
+         (is (= 1 (.-length calls)) "one ccall after the read")
+         (is (= "proj_string_destroy" (aget (aget calls 0) 0)))
+         (is (= 5678 (aget (aget calls 0) 1)))))
+
      ;; netGetHeader copied each header value into a new block with
      ;; stringToNewUTF8, and nothing freed it: three blocks for each grid file
      ;; that PROJ opened.
@@ -244,6 +257,65 @@
          (is (= 0 (.-length freed)) "PROJ can read each string until the close")
          ((.-releaseHandleStrings overrides) mod entry)
          (is (= (vec allocated) (vec freed)) "the close frees each string of the handle")))
+
+     (defn ^:async ccall-number
+       "The worker ccall of C fn `c-name` with number args, and extras `extra`."
+       [handler c-name args extra]
+       (await (.ccall handler c-name "number" (.fill (js/Array. (.-length args)) "number")
+                      args extra)))
+
+     ;; PROJ keeps errno after a failure, and proj_log_error sets a new code
+     ;; only when errno is 0. A ccall that asks for its errno resets the errno
+     ;; of its context first, so it gives the errno of that call. A new
+     ;; context starts at 0, because PROJ finds proj.ini.
+     (deftest ^:async errno-check-gives-the-errno-of-the-call
+       (await (init-once!))
+       (let [{:keys [create db-bytes ini-bytes]} @state
+             handler (await (create #js {:dbBytes db-bytes :iniBytes ini-bytes :logLevel 0}))]
+         (try
+           (let [ctx (.-ptr (await (.context_create handler #js {})))
+                 create-pj (fn [definition]
+                             (.ccall handler "proj_create" "number" #js ["number" "string"]
+                                     #js [ctx definition] #js {}))
+                 merc (await (create-pj "+proj=merc +ellps=WGS84"))
+                 geog (await (create-pj "EPSG:4326"))]
+             (is (= 0 (await (ccall-number handler "proj_context_errno" #js [ctx] #js {})))
+                 "a new context has no errno")
+             (is (= 2049 (.-result (await (ccall-number handler "proj_trans_array" #js [merc 1 1 0]
+                                                        #js {:coordArrays #js [#js {:argIdx 3
+                                                                                    :data (js/Float64Array. #js [0 2 0 0])
+                                                                                    :numFloats 4}]}))))
+                 "a latitude of 2 radians fails, and leaves errno 2049 on ctx")
+             (let [r (await (.ccall handler "proj_create_crs_to_crs" "number"
+                                    #js ["number" "string" "string" "number"]
+                                    #js [ctx "EPSG:5800" "EPSG:4326" 0] #js {:errnoCheck true}))]
+               (is (= 0 (and r (.-result r))))
+               (is (= 0 (and r (.-errno r))) "a NULL with no error of its own"))
+             (let [r (await (ccall-number handler "proj_get_source_crs" #js [ctx geog] #js {:errnoCheck true}))]
+               (is (= 0 (and r (.-result r))))
+               (is (= 4096 (and r (.-errno r))) "a failure gives its own errno")))
+           (finally (await ((:destroy @state)))))))
+
+     (def loader-path
+       (.-href (pathToFileURL (resolve __dirname "../../src/cljc/net/willcohen/proj/proj-loader.mjs"))))
+
+     ;; loadProjResources did not check the fetch status, so a 404 page was
+     ;; staged as proj.db, and PROJ failed later with a database error.
+     (deftest ^:async load-proj-resources-rejects-a-failed-fetch
+       (let [loader (await (js/import loader-path))
+             fetch (.-fetch js/globalThis)
+             versions (js/Object.getOwnPropertyDescriptor js/process "versions")]
+         ;; The browser branch: no process.versions.node, and a fetch that 404s.
+         (js/Object.defineProperty js/process "versions" #js {:value #js {} :configurable true})
+         (set! (.-fetch js/globalThis)
+               (fn [_url] (js/Promise.resolve (js/Response. "Not Found" #js {:status 404}))))
+         (try
+           (let [r (await (.then (.loadProjResources loader) (fn [_] nil) (fn [e] e)))]
+             (is (instance? js/Error r) "a 404 rejects")
+             (is (re-find #"404" (str (and r (.-message r))))))
+           (finally
+             (js/Object.defineProperty js/process "versions" versions)
+             (set! (.-fetch js/globalThis) fetch)))))
 
      ;; Each deftest calls the module destroy in a finally, so no
      ;; global teardown is necessary.

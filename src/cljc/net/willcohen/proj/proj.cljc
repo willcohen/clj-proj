@@ -19,6 +19,7 @@
                [net.willcohen.native.ffi-mem :as ffi-mem]
                [tech.v3.resource :as resource]
                [tech.v3.datatype :as dt]
+               [tech.v3.datatype.ffi :as dt-ffi]
                [tech.v3.datatype.ffi.ptr-value :as dt-ptr]
                [tech.v3.datatype.native-buffer :as dt-nb]
                [tech.v3.tensor :as dt-t]
@@ -170,14 +171,14 @@
                           (exists? js/window) :browser
                           :else :unknown)]
             (when log-level (js/console.log (str "Detected runtime: " runtime)))
-            (let [init-promise (wasm/init-proj opts)]
-              (.then init-promise
-                     (fn [proj-module]
-                       (reset! implementation runtime)
-                       (when log-level
-                         (js/console.log (str "PROJ initialized with " runtime " implementation")))
-                       proj-module))
-              init-promise)))))))
+            ;; Return the chain itself: a dropped chain rejects unhandled
+            ;; when init fails, and Node then exits.
+            (.then (wasm/init-proj opts)
+                   (fn [proj-module]
+                     (reset! implementation runtime)
+                     (when log-level
+                       (js/console.log (str "PROJ initialized with " runtime " implementation")))
+                     proj-module))))))))
 
 #?(:cljs
    (defn shutdown!
@@ -362,8 +363,9 @@
 ;; Defined below. squint hoists the compiled `var`, so the calls above
 ;; resolve at runtime. The declare only satisfies the reader.
 (declare context-set-database-path context-set-enable-network
-         proj-context-create proj-context-set-database-path
-         proj-context-set-enable-network
+         proj-context-create proj-context-get-database-path
+         proj-context-get-user-writable-directory proj-context-set-database-path
+         proj-context-set-enable-network proj-context-set-search-paths
          ensure-initialized!)
 
 (def proj-type->destroy-fn
@@ -408,6 +410,13 @@
   "Convert a PROJ error code to a readable string"
   [code]
   (get proj-error-codes code (str "Unknown error code: " code)))
+
+(defn- errno-error
+  "The error that a call of fn-key throws for PROJ errno `errno`."
+  [fn-key errno]
+  (let [msg (str "PROJ error " errno " in " (name fn-key) ": " (error-code->string errno))]
+    #?(:clj  (ex-info msg {:errno errno :fn-key fn-key})
+       :cljs (js/Error. msg))))
 
 #?(:cljs
    (defn- build-ctx-destroy-fn
@@ -456,11 +465,45 @@
                    :worker worker-idx})))))
 
 #?(:clj
+   (defn- proj-data-dirs
+     "The dirs of the PROJ_DATA env var, or of PROJ_LIB, its name before
+      PROJ 9.1."
+     []
+     (let [v (or (System/getenv "PROJ_DATA") (System/getenv "PROJ_LIB"))]
+       (when-not (string/blank? v)
+         (remove string/blank?
+                 (string/split v (re-pattern (java.util.regex.Pattern/quote File/pathSeparator))))))))
+
+#?(:clj
+   (defn- resource-search-paths
+     "The dirs where PROJ looks for proj.ini and grid files. PROJ does not
+      look in the dir of the database. Once a context has search paths, PROJ
+      reads only those, so on FFI the user-writable dir and PROJ_DATA stay
+      first, in PROJ's own order. Then the dir of the bundled proj.db, and
+      its grids dir: PROJ does not search a subdir."
+     [ctx-ptr]
+     (case @implementation
+       :ffi (let [bundle (:path @native/proj)]
+              (-> [(proj-context-get-user-writable-directory {:context ctx-ptr :create 0})]
+                  (into (proj-data-dirs))
+                  (conj bundle (.getPath (File. ^String bundle "grids")))))
+       :graal ["/proj" "/proj/grids"])))
+
+#?(:clj
+   (defn- context-set-search-paths!
+     "Set the resource-search-paths of context atom `a`. Call it before the
+      network turns on: that loads proj.ini."
+     [a]
+     (let [paths (resource-search-paths (:ptr @a))]
+       (proj-context-set-search-paths {:context a :count_paths (count paths) :paths paths}))))
+
+#?(:clj
    (defn- context-create-jvm
      "Create a PROJ context on the JVM, then wire its database path,
       logging, and network callbacks. Returns the context atom."
      [enable-network?]
      (let [a (atom {:ptr (proj-context-create {}) :op (long 0)})]
+       (context-set-search-paths! a)
        (context-set-database-path a)
        (when (ffi?)
          (proj-logging/setup-logging! (:ptr @a)))
@@ -542,10 +585,10 @@
      :cljs (.-ptr context)))
 
 (defn context-database-path
-  "Get the database path from any context type."
+  "The path of the database that the context uses. On ClojureScript, a
+   Promise."
   [context]
-  #?(:clj (:database-path @context)
-     :cljs (.-database-path context)))
+  (proj-context-get-database-path {:context context}))
 
 (defn is-context?
   "True when the value is a PROJ context. Works on all platforms."
@@ -573,30 +616,19 @@
   ([context db-path]
    (context-set-database-path context db-path nil nil))
   ([context db-path aux-db-paths options]
-   #?(:clj
-      ;; PROJ treats NULL auxDbPaths/options as none. Pass nil through as a
-      ;; null pointer (the fndef types the two as :pointer?). Blank strings
-      ;; become nil.
-      (let [blank->nil (fn [x] (if (and (string? x) (string/blank? x)) nil x))]
-        (proj-context-set-database-path {:context context :db-path db-path
-                                         :aux-db-paths (blank->nil aux-db-paths)
-                                         :options (blank->nil options)}))
-      :cljs
-      (let [ctx-ptr (context-ptr context)]
-        (proj-context-set-database-path {:context ctx-ptr
-                                         :db-path db-path
-                                         :aux-db-paths aux-db-paths
-                                         :options options})))))
+   ;; PROJ treats NULL auxDbPaths/options as none. The fndef types the two
+   ;; as :pointer?, so nil passes as NULL.
+   (let [blank->nil (fn [x] (if (and (string? x) (string/blank? x)) nil x))]
+     (proj-context-set-database-path {:context context :db-path db-path
+                                      :aux-db-paths (blank->nil aux-db-paths)
+                                      :options (blank->nil options)}))))
 
 (defn context-set-enable-network
   "Set network access for grid downloads on a PROJ context.
    Pass a truthy enabled (1 or true) to enable, or a falsy one
    (0, false, nil) to disable."
   [context enabled]
-  #?(:clj
-     (proj-context-set-enable-network {:context context :enabled (if enabled 1 0)})
-     :cljs
-     (proj-context-set-enable-network {:context (context-ptr context) :enabled (if enabled 1 0)})))
+  (proj-context-set-enable-network {:context context :enabled (if enabled 1 0)}))
 
 #?(:clj
    (defn coord-tensor
@@ -642,7 +674,10 @@
                       len (count coord)]
                   (reduce #(dt-t/mset! %1 0 %2 (dt-t/mget coord %2)) coord-array (range len)))
                 (coord->coord-array (dt-t/->tensor coord)))
-         :graal (graal-heap-scope #(wasm/set-coord-array coord (coord-array 1)))))
+         ;; malloc does not zero the block, so a short coord pads to 4.
+         :graal (graal-heap-scope
+                 #(wasm/set-coord-array (if (sequential? coord) (pad-coords 4 [coord]) coord)
+                                        (coord-array 1)))))
      :cljs
      (case @implementation
        (:node :browser) (set-coord-array coord (coord-array 1)))))
@@ -738,15 +773,19 @@
          (nw/free-on-heap (:address a))))))
 
 #?(:cljs
-   (defn dispatch-call
+   (defn ^:async dispatch-call
      "dispatch/call! of fn-key on the library value, with the opts of call!,
       :pool included. When the call rejects, destroy the context clone of an
-      isolated call, which no result owns."
+      isolated call, which no result owns. After a NULL or empty result,
+      throw on the errno that the worker read in the call."
      [fn-key args opts]
-     (.catch (dispatch/call! lib fn-key args opts)
-             (fn [e]
-               (wasm/release-unowned-clone! args)
-               (throw e)))))
+     (let [result (await (.catch (dispatch/call! lib fn-key args opts)
+                                 (fn [e]
+                                   (wasm/release-unowned-clone! args)
+                                   (throw e))))]
+       (when-let [errno (wasm/take-call-errno! args)]
+         (throw (errno-error fn-key errno)))
+       result)))
 
 (defn call-native
   "The single leaf for every PROJ native call.
@@ -1162,11 +1201,28 @@
          :track-type :auto})
        tracked)))
 
+#?(:clj
+   (defn- owned-string
+     "Read the C string that PROJ allocated for the caller, then free it."
+     [ptr]
+     (when-not (nps/null-ptr? ptr)
+       (let [s (case @implementation
+                 :ffi (dt-ffi/c->string ptr)
+                 :graal (graal-heap-scope #(nw/pointer->string (nw/address-as-int ptr))))]
+         (call-native :proj_string_destroy [ptr])
+         s))))
+
 (defn process-return-value-with-tracking
   "Process the return value by proj-returns type and apply resource tracking"
   [result fn-def]
   (let [proj-returns (:proj-returns fn-def)]
-    (if (= :string-list proj-returns)
+    (cond
+      ;; CLJS: the worker reads and frees the string.
+      (= :owned-string proj-returns)
+      #?(:cljs result
+         :clj (owned-string result))
+
+      (= :string-list proj-returns)
       ;; CLJS: the worker owns the module, and it decodes and frees the
       ;; list. CLJ: decode the list, then free it.
       #?(:cljs result
@@ -1174,6 +1230,8 @@
                 (when-not (nps/null-ptr? result)
                   (call-native :proj_string_list_destroy [result]))
                 strs))
+
+      :else
       (let [destroy-fn-name (get proj-type->destroy-fn proj-returns)]
         (if (and destroy-fn-name result)
           #?(:cljs
@@ -1190,13 +1248,78 @@
              :clj (track-jvm-result! result destroy-fn-name))
           result)))))
 
+#?(:clj
+   (defn- errno-failure-signal?
+     "True for a nil :pointer result or a nil or empty :string result. A
+      numeric 0 can be a real result, so numbers are not probed."
+     [result fn-def]
+     (let [rettype (:rettype fn-def)]
+       (cond
+         (= rettype :pointer) (nil? result)
+         (= rettype :string)  (or (nil? result) (= "" result))
+         :else false))))
+
+#?(:clj
+   (defonce ^:private errno-pjs
+     ;; The no-op PJ that reset-errno! points at a context: one for FFI under
+     ;; :ffi, and one for each GraalVM WasmContext, which holds its own
+     ;; module. Each PJ and its own context live as long as the module.
+     (java.util.WeakHashMap.)))
+
+#?(:clj
+   (defn- errno-pj
+     "The no-op PJ of the module that call-native uses now."
+     []
+     (let [k (if (= :graal (or *backend* @implementation))
+               (or (pooled-wc) wasm/proj-context)
+               :ffi)]
+       (locking errno-pjs
+         (or (.get ^java.util.WeakHashMap errno-pjs k)
+             ;; FFI rejects a NULL :pointer, so the PJ gets a context.
+             (let [pj (call-native :proj_create [(call-native :proj_context_create [])
+                                                 "+proj=noop"])]
+               (.put ^java.util.WeakHashMap errno-pjs k pj)
+               pj))))))
+
+#?(:clj
+   (defn- reset-errno!
+     "Clear the errno of context pointer ctx before a call. PROJ keeps errno
+      after a failure, and proj_log_error sets a new code only when errno is
+      0. PROJ exports one reset, proj_errno_reset of a PJ, so a no-op PJ
+      takes the context first."
+     [ctx]
+     (let [pj (errno-pj)]
+       (locking pj
+         (call-native :proj_assign_context [pj ctx])
+         (call-native :proj_errno_reset [pj])))))
+
+(defn- call-checked
+  "call-native of fn-key with args. When wasm/errno-checked? accepts the
+   call, its first arg is the context. On the JVM, reset the errno of the
+   context, and after a NULL or empty result throw on the errno of this
+   call. On ClojureScript the worker does the two, and dispatch-call
+   throws."
+  [fn-key fn-def args]
+  #?(:clj
+     (if (and (wasm/errno-checked? fn-def) (not (nps/null-ptr? (first args))))
+       (let [ctx (first args)
+             _ (reset-errno! ctx)
+             result (call-native fn-key fn-def args)]
+         (when (errno-failure-signal? result fn-def)
+           (let [errno (call-native :proj_context_errno [ctx])]
+             (when (and (number? errno) (not (zero? errno)))
+               (throw (errno-error fn-key errno)))))
+         result)
+       (call-native fn-key fn-def args))
+     :cljs (call-native fn-key fn-def args)))
+
 (defn dispatch-context-fn
   "Dispatch functions that use context atomicity through cs"
   [fn-key fn-def context-atom remaining-args]
   (cs context-atom
       (fn [ctx & args]
         (let [full-args (vec (cons ctx args))]
-          (call-native fn-key fn-def full-args)))
+          (call-checked fn-key fn-def full-args)))
       remaining-args))
 
 (defn- resolve-context-val
@@ -1451,11 +1574,12 @@
                 (call-native (keyword struct-destroy-fn) [result-ptr]))
               []))))))))
 
-(defn- out-param-arg?
-  "True if an argtype spec is an output parameter (name starts with out_)."
-  [[arg-name _arg-type]]
-  (let [s #?(:clj (name arg-name) :cljs (str arg-name))]
-    (and (>= (count s) 4) (= "out_" (subs s 0 4)))))
+#?(:clj
+   (defn- out-param-arg?
+     "True if an argtype spec is an output parameter (name starts with out_)."
+     [[arg-name _arg-type]]
+     (let [s (name arg-name)]
+       (and (>= (count s) 4) (= "out_" (subs s 0 4))))))
 
 #?(:clj
    (defn- out-field-alloc-size
@@ -1468,17 +1592,13 @@
          :double 8
          :string pointer-size
          :int 4
-         :double-array (let [count-arg-name (nth field-spec 3)
-                             count-arg-kw (keyword count-arg-name)
-                             input-argtypes (vec (remove out-param-arg? (:argtypes fn-def)))
-                             idx (.indexOf ^java.util.List (mapv #(keyword (first %)) input-argtypes) count-arg-kw)]
-                         (* 8 (nth args idx)))))))
+         :double-array (* 8 (nth args (.indexOf ^java.util.List (mapv first (:argtypes fn-def))
+                                                (nth field-spec 3))))))))
 
 #?(:clj
    (defn- dispatch-out-params-jvm
-     "The :out-params orchestrator for the two JVM backends. `args` holds
-      only the caller-supplied, non-out arguments that extract-args
-      produced.
+     "The :out-params orchestrator for the two JVM backends. `args` holds 0
+      in each out_ slot.
 
       graal-call-scope makes allocate, call, read, and free one atomic
       region on the default Context, and scopes a pooled worker onto its
@@ -1494,17 +1614,14 @@
                              (let [size (out-field-alloc-size field-spec args fn-def ptr-size)]
                                {:ptr (malloc size) :size size}))
                            out-fields)
-              input-idx (atom 0)
               alloc-idx (atom 0)
-              full-args (mapv (fn [argtype]
+              full-args (mapv (fn [argtype arg]
                                 (if (out-param-arg? argtype)
                                   (let [i @alloc-idx]
                                     (swap! alloc-idx inc)
                                     (:ptr (nth allocs i)))
-                                  (let [i @input-idx]
-                                    (swap! input-idx inc)
-                                    (nth args i))))
-                              (:argtypes fn-def))
+                                  arg))
+                              (:argtypes fn-def) args)
               result (call-native fn-key fn-def full-args)
               ;; A zero or nil return means the call failed, so the out slots
               ;; hold nothing to read.
@@ -1567,8 +1684,7 @@
 (defn- ^:async dispatch-out-params
   "Dispatch for :out-params return type."
   [fn-key fn-def opts key-casing]
-  (let [input-fn-def (assoc fn-def :argtypes (vec (remove out-param-arg? (:argtypes fn-def))))
-        args (extract-args input-fn-def opts)]
+  (let [args (extract-args fn-def opts)]
     #?(:clj (dispatch-out-params-jvm fn-key fn-def args)
        :cljs (convert-js-result-keys
               (await (call-native fn-key fn-def args))
@@ -1584,24 +1700,11 @@
                        remaining-args (get-remaining-args opts fn-def)]
                    (await (dispatch-context-fn fn-key fn-def context-atom remaining-args)))
                  (let [args (extract-args fn-def opts)]
-                   (await (call-native fn-key fn-def args))))
+                   (await (call-checked fn-key fn-def args))))
         result (if ctx-for-result (attach-context-to-result result ctx-for-result) result)]
     ;; Track after the attach. On the JVM the attach returns a copy, and the
     ;; GC must track the object that the caller holds.
     (process-return-value-with-tracking result fn-def)))
-
-(defn- errno-failure-signal?
-  "True when the result of a PROJ call shows possible failure, so that an
-   errno read is worthwhile. The probed cases are pointer returns that
-   come back nil and string returns that come back nil or empty. A
-   numeric zero can be a legitimate result, so numeric returns are not
-   probed."
-  [result fn-def]
-  (let [rettype (:rettype fn-def)]
-    (cond
-      (= rettype :pointer) (nil? result)
-      (= rettype :string)  (or (nil? result) (= "" result))
-      :else false)))
 
 (defn- resolve-ctx-from-opts
   "Look up the call's context arg from opts and return the high-level
@@ -1629,18 +1732,16 @@
                  (let [dispose (aget v js/Symbol.dispose)]
                    (when (fn? dispose) dispose)))))))
 
-(defn- ^:async dispatch-and-check
-  "Dispatch fn-key by its return type, then run the result check."
+(defn- ^:async dispatch-by-return-type
+  "Dispatch fn-key by its return type."
   [fn-key fn-def opts key-casing]
-  (let [proj-returns (:proj-returns fn-def)
-        result (case proj-returns
-                 :struct-list (await (dispatch-struct-list fn-key fn-def opts key-casing))
-                 :out-params  (await (dispatch-out-params fn-key fn-def opts key-casing))
-                 (let [ctx-for-result (when (= :pj proj-returns)
-                                        (resolve-ctx-from-opts fn-def opts))]
-                   (await (dispatch-default fn-key fn-def opts ctx-for-result))))]
-    ;; The result-check hook returns the result unchanged or throws.
-    (await (dispatch/check-result lib fn-key fn-def opts result))))
+  (let [proj-returns (:proj-returns fn-def)]
+    (case proj-returns
+      :struct-list (await (dispatch-struct-list fn-key fn-def opts key-casing))
+      :out-params  (await (dispatch-out-params fn-key fn-def opts key-casing))
+      (let [ctx-for-result (when (= :pj proj-returns)
+                             (resolve-ctx-from-opts fn-def opts))]
+        (await (dispatch-default fn-key fn-def opts ctx-for-result))))))
 
 (defn ^:async dispatch-proj-fn
   "Central dispatcher for all PROJ functions"
@@ -1656,37 +1757,13 @@
                               (do (aset opts "context" ctx) opts)
                               (assoc opts :context ctx))))
                  opts)]
-      #?(:clj (dispatch-and-check fn-key fn-def opts key-casing)
+      #?(:clj (dispatch-by-return-type fn-key fn-def opts key-casing)
          :cljs (let [[opts temps] (await (reconcile-cross-worker-args! fn-def opts))]
                  (try
-                   (await (dispatch-and-check fn-key fn-def opts key-casing))
+                   (await (dispatch-by-return-type fn-key fn-def opts key-casing))
                    (finally
                      (when temps (await (destroy-temporaries! temps))))))))))
 
-(defn ^:async proj-errno-result-check
-  "Result-check hook for clj-native.dispatch. When a PROJ call returns
-   a nil pointer or an empty string AND a context is available, read
-   proj_context_errno on that context. If it is non-zero, throw. The
-   check skips the errno readers themselves (guard on fn-key), which
-   prevents recursion."
-  [_library fn-key fn-def opts result]
-  (when (and (not (#{:proj_context_errno :proj_context_errno_string} fn-key))
-             (errno-failure-signal? result fn-def))
-    (when-let [ctx-for-errno (resolve-ctx-from-opts fn-def opts)]
-      (let [errno-def (get pdefs/fndefs :proj_context_errno)
-            errno-opts #?(:clj {:context ctx-for-errno}
-                          :cljs (let [o #js {}] (aset o "context" ctx-for-errno) o))
-            errno-result (await (dispatch-proj-fn :proj_context_errno errno-def errno-opts))]
-        (when (and (number? errno-result) (not (zero? errno-result)))
-          (let [fn-name #?(:clj (name fn-key) :cljs (str fn-key))
-                msg (str "PROJ error " errno-result " in " fn-name
-                         ": " (error-code->string errno-result))]
-            (throw #?(:clj  (ex-info msg {:errno errno-result :fn-key fn-key})
-                      :cljs (js/Error. msg))))))))
-  result)
-
-;; `lib` is forward-declared above call-native, because the result-check hook
-;; needs dispatch-proj-fn, which needs check-result, which needs `lib`.
 (defonce lib
   (dispatch/library {:key :net.willcohen.proj
                      :fndefs pdefs/fndefs
@@ -1694,9 +1771,8 @@
                      :ffi-impl-ns 'net.willcohen.proj.impl.native
                      :hooks #?(:cljs {:extras-builder   wasm/proj-extras-builder
                                       :result-wrapper   wasm/proj-result-wrapper
-                                      :context-isolator wasm/proj-context-isolator
-                                      :result-check     proj-errno-result-check}
-                               :clj  {:result-check proj-errno-result-check})}))
+                                      :context-isolator wasm/proj-context-isolator}
+                               :clj  nil)}))
 
 #?(:clj
    (def ^:private backend-libs

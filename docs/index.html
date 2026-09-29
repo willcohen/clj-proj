@@ -1044,7 +1044,7 @@ const cResults = [];
 for (const wc of counts) {
     const shutdownFn = proj.shutdown || proj.shutdown_BANG_;
     if (shutdownFn) await shutdownFn();
-    await proj.init(null, { workers: wc });
+    await proj.init({ workers: wc });
 
     console.log(wc + " worker(s)");
 
@@ -1108,7 +1108,7 @@ if (tResults.length > 1) {
 // Restore max workers and update UI
 const shutdownFn2 = proj.shutdown || proj.shutdown_BANG_;
 if (shutdownFn2) await shutdownFn2();
-await proj.init(null, { workers: max });
+await proj.init({ workers: max });
 context = await proj.contextCreate();
 window.context = context;
 document.getElementById('worker-count').textContent = proj.getWorkerCount ? proj.getWorkerCount() : '?';

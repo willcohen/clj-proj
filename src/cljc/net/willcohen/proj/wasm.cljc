@@ -518,27 +518,54 @@
 #?(:cljs
    (defn- out-params-extras
      "Field layout the worker needs to allocate and read the out-params of
-      a call. A :double-array field also carries the index of the argument
-      that holds its element count, because only the caller's args give the
-      allocation size."
+      a call. Field i goes in :argIdx, the index of the i-th out_ arg. A
+      :double-array field also carries the index of the argument that holds
+      its element count, because only the caller's args give the allocation
+      size."
      [fn-def]
-     {:outFields
-      (mapv (fn [field-spec]
-              (let [[field-name field-type] field-spec]
-                (cond-> {:key (kebab->snake field-name)
-                         :type (str field-type)}
-                  (= field-type :double-array)
-                  (assoc :countArgIdx
-                         (let [arg-names (mapv #(str (first %)) (:argtypes fn-def))]
-                           (.indexOf arg-names (str (nth field-spec 3))))))))
-            (:out-fields fn-def))}))
+     (let [arg-names (mapv #(str (first %)) (:argtypes fn-def))
+           out-idxs (vec (keep-indexed (fn [i arg-name] (when (.startsWith arg-name "out_") i))
+                                       arg-names))]
+       {:outFields
+        (vec (map-indexed (fn [i field-spec]
+                            (let [[field-name field-type] field-spec]
+                              (cond-> {:key (kebab->snake field-name)
+                                       :type (str field-type)
+                                       :argIdx (nth out-idxs i)}
+                                (= field-type :double-array)
+                                (assoc :countArgIdx (.indexOf arg-names (str (nth field-spec 3)))))))
+                          (:out-fields fn-def)))})))
+
+(defn errno-checked?
+  "True when a call of fn-def gets its own errno: a context fn that returns
+   a pointer or a string, where NULL or \"\" can signal a failure. The
+   context is the first arg. A fn with :is-context-fn false, such as
+   proj_context_clone, reports no failure through errno."
+  [fn-def]
+  (and (not (false? (:is-context-fn fn-def)))
+       (contains? #{:ctx :context} (ffirst (:argtypes fn-def)))
+       (contains? #{:pointer :string} (:rettype fn-def))))
+
+;; The errno that the worker read after a NULL result of a call, keyed by the
+;; args array of dispatch/call!, until proj/dispatch-call takes it.
+#?(:cljs
+   (defonce ^:private call-errnos (js/WeakMap.)))
 
 #?(:cljs
-   (defn- coord-writeback-fn
-     "Result hook that copies each coord buffer the worker returned back
-      into the caller's Float64Array, then yields the call's own result.
-      proj_trans_array mutates coordinates in place, so the caller expects
-      to read them from the array it passed in."
+   (defn take-call-errno!
+     "The non-zero errno that the worker read after a NULL result of the
+      call with `args`, or nil."
+     [args]
+     (when-let [errno (.get call-errnos args)]
+       (.delete call-errnos args)
+       errno)))
+
+#?(:cljs
+   (defn- worker-result-fn
+     "Result hook for a call whose worker gives {result coordData errno}.
+      Copy each coord buffer back into the caller's Float64Array, because
+      proj_trans_array mutates in place. Keep a non-zero errno for
+      take-call-errno!, then yield the call's own result."
      [coord-arrays args]
      (fn [result]
        (let [returned-data (.-coordData result)]
@@ -550,6 +577,9 @@
              
              
              (.set (.-buffer original-arg) new-data))))
+       (let [errno (.-errno result)]
+         (when (and (number? errno) (not (zero? errno)))
+           (.set call-errnos args errno)))
        (.-result result))))
 
 #?(:cljs
@@ -557,9 +587,14 @@
      "PROJ extras-builder hook for clj-native.dispatch. Turns the PROJ
       parts of a fn-def into the plain data the worker reads as `extras`.
 
-      Each coord-array argument is replaced by 0 in the outgoing args: its
-      buffer travels in :coordArrays instead, and the worker allocates the
-      pointer that the ccall really receives on its own heap."
+      Each coord-array argument and each string array of a :string-array?
+      argument is replaced by 0 in the outgoing args: it travels in
+      :coordArrays or :stringArrays instead, and the worker allocates the
+      pointer that the ccall really receives on its own heap. ccall passes a
+      JS array as a number, so PROJ would get NULL.
+
+      For an errno-checked? call, :errnoCheck asks the worker to reset the
+      errno of the context before the ccall and to read it after a NULL."
      [fn-def args]
      (let [proj-returns (:proj-returns fn-def)
            coord-arrays (into []
@@ -570,6 +605,19 @@
                                     :data (.-buffer arg)
                                     :numFloats (.-floatsNeeded arg)}))
                                args))
+           string-names (into #{} (keep (fn [[arg-name semantic-type]]
+                                          (when (= :string-array? semantic-type) arg-name)))
+                              (:argsemantics fn-def))
+           string-ix (into #{} (keep-indexed (fn [i [arg-name]] (when (contains? string-names arg-name) i))
+                                             (:argtypes fn-def)))
+           string-arrays (into []
+                               (keep-indexed
+                                (fn [idx arg]
+                                  (when (and (contains? string-ix idx) (array? arg))
+                                    {:argIdx idx :strings arg})))
+                               args)
+           moved (into #{} (map :argIdx) (concat coord-arrays string-arrays))
+           errno? (errno-checked? fn-def)
            extras (cond-> {}
                     proj-returns (assoc :projReturns (str proj-returns))
                     (= proj-returns :struct-list) (merge (struct-list-extras fn-def))
@@ -586,21 +634,23 @@
                                               data
                                               (.slice data 0 n)))
                                     :numFloats (:numFloats ca)})
-                                 coord-arrays)))]
-       {:args (if (seq coord-arrays)
-                (mapv (fn [arg] (if (coord-array-arg? arg) 0 arg)) args)
+                                 coord-arrays))
+                    (seq string-arrays) (assoc :stringArrays string-arrays)
+                    errno? (assoc :errnoCheck true))]
+       {:args (if (seq moved)
+                (into [] (map-indexed (fn [idx arg] (if (contains? moved idx) 0 arg)) args))
                 args)
         :extras extras
-        :on-result (when (seq coord-arrays)
-                     (coord-writeback-fn coord-arrays args))})))
+        :on-result (when (or (seq coord-arrays) errno?)
+                     (worker-result-fn coord-arrays args))})))
 
 ;; The context clone of each isolated call in flight, keyed by the args
 ;; array of dispatch/call!: a fn that destroys the clone. The result-wrapper
 ;; removes the entry. proj/dispatch-call calls it when the call rejects. The
 ;; wasm has no C++ exception catching, so PROJ rejects an invalid CRS, and
-;; this path is common. The key works because proj-extras-builder returns
-;; the args array itself when a call has no coord array, and cljs-leg gives
-;; that array to the isolator and the wrapper.
+;; this path is common. The key works because cljs-leg gives the args array
+;; of dispatch/call! to the extras-builder, the isolator and the wrapper,
+;; and proj-extras-builder returns that array when it moves no arg.
 #?(:cljs
    (defonce ^:private unowned-clones (js/WeakMap.)))
 
@@ -660,7 +710,7 @@
       worker-idx as _ephemeral_context_worker_idx. build-pj-destroy-fn reads
       the two fields and chains the ctx destroy after the primary destroy.
       A result that is not an object owns no clone, so the wrapper destroys
-      the clone at once."
+      the clone at once. The worker read the errno of the clone in the call."
      [{:keys [result fn-def worker-idx platform args isolator-result]}]
      (let [proj-returns (:proj-returns fn-def)
            wrapped
@@ -808,7 +858,8 @@
 
 (defn string-list-to-native-array
   "CLJ: forwards to the generic clj-native helper.
-   CLJS: returns a JS array (the worker allocates through ccall)."
+   CLJS: returns a JS array. proj-extras-builder sends it to the worker,
+   which allocates the char** on its heap."
   [s-list]
   #?(:cljs (vec s-list)
      :clj  (nw/string-list-to-native-array s-list)))

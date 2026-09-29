@@ -339,6 +339,23 @@ function readStructList(mod, listPtr, count, structFields) {
   return entries;
 }
 
+// A NULL-terminated char** of `strings` in one block: the pointer slots,
+// then the strings. The caller frees the block.
+function allocStringArray(mod, strings) {
+  const encoded = strings.map((s) => new TextEncoder().encode(String(s)));
+  const slots = 4 * (encoded.length + 1);
+  const base = mod._malloc(slots + encoded.reduce((n, b) => n + b.length + 1, 0));
+  let at = base + slots;
+  encoded.forEach((bytes, i) => {
+    mod.HEAPU8.set(bytes, at);
+    mod.HEAPU8[at + bytes.length] = 0;
+    mod.setValue(base + 4 * i, at, '*');
+    at += bytes.length + 1;
+  });
+  mod.setValue(base + 4 * encoded.length, 0, '*');
+  return base;
+}
+
 // Reads each coord buffer back out of the wasm heap and frees it. Runs
 // before decodeCallResult, because a PROJ destroy in that step can grow the
 // heap and move the buffers.
@@ -354,11 +371,17 @@ function readCoordDataAndFree(mod, coordAllocations) {
 }
 
 // Allocates everything the call needs in the wasm heap and patches `args`
-// and `argTypes` in place to point at it. Mirrors decodeCallResult, which
+// in place to point at it. Mirrors decodeCallResult, which
 // reads the same allocations back out and frees them. Returns the handles
 // that decodeCallResult and readCoordDataAndFree need.
-function prepareCallArgs(mod, args, argTypes, opts) {
-  const { projReturns, coordArrays, outFields, structParamsCreate } = opts;
+function prepareCallArgs(mod, args, opts) {
+  const { projReturns, coordArrays, stringArrays, outFields, structParamsCreate } = opts;
+
+  const stringArrayPtrs = (stringArrays ?? []).map(({ argIdx, strings }) => {
+    const ptr = allocStringArray(mod, strings);
+    args[argIdx] = ptr;
+    return ptr;
+  });
 
   let coordAllocations = null;
   if (coordArrays && coordArrays.length > 0) {
@@ -381,8 +404,7 @@ function prepareCallArgs(mod, args, argTypes, opts) {
         : (field.type === 'double' ? 8 : 4);
       const ptr = mod._malloc(size);
       outParamAllocs.push({ ptr, size, field });
-      args.push(ptr);
-      argTypes.push('number');
+      args[field.argIdx] = ptr;
     }
   }
 
@@ -397,7 +419,7 @@ function prepareCallArgs(mod, args, argTypes, opts) {
     }
   }
 
-  return { coordAllocations, outParamAllocs, paramsPtrLocal };
+  return { coordAllocations, stringArrayPtrs, outParamAllocs, paramsPtrLocal };
 }
 
 // Turns the raw ccall return into the value the caller gets, and releases
@@ -406,6 +428,13 @@ function prepareCallArgs(mod, args, argTypes, opts) {
 export function decodeCallResult(mod, rawResult, opts) {
   const { projReturns, args, outParamAllocs, paramsPtrLocal,
     structParamsDestroy, structDestroyFn, structFields } = opts;
+
+  if (projReturns === 'owned-string') {
+    if (rawResult === 0) return null;
+    const str = mod.UTF8ToString(rawResult);
+    mod.ccall('proj_string_destroy', null, ['number'], [rawResult]);
+    return str;
+  }
 
   if (projReturns === 'string-list' && rawResult !== 0) {
     const strings = readStringArray(mod, rawResult);
@@ -437,10 +466,39 @@ export function decodeCallResult(mod, rawResult, opts) {
   return rawResult;
 }
 
+// PROJ reads proj.ini and grid files only from its search paths, and does
+// not look in the dir of the database. init stages proj.ini in /proj.
+function setSearchPaths(ctx, paths) {
+  const block = allocStringArray(module, paths);
+  try {
+    module.ccall('proj_context_set_search_paths', null,
+      ['number', 'number', 'number'], [ctx, paths.length, block]);
+  } finally {
+    module._free(block);
+  }
+}
+
+// PROJ keeps errno after a failure, and proj_log_error sets a new code only
+// when errno is 0. PROJ exports one reset, proj_errno_reset of a PJ, so a
+// no-op PJ takes the context first. The worker does it in the ccall, so no
+// other call can run between the reset and the call. proj.cljc does the same
+// on the JVM.
+let errnoPj = 0;
+
+function resetErrno(ctx) {
+  if (!errnoPj) {
+    errnoPj = module.ccall('proj_create', 'number', ['number', 'string'], [0, '+proj=noop']);
+  }
+  module.ccall('proj_assign_context', null, ['number', 'number'], [errnoPj, ctx]);
+  module.ccall('proj_errno_reset', 'number', ['number'], [errnoPj]);
+}
+
 export const methods = {
   context_create: async (opts) => {
     const enableNetwork = (opts?.enableNetwork ?? true) ? 1 : 0;
     const ptr = module.ccall('proj_context_create', 'number', [], []);
+    // Before the network turns on, which loads proj.ini.
+    setSearchPaths(ptr, ['/proj', '/proj/grids']);
     module.ccall('proj_context_set_database_path', 'number',
       ['number', 'string'], [ptr, '/proj/proj.db']);
     module.ccall('proj_context_set_enable_network', 'number',
@@ -479,15 +537,27 @@ export const methods = {
     return { ok: true };
   },
 
+  // With extra.errnoCheck, args[0] is the context: reset its errno, and
+  // after a NULL or empty result give the errno of this call.
   ccall: async (fnName, returnType, argTypes, args, extra = {}) => {
-    const { projReturns, coordArrays, outFields, structParamsCreate,
+    const { projReturns, coordArrays, stringArrays, outFields, structParamsCreate,
       structParamsDestroy, structDestroyFn, structFields } = extra;
 
-    const { coordAllocations, outParamAllocs, paramsPtrLocal } =
-      prepareCallArgs(module, args, argTypes,
-        { projReturns, coordArrays, outFields, structParamsCreate });
+    const { coordAllocations, stringArrayPtrs, outParamAllocs, paramsPtrLocal } =
+      prepareCallArgs(module, args,
+        { projReturns, coordArrays, stringArrays, outFields, structParamsCreate });
 
-    const rawResult = module.ccall(fnName, returnType, argTypes, args);
+    const ctx = extra.errnoCheck ? args[0] : null;
+    if (ctx !== null) resetErrno(ctx);
+    let rawResult;
+    try {
+      rawResult = module.ccall(fnName, returnType, argTypes, args);
+    } finally {
+      for (const ptr of stringArrayPtrs) module._free(ptr);
+    }
+    const errno = ctx !== null && (rawResult === 0 || rawResult === '' || rawResult == null)
+      ? module.ccall('proj_context_errno', 'number', ['number'], [ctx])
+      : 0;
 
     const coordData = coordAllocations
       ? readCoordDataAndFree(module, coordAllocations)
@@ -498,7 +568,7 @@ export const methods = {
       structParamsDestroy, structDestroyFn, structFields,
     });
 
-    return coordAllocations ? { result: value, coordData } : value;
+    return coordAllocations || ctx !== null ? { result: value, coordData, errno } : value;
   },
 
   // heapHelpers supplies malloc/free/heap*_get/heap*_set/get_value/
@@ -522,6 +592,7 @@ export async function init(initArgs, ctx) {
 
   await installNodeXhrPolyfill();
   module = await loadProjModule();
+  errnoPj = 0;
   // After this call, the substrate merges {heap-bytes, brk} into BUSY-INC /
   // BUSY-DEC events.
   ctx?.attachEmscriptenModule?.(module);

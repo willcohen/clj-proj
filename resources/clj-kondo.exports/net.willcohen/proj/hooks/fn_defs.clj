@@ -204,12 +204,26 @@
                                :argtypes [[:err :int32]]}
    :proj_context_get_database_path {:rettype :string
                                     :argtypes [[:context :pointer]]}
+   :proj_context_set_search_paths {:rettype :void
+                                   :argtypes [[:context :pointer]
+                                              [:count_paths :int32]
+                                              [:paths :pointer?]] ; const char *const *paths
+                                   :argsemantics [[:paths :string-array? :default nil]]}
+   :proj_context_get_user_writable_directory {:rettype :string
+                                              :argtypes [[:context :pointer]
+                                                         [:create :int32]]}
+   :proj_assign_context {:rettype :void
+                         :argtypes [[:pj :pointer] ; PJ *pj
+                                    [:context :pointer]]} ; PJ_CONTEXT *ctx
+   :proj_errno_reset {:rettype :int32
+                      :argtypes [[:pj :pointer]]} ; const PJ *P
    :proj_context_get_database_metadata {:rettype :string
                                         :argtypes [[:context :pointer]
                                                    [:key :string]]}
    :proj_context_get_database_structure {:rettype :pointer ; PROJ_STRING_LIST
                                          :argtypes [[:context :pointer]
-                                                    [:options :pointer]] ; const char *const *options 
+                                                    [:options :pointer?]] ; const char *const *options 
+                                         :argsemantics [[:options :string-array? :default nil]]
                                          :proj-returns :string-list}
    :proj_context_guess_wkt_dialect {:rettype :int32 ; PJ_GUESSED_WKT_DIALECT
                                     :argtypes [[:context :pointer]
@@ -282,7 +296,8 @@
                                       [:typesCount :size-t]
                                       [:approximateMatch :int32]
                                       [:limitResultCount :size-t]
-                                      [:options :pointer]] ; const char *const *options
+                                      [:options :pointer?]] ; const char *const *options
+                           :argsemantics [[:options :string-array? :default nil]]
                            :proj-returns :pj-list}
    :proj_get_type {:rettype :int32 ; PJ_TYPE
                    :argtypes [[:obj :pointer]]} ; const PJ *obj
@@ -390,14 +405,16 @@
                    :argtypes [[:context :pointer]
                               [:obj :pointer] ; const PJ *obj
                               [:auth_name :string]
-                              [:options :pointer] ; const char *const *options
+                              [:options :pointer?] ; const char *const *options
                               [:out_confidence :pointer]] ; int **out_confidence
+                   :argsemantics [[:options :string-array? :default nil]]
                    :proj-returns :pj-list}
    :proj_get_geoid_models_from_database {:rettype :pointer ; PROJ_STRING_LIST
                                          :argtypes [[:context :pointer]
                                                     [:auth_name :string]
                                                     [:code :string]
-                                                    [:options :pointer]] ; const char *const *options 
+                                                    [:options :pointer?]] ; const char *const *options 
+                                         :argsemantics [[:options :string-array? :default nil]]
                                          :proj-returns :string-list}
    :proj_int_list_destroy {:rettype :void
                            :argtypes [[:list :pointer]]} ; int *list
@@ -461,7 +478,7 @@
    :proj_get_units_from_database {:rettype :pointer ; PROJ_UNIT_INFO **
                                   :argtypes [[:context :pointer]
                                              [:auth_name :string]
-                                             [:category :string]
+                                             [:category :string?] ; NULL = every category
                                              [:allow_deprecated :int32]
                                              [:out_result_count :pointer]] ; int *out_result_count
                                   :proj-returns :struct-list
@@ -491,16 +508,19 @@
                                            [:code :string]
                                            [:numeric_codes :int32]
                                            [:allowed_authorities :pointer] ; const char *const *allowed_authorities
-                                           [:options :pointer]] ; const char *const *options 
+                                           [:options :pointer?]] ; const char *const *options 
+                                :argsemantics [[:options :string-array? :default nil]]
                                 :proj-returns :string-list}
-   :proj_suggests_code_for {:rettype :string
+   :proj_suggests_code_for {:rettype :pointer ; char *, freed with proj_string_destroy
                             :argtypes [[:context :pointer]
                                        [:object :pointer] ; const PJ *object
                                        [:authority :string]
                                        [:numeric_code :int32]
-                                       [:options :pointer]]} ; const char *const *options
+                                       [:options :pointer?]] ; const char *const *options
+                            :argsemantics [[:options :string-array? :default nil]]
+                            :proj-returns :owned-string}
    :proj_string_destroy {:rettype :void
-                         :argtypes [[:str :string]]} ; char *str
+                         :argtypes [[:str :pointer]]} ; char *str
    :proj_create_operation_factory_context {:rettype :pointer ; PJ_OPERATION_FACTORY_CONTEXT *
                                            :argtypes [[:context :pointer]
                                                       [:authority :string]] ; NULL or "" = any authority
@@ -570,11 +590,6 @@
                    :proj-returns :pj}
    :proj_list_destroy {:rettype :void
                        :argtypes [[:result :pointer]]} ; PJ_OBJ_LIST *result
-   :proj_get_suggested_operation {:rettype :int32
-                                  :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
-                                             [:operations :pointer] ; PJ_OBJ_LIST *operations
-                                             [:direction :int32] ; PJ_DIRECTION
-                                             [:coord :pointer]]} ; PJ_COORD coord
    :proj_crs_is_derived {:rettype :int32
                          :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
                                     [:crs :pointer]]} ; const PJ *crs
@@ -627,14 +642,6 @@
                                     :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
                                                [:crs :pointer]] ; const PJ *crs
                                     :proj-returns :pj}
-   :proj_xy_dist {:rettype :float64
-                  :argtypes [[:a :pointer] ; PJ_COORD a
-                             [:b :pointer]]} ; PJ_COORD b
-   :proj_coord {:rettype :pointer ; PJ_COORD
-                :argtypes [[:x :float64]
-                           [:y :float64]
-                           [:z :float64]
-                           [:t :float64]]}
    :proj_create_crs_to_crs {:rettype :pointer ; PJ *
                             :argtypes [[:context :pointer]
                                        [:source_crs :string]
@@ -1001,7 +1008,8 @@
                                             [:geoid_model_auth_name :string]
                                             [:geoid_model_code :string]
                                             [:geoid_geog_crs :pointer] ; const PJ *geoid_geog_crs
-                                            [:options :pointer]] ; const char *const *options
+                                            [:options :pointer?]] ; const char *const *options
+                                 :argsemantics [[:options :string-array? :default nil]]
                                  :proj-returns :pj}
    :proj_create_compound_crs {:rettype :pointer ; PJ *
                               :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
@@ -1057,7 +1065,8 @@
    :proj_crs_create_bound_crs_to_WGS84 {:rettype :pointer ; PJ *
                                         :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx
                                                    [:crs :pointer] ; const PJ *crs
-                                                   [:options :pointer]] ; const char *const *options
+                                                   [:options :pointer?]] ; const char *const *options
+                                        :argsemantics [[:options :string-array? :default nil]]
                                         :proj-returns :pj}
    :proj_crs_create_bound_vertical_crs {:rettype :pointer ; PJ *
                                         :argtypes [[:ctx :pointer] ; PJ_CONTEXT *ctx

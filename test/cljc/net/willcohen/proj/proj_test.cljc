@@ -11,6 +11,7 @@
   (:refer-clojure :exclude [await])
   #?(:clj (:require [clojure.test :refer [deftest is testing use-fixtures]]
                     [net.willcohen.proj.proj :as proj]
+                    [net.willcohen.proj.fndefs :as pdefs]
                     [net.willcohen.proj.impl.network :as proj-network]
                     [net.willcohen.proj.wasm :as wasm]
                     [net.willcohen.native.graal-wasm :as nw]
@@ -142,14 +143,99 @@
           ;; a Set returns a present key. Thus the set predicate works
           ;; on a JS array in cljs.
           (is (some #{"4326"} epsg-codes) "Should contain a well-known code like '4326'")))
-      ;; JVM only: on CLJS a new context holds errno 44 from its setup, so
-      ;; the errno check throws on this NULL result.
-      #?(:clj
-         (testing "a NULL string list reads as empty"
-           ;; PROJ returns NULL for PJ_TYPE_UNKNOWN (0) and sets no errno.
-           (is (empty? (proj/proj-get-codes-from-database {:context ctx
-                                                           :auth_name "EPSG"
-                                                           :type 0}))))))))
+      (testing "a NULL string list reads as empty"
+        ;; PROJ returns NULL for PJ_TYPE_UNKNOWN (0) and sets no errno.
+        (is (empty? (await (proj/proj-get-codes-from-database {:context ctx
+                                                               :auth_name "EPSG"
+                                                               :type 0}))))))))
+
+;; PROJ did not find proj.ini when the context turned the network on, and
+;; left errno ENOENT (44 on wasm) on the new context. The errno check then
+;; threw that stale code after a NULL result.
+(deftest ^:async new-context-has-no-errno-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (is (= 0 (await (proj/proj-context-errno {:context ctx})))))))
+
+;; PROJ finds no operation from an engineering CRS to a geographic CRS. It
+;; returns NULL and sets no errno.
+(deftest ^:async no-operation-gives-nil-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (is (nil? (await (proj/proj-create-crs-to-crs {:context ctx
+                                                     :source_crs "EPSG:5800"
+                                                     :target_crs "EPSG:4326"})))))))
+
+(defn- error-message [e]
+  #?(:clj (.getMessage ^Exception e) :cljs (.-message e)))
+
+;; PROJ keeps errno after a failure, and proj_log_error sets a new code only
+;; when errno is 0. The errno check read the context after the call, so after
+;; one failure on a context, a NULL with no error of its own threw the old
+;; code, and a new failure also reported the old code.
+(deftest ^:async errno-of-each-call-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (let [merc (await (proj/proj-create {:context ctx :definition "+proj=merc +ellps=WGS84"}))
+            geog (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+            ca (proj/coord-array 1)]
+        (await (proj/set-coords! ca [[0 2.0 0 0]]))
+        (is (= 2049 (await (proj/proj-trans-array {:p merc :direction 1 :n 1 :coord ca})))
+            "a latitude of 2 radians fails, and leaves errno 2049 on ctx")
+        (is (nil? (await (proj/proj-create-crs-to-crs {:context ctx
+                                                       :source_crs "EPSG:5800"
+                                                       :target_crs "EPSG:4326"})))
+            "a NULL with no error of its own gives nil")
+        (let [e (try (await (proj/proj-get-source-crs {:context ctx :pj geog}))
+                     nil
+                     (catch #?(:clj Exception :cljs :default) e e))]
+          (is (re-find #"PROJ error 4096 " (str (some-> e error-message)))
+              "a geographic CRS has no source CRS: the failure gives its own errno"))))))
+
+;; proj_context_clone reports no failure through errno, so a clone must not
+;; clear the errno of the context it copies.
+(deftest ^:async context-clone-keeps-the-errno-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (let [merc (await (proj/proj-create {:context ctx :definition "+proj=merc +ellps=WGS84"}))
+            ca (proj/coord-array 1)]
+        (await (proj/set-coords! ca [[0 2.0 0 0]]))
+        (await (proj/proj-trans-array {:p merc :direction 1 :n 1 :coord ca}))
+        (is (= 2049 (await (proj/proj-context-errno {:context ctx}))))
+        (is (some? (await (proj/proj-context-clone {:ctx ctx}))))
+        (is (= 2049 (await (proj/proj-context-errno {:context ctx})))
+            "the clone kept the errno of ctx")))))
+
+;; On ClojureScript an options arg reached ccall as a JS array, which ccall
+;; passes as a number, so PROJ got NULL and ignored the options.
+(deftest ^:async options-arg-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (let [crs (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"}))
+            wkt (await (proj/proj-as-wkt {:context ctx :pj crs :options ["MULTILINE=NO"]}))]
+        (is (string? wkt))
+        (is (not (re-find #"\n" wkt)) "MULTILINE=NO gives one line")))))
+
+;; proj_coord, proj_xy_dist and proj_get_suggested_operation take or return a
+;; PJ_COORD by value. Their :pointer bindings passed the wrong ABI.
+(deftest by-value-pj-coord-fns-are-not-bound-test
+  #?(:clj (is (not-any? (set (keys pdefs/fndefs))
+                        [:proj_coord :proj_xy_dist :proj_get_suggested_operation]))
+     :cljs (is (every? (fn [k] (nil? (aget proj k)))
+                       ["projCoord" "projXyDist" "projGetSuggestedOperation"]))))
+
+;; GraalVM: coord->coord-array wrote only x and y of [x y] into its malloc
+;; block, so z and t held what the heap held before.
+#?(:clj
+   (deftest short-coord-to-coord-array-zero-fills-test
+     (with-each-implementation
+       (let [real-malloc wasm/malloc]
+         (with-redefs [wasm/malloc (fn [b]
+                                     (let [p (real-malloc b)]
+                                       (nw/heap-write-doubles! (nw/address-as-int p)
+                                                               (double-array (quot b 8) 7.0))
+                                       p))]
+           (is (= [1.0 2.0 0.0 0.0] (proj/get-coords (proj/coord->coord-array [1.0 2.0]) 0))))))))
 
 ;; GraalVM: the get_header callback copied each header value into a new wasm
 ;; block, and nothing freed it: three blocks for each grid file that PROJ
@@ -240,7 +326,12 @@
           (let [us-foot (first (filter #(= "9003" (:code %)) entries))]
             (is (some? us-foot) "Should contain EPSG:9003 (US survey foot)")
             (is (= "EPSG" (prop us-foot :auth-name)))
-            (is (< 0.3 (prop us-foot :conv-factor) 0.4) "US survey foot conv-factor ~0.3048")))))))
+            (is (< 0.3 (prop us-foot :conv-factor) 0.4) "US survey foot conv-factor ~0.3048"))))
+      (testing "a nil category lists the units of every category"
+        (let [entries (await (proj/proj-get-units-from-database
+                              {:context ctx :auth-name "EPSG" :allow-deprecated 0}))]
+          (is (some #(= "9001" (:code %)) entries) "a linear unit, EPSG:9001 metre")
+          (is (some #(= "9101" (:code %)) entries) "an angular unit, EPSG:9101 radian"))))))
 
 (deftest ^:async get-celestial-body-list-from-database-test
   (with-each-implementation
@@ -274,6 +365,13 @@
              bump (future @in-call (swap! ctx update :op inc))]
          (is (= :r (proj/cs ctx (fn [_] (swap! calls inc) (deliver in-call true) @bump :r) [])))
          (is (= 1 @calls) "a concurrent change of the context atom does not rerun the call")))))
+
+(deftest ^:async context-database-path-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (let [path (await (proj/context-database-path ctx))]
+        (is (string? path) "the path of the database that the context uses")
+        (is (re-find #"proj\.db$" (str path)))))))
 
 (deftest ^:async context-creation-test
   #?(:clj  (with-each-implementation
@@ -495,17 +593,18 @@
 
 (deftest ^:async concatenated-operation-not-exportable-test
   ;; A 4326->2249 transform is a concatenated operation. PROJ cannot
-  ;; export it and sets errno=4096 (PROJ_ERR_OTHER), which the
-  ;; errno-check raises.
+  ;; export it as a PROJ string or PROJJSON and sets errno=4096
+  ;; (PROJ_ERR_OTHER), which the errno-check raises. proj_as_wkt gives NULL
+  ;; with no errno: a PJ with alternative operations has no one object.
   (with-each-implementation
     (with-test-context [ctx]
       (let [tx (await (proj/proj-create-crs-to-crs {:context ctx :source-crs "EPSG:4326" :target-crs "EPSG:2249"}))]
         (testing "proj-as-proj-string raises for non-exportable concatenated operation"
           (is (thrown? #?(:clj Exception :cljs js/Error)
                        (await (proj/proj-as-proj-string {:context ctx :pj tx :type 0})))))
-        (testing "proj-as-wkt raises for non-exportable concatenated operation"
-          (is (thrown? #?(:clj Exception :cljs js/Error)
-                       (await (proj/proj-as-wkt {:context ctx :pj tx})))))
+        (testing "proj-as-wkt gives no WKT and no error for a concatenated operation"
+          ;; The stale errno of an earlier call made it throw.
+          (is (empty? (await (proj/proj-as-wkt {:context ctx :pj tx})))))
         (testing "proj-as-projjson raises for non-exportable concatenated operation"
           (is (thrown? #?(:clj Exception :cljs js/Error)
                        (await (proj/proj-as-projjson {:context ctx :pj tx})))))))))
@@ -867,39 +966,56 @@
                                                           :target_crs "EPSG:4326"}))))))))
 
 ;; A fake pool runs the real hooks of proj/lib. proj_context_clone gives
-;; 77, and proj_create_crs_to_crs gives what `create` returns or throws.
+;; 77, and proj_create_crs_to_crs gives what `create` returns or throws. For
+;; a call that asks for its errno, the fake worker gives `errno` after a NULL
+;; that ran on the clone.
 #?(:cljs
-   (defn- clone-fake-pool [create destroyed]
+   (defn- clone-fake-pool [create destroyed errno]
      #js {:worker (fn [idx]
                     (js-obj "net.willcohen.proj"
-                            #js {:ccall (fn [c-name _rettype _argtypes args _extra]
-                                          (case c-name
-                                            "proj_context_clone" 77
-                                            "proj_create_crs_to_crs" (create)
-                                            "proj_context_destroy"
-                                            (do (.push destroyed [idx (aget args 0)]) nil)))}))}))
+                            #js {:ccall (fn [c-name _rettype _argtypes args extra]
+                                          (let [r (case c-name
+                                                    "proj_context_clone" 77
+                                                    "proj_create_crs_to_crs" (create)
+                                                    "proj_context_destroy"
+                                                    (do (.push destroyed [idx (aget args 0)]) nil))]
+                                            (if (.-errnoCheck extra)
+                                              #js {:result r
+                                                   :errno (if (and (= 0 r) (= 77 (aget args 0))) errno 0)}
+                                              r)))}))}))
 
 #?(:cljs
-   (defn- ^:async isolated-create [create destroyed]
+   (defn- ^:async isolated-create [create destroyed errno]
      (let [ctx #js {:ptr 5 :worker_idx 1 :type "proj-context"}
            r (await (.catch (proj/dispatch-call "proj_create_crs_to_crs"
                                                 [ctx "EPSG:4326" "EPSG:3857" 0]
-                                                #js {:pool (clone-fake-pool create destroyed)})
+                                                #js {:pool (clone-fake-pool create destroyed errno)})
                             (fn [e] e)))]
        (await (proj/flush-pending-disposes!))
        r)))
 
+;; A NULL from an isolated call: the errno check read the context of the
+;; caller, after the clone that the call ran on was destroyed. The worker
+;; reads the errno of the clone in the call.
+#?(:cljs
+   (deftest ^:async isolated-null-reads-the-errno-of-its-clone-test
+     (let [destroyed #js []
+           err (await (isolated-create (fn [] 0) destroyed 1027))]
+       (is (instance? js/Error err))
+       (is (re-find #"PROJ error 1027" (str (and err (.-message err)))))
+       (is (= [[1 77]] (vec destroyed)) "the clone is destroyed after the errno read"))))
+
 #?(:cljs
    (deftest ^:async isolated-call-destroys-an-unowned-clone-test
      (let [destroyed #js []
-           pj (await (isolated-create (fn [] 1234) destroyed))]
+           pj (await (isolated-create (fn [] 1234) destroyed 0))]
        (is (= 77 (.-_ephemeral_context_ptr pj)) "a PJ owns its clone")
        (is (= 0 (.-length destroyed))))
      (let [destroyed #js []]
-       (is (nil? (await (isolated-create (fn [] 0) destroyed))))
+       (is (nil? (await (isolated-create (fn [] 0) destroyed 0))))
        (is (= [[1 77]] (vec destroyed)) "a NULL result destroys the clone on its worker"))
      (let [destroyed #js []
-           err (await (isolated-create (fn [] (throw (js/Error. "crs not found"))) destroyed))]
+           err (await (isolated-create (fn [] (throw (js/Error. "crs not found"))) destroyed 0))]
        (is (instance? js/Error err))
        (is (= [[1 77]] (vec destroyed)) "a rejection destroys the clone on its worker"))))
 
@@ -1093,6 +1209,17 @@
           (is (string? (:name param)))
           (is (number? (:value param))))))))
 
+;; On ClojureScript the out pointer of this fn, arg 2 of 5, went to the end of
+;; the args.
+(deftest ^:async coordoperation-get-towgs84-values-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (let [op (await (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "1173" :category 4}))
+            r (await (proj/proj-coordoperation-get-towgs84-values
+                      {:context ctx :coordoperation op :value_count 7 :emit_error_if_incompatible 0}))]
+        (is (= [-8.0 160.0 176.0 0.0 0.0 0.0 0.0] (vec (prop r :values)))
+            "the Helmert values of NAD27 to WGS 84 (4)")))))
+
 (deftest ^:async coordoperation-get-grid-used-test
   (with-each-implementation
     (with-test-context [ctx]
@@ -1124,21 +1251,6 @@
           (is (some? info))
           (is (string? (prop info :full-name)))
           (is (number? (:available info))))))))
-
-(deftest ^:async coordoperation-get-towgs84-values-test
-  (with-each-implementation
-    (with-test-context [ctx]
-      (testing "proj-coordoperation-get-towgs84-values returns double array"
-        (let [op     (await (proj/proj-create {:context ctx
-                                               :definition "+proj=helmert +x=23 +y=-45 +z=67 +rx=0.1 +ry=-0.2 +rz=0.3 +s=1.5 +convention=position_vector"}))
-              result (await (proj/proj-coordoperation-get-towgs84-values {:ctx ctx :coordoperation op :value_count 7 :emit_error_if_incompatible 0}))]
-          (if (some? result)
-            (let [values (:values result)]
-              ;; values: Clojure vector on JVM, JS array on CLJS.
-              (is (some? values))
-              (is (= 7 (count values)))
-              (is (every? number? values)))
-            (is true "towgs84 returned nil for this operation type")))))))
 
 ;; CLJS runner footer. The teardown must call proj.shutdown: live
 ;; Worker_threads keep the Node event loop alive, and the bb task
@@ -1264,6 +1376,33 @@
                            (apply orig fn-key more))]
              (is (seq (proj/proj-get-authorities-from-database {:context ctx})))
              (is (= 1 @freed) "the list was freed once")))))))
+
+;; An options arg takes nil, which PROJ reads as no options.
+#?(:clj
+   (deftest options-arg-takes-nil-test
+     (with-each-implementation
+       (with-test-context [ctx]
+         (let [pj (proj/proj-create-from-database {:context ctx :auth_name "EPSG" :code "4326"})]
+           (is (seq (proj/proj-context-get-database-structure {:context ctx})))
+           (is (string? (proj/proj-suggests-code-for
+                         {:context ctx :object pj :authority "HOBU" :numeric_code 1}))))))))
+
+;; PROJ allocates the code string for the caller, so the call frees it after
+;; the read.
+#?(:clj
+   (deftest suggests-code-for-frees-its-result-test
+     (with-each-implementation
+       (with-test-context [ctx]
+         (let [freed (atom 0)
+               orig proj/call-native
+               pj (proj/proj-create {:context ctx :definition "+proj=longlat +ellps=GRS80 +no_defs +type=crs"})]
+           (with-redefs [proj/call-native
+                         (fn [fn-key & more]
+                           (when (and (= :proj_string_destroy fn-key) (= 3 (count more)))
+                             (swap! freed inc))
+                           (apply orig fn-key more))]
+             (is (string? (proj/proj-suggests-code-for {:context ctx :object pj :authority "HOBU" :numeric_code 1})))
+             (is (= 1 @freed) "the code string was freed once")))))))
 
 #?(:clj
    (deftest gc-release-after-a-backend-switch-test

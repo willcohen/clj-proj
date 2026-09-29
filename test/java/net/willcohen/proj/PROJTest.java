@@ -368,6 +368,17 @@ public class PROJTest {
             } else {
                 fail("EPSG:9003 (US survey foot) not found in results");
             }
+
+            List<Map<String, Object>> all = PROJ.getUnitsFromDatabase(ctx, "EPSG", null, false);
+            boolean radian = false;
+            for (Map<String, Object> e : all) {
+                if ("9101".equals(e.get("code"))) radian = true;
+            }
+            if (radian) {
+                pass("A null category lists every category (" + all.size() + " units)");
+            } else {
+                fail("A null category did not list EPSG:9101 (radian), got " + all.size() + " units");
+            }
         } catch (Exception e) {
             fail("getUnitsFromDatabase failed: " + e.getMessage());
             e.printStackTrace();

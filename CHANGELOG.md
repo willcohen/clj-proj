@@ -7,6 +7,8 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - THIRD-PARTY-NOTICES.md holds the license notices of the code and data in
   the jar and the npm package, with the Emscripten runtime of the wasm.
+- `proj-context-set-search-paths`, `proj-context-get-user-writable-directory`,
+  `proj-assign-context` and `proj-errno-reset`.
 
 ### Changed
 - clj-native 0.0.2 (`net.willcohen/native`, npm `ffi-wasm`). On the GraalVM
@@ -18,10 +20,15 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
   Clojure 1.12.6, tools.logging 1.3.1 and dtype-next 11.026. The optimizing
   runtime of the GraalVM backend needs a GraalVM CE 25.3.4.1 JVM.
 - squint-cljs 0.14.210.
+- An `options` argument of `proj-identify`, `proj-create-from-name` and six
+  other functions takes nil or a vector of strings.
+- `proj-string-destroy` takes a pointer.
 
 ### Removed
 - The `shutdown` method of the proj-wasm worker handler. To stop the fetch
   worker, terminate the pool.
+- `proj-coord`, `proj-xy-dist` and `proj-get-suggested-operation`. PROJ passes
+  their `PJ_COORD` by value, but the bindings passed a pointer.
 
 ### Fixed
 - The jar contains the clj-kondo exports. The 0.1.0-alpha9 and 0.1.0-alpha10
@@ -55,6 +62,16 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
   run two times, and the result of the first run leaked.
 - The list of a string-list function, for example
   `proj-get-authorities-from-database`, was never freed.
+- FFI backend: the eight functions with an `options` argument, for example
+  `proj-suggests-code-for`, threw "Pointer value is zero!" when the call gave
+  no options.
+- `proj-suggests-code-for` did not free its result. `proj-string-destroy` freed
+  a copy of its argument, not the string.
+- `proj-get-units-from-database` with no category, and
+  `PROJ.getUnitsFromDatabase` with a null category, returned no units. They
+  now list the units of every category.
+- `context-database-path` always returned nil. It now returns the path of the
+  database that the context uses.
 - ClojureScript: `proj-destroy` and `proj-context-destroy` freed a tracked PJ or
   context, but did not release its tracking. A later release, for example
   `Symbol.dispose`, freed it again. `proj-context-destroy` of a tracked context
@@ -64,6 +81,26 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
   into the options of the caller.
 - GraalVM backend and ClojureScript: the `get_header` network callback did not
   free its strings, three for each grid file that PROJ opened.
+- ClojureScript: when `init` failed, the caller got the error, but Node.js also
+  stopped with `ERR_UNHANDLED_REJECTION`.
+- ClojureScript: `context-set-database-path` and `context-set-enable-network`
+  sent the call for a context on worker 1 or higher to worker 0, with the
+  pointer of the other worker.
+- ClojureScript: PROJ got NULL for an `options` argument, for example
+  `MULTILINE=NO` of `proj-as-wkt`, and ignored the options.
+- Browser: when the fetch of `proj.db` or `proj.ini` failed, the worker used
+  the error page as the file. Now `init` rejects with the HTTP status.
+- GraalVM backend: `coord->coord-array` of `[x y]` did not set z and t, which
+  kept the old values of the heap. Now they are 0.
+- PROJ did not read the bundled `proj.ini`, because no search path held its
+  directory. Each context now has search paths.
+- The errno check read the errno of the context after a NULL result. Because
+  PROJ keeps errno after a failure, the check threw the code of an earlier
+  call, for example the ENOENT of a new context. The check now clears the
+  errno before the call. `proj-as-wkt` of a PJ from `proj-create-crs-to-crs`
+  now gives no WKT and no error, as in PROJ.
+- ClojureScript: `proj-coordoperation-get-towgs84-values` gave no values. The
+  worker passed the output pointer as the last argument, not as the third.
 
 ## [0.1.0-alpha10] - 2026-09-15
 

@@ -134,6 +134,12 @@ async function loadProjResources() {
       fetch(baseUrl + 'proj.db'),
       fetch(baseUrl + 'proj.ini')
     ]);
+    // A 404 page staged as proj.db fails much later, as a database error.
+    for (const [name, resp] of [['proj.db', dbResp], ['proj.ini', iniResp]]) {
+      if (!resp.ok) {
+        throw new Error(`proj-loader: fetch of ${baseUrl + name} failed: HTTP ${resp.status}`);
+      }
+    }
 
     return {
       projDb: new Uint8Array(await dbResp.arrayBuffer()),

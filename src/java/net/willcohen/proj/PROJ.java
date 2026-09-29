@@ -635,7 +635,7 @@ public class PROJ {
         if (getUnitsFromDatabaseFn == null) getUnitsFromDatabaseFn = getVar("proj-get-units-from-database");
         IPersistentMap opts = map(kw("context"), context,
                                   kw("auth-name"), authName != null ? authName : "",
-                                  kw("category"), category != null ? category : "",
+                                  kw("category"), category,
                                   kw("allow-deprecated"), allowDeprecated ? 1 : 0);
         Object result = getUnitsFromDatabaseFn.invoke(opts);
         return convertKeywordMaps((List<Map<Keyword, Object>>) result);

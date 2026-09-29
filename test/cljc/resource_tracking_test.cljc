@@ -336,6 +336,49 @@
              (await (.flushPendingDisposes proj))))
          (await (fresh-pool! proj nil))))
 
+     ;; init returned the init promise and dropped its .then chain, so a
+     ;; failed init left that chain rejected with no handler. Node then exits
+     ;; with ERR_UNHANDLED_REJECTION, although the caller caught the error.
+     (deftest ^:async clj-proj-failed-init-leaves-no-unhandled-rejection
+       (await (init-once!))
+       (let [proj (:proj @state)
+             unhandled #js []
+             on-unhandled (fn [reason] (.push unhandled reason))]
+         (await (.shutdown proj))
+         (.on js/process "unhandledRejection" on-unhandled)
+         (try
+           (is (= "rejected" (await (-> (.init proj {:workers 0})
+                                        (.then (fn [_] "resolved") (fn [_] "rejected"))))))
+           ;; Node reports an unhandled rejection after the microtasks drain.
+           (await (js/Promise. (fn [resolve] (js/setTimeout resolve 50))))
+           (finally (.off js/process "unhandledRejection" on-unhandled)))
+         (is (zero? (.-length unhandled))
+             (str "unhandled rejections: " (.join (.map unhandled (fn [r] (str r))) "; ")))
+         (await (fresh-pool! proj nil))))
+
+     ;; contextSetEnableNetwork and contextSetDatabasePath passed the bare
+     ;; pointer, so the call for a context on worker 1 ran on worker 0 with
+     ;; the pointer of worker 1.
+     (deftest ^:async clj-proj-context-setters-run-on-the-worker-of-the-context
+       (await (init-once!))
+       (let [proj (:proj @state)]
+         (await (fresh-pool! proj {:workers 2}))
+         (let [c0 (await (.contextCreate proj))
+               c1 (await (.contextCreate proj {:worker 1}))]
+           (is (= [0 1] [(.-worker_idx c0) (.-worker_idx c1)]))
+           (await (.contextSetEnableNetwork proj c1 false))
+           (is (= 0 (await (.projContextIsNetworkEnabled proj #js {:context c1})))
+               "the network of the context on worker 1 is off")
+           (is (= 1 (await (.projContextIsNetworkEnabled proj #js {:context c0})))
+               "the context on worker 0 did not change")
+           (await (.contextSetDatabasePath proj c1 "/proj/../proj/proj.db"))
+           (is (= "/proj/../proj/proj.db" (await (.contextDatabasePath proj c1))))
+           (is (= "/proj/proj.db" (await (.contextDatabasePath proj c0))))
+           ((aget c0 (.-dispose js/Symbol)))
+           ((aget c1 (.-dispose js/Symbol)))
+           (await (.flushPendingDisposes proj)))
+         (await (fresh-pool! proj nil))))
+
      ;; A call with PJ args on two workers recreates each moved PJ on the
      ;; target worker. The identity operation, its context clone and the
      ;; recreated PJ were never destroyed, so each call leaked two PJs and a
