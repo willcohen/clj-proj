@@ -16,9 +16,11 @@
      "The worker pool wiring for browser and Node.js, and PROJ's
       extras-builder, result-wrapper and context-isolator hooks for
       clj-native dispatch."
-     (:require ["ffi-wasm/pool" :as pool]
-               ["ffi-wasm/workload-pool" :as wp]
-               ["ffi-wasm/dispatch" :as dispatch]
+     ;; ffi-wasm is one module. The aliases keep the names of the JVM branch.
+     #_{:clj-kondo/ignore [:duplicate-require]}
+     (:require ["ffi-wasm" :as pool]
+               ["ffi-wasm" :as wp]
+               ["ffi-wasm" :as dispatch]
                ["./handler.mjs" :as handler])))
 
 #?(:clj (set! *warn-on-reflection* true))

@@ -3,16 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <title>PROJ WASM CDN-Style Test</title>
+    <!-- Port 8090 is a second origin, as a CDN is. Every module of this page
+         comes from there, proj-wasm too. -->
     <script type="importmap">
     {
         "imports": {
-            "squint-cljs/core.js": "https://cdn.jsdelivr.net/npm/squint-cljs@0.14.210/core.js",
-            "squint-cljs/src/squint/string.js": "https://cdn.jsdelivr.net/npm/squint-cljs@0.14.210/src/squint/string.js",
-            "resource-tracker": "./dist/resource-tracker.mjs",
-            "worker-router": "./dist/worker-router.mjs",
-            "worker-router/worker-bootstrap": "./dist/worker-bootstrap.mjs",
-            "comlink": "./dist/comlink.mjs",
-            "proj-wasm": "./dist/proj.mjs"
+            "squint-cljs/core.js": "http://localhost:8090/src/cljc/net/willcohen/proj/node_modules/squint-cljs/core.js",
+            "squint-cljs/src/squint/string.js": "http://localhost:8090/src/cljc/net/willcohen/proj/node_modules/squint-cljs/src/squint/string.js",
+            "resource-tracker": "http://localhost:8090/src/cljc/net/willcohen/proj/node_modules/resource-tracker/resource.mjs",
+            "worker-router": "http://localhost:8090/src/cljc/net/willcohen/proj/node_modules/worker-router/dist/index.mjs",
+            "worker-router/worker-bootstrap": "http://localhost:8090/src/cljc/net/willcohen/proj/node_modules/worker-router/dist/worker-bootstrap.mjs",
+            "comlink": "http://localhost:8090/src/cljc/net/willcohen/proj/node_modules/comlink/dist/esm/comlink.mjs",
+            "ffi-wasm": "http://localhost:8090/src/cljc/net/willcohen/proj/node_modules/ffi-wasm/dist/ffi-wasm.mjs",
+            "proj-wasm": "http://localhost:8090/src/cljc/net/willcohen/proj/dist/proj.mjs"
         }
     }
     </script>

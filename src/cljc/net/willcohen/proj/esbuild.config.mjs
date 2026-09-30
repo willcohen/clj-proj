@@ -27,76 +27,18 @@ if (existsSync('proj-emscripten.wasm.map')) {
   }
 }
 
-// The Node XHR polyfill (proj-handler-overrides.mjs) spawns this fetch worker
-// from a URL in dist/, so the file must be adjacent to the handler.
-try {
-  copyFileSync('node_modules/ffi-wasm/src/cljc/net/willcohen/native/fetch_worker.mjs',
-               'dist/fetch_worker.mjs');
-} catch (err) {
-  console.warn('Warning: Could not copy fetch_worker.mjs:', err.message);
-}
-
-// clj-native's pool builds the Worker URL with
-// `import.meta.resolve('worker-router/worker-bootstrap')`. The in-tree
-// browser test page has no node_modules, so an importmap entry points at this
-// copy in dist/.
-try {
-  copyFileSync('node_modules/worker-router/dist/worker-bootstrap.mjs',
-               'dist/worker-bootstrap.mjs');
-  // proj.mjs externalizes worker-router, and worker-router imports comlink.
-  // The test page importmap points at these copies adjacent to proj.mjs.
-  copyFileSync('node_modules/worker-router/dist/index.mjs',
-               'dist/worker-router.mjs');
-  // npm hoists comlink on a fresh install and nests it under worker-router
-  // in some existing trees, so try both locations.
-  const comlinkSrc = ['node_modules/comlink/dist/esm/comlink.mjs',
-                      'node_modules/worker-router/node_modules/comlink/dist/esm/comlink.mjs']
-    .find(existsSync);
-  if (!comlinkSrc) throw new Error('comlink not found under node_modules');
-  copyFileSync(comlinkSrc, 'dist/comlink.mjs');
-  // The cdn-style test page has no node_modules, so its importmap points
-  // at this local copy of the installed resource-tracker.
-  copyFileSync('node_modules/resource-tracker/resource.mjs',
-               'dist/resource-tracker.mjs');
-  if (existsSync('node_modules/worker-router/dist/worker-bootstrap.mjs.map')) {
-    copyFileSync('node_modules/worker-router/dist/worker-bootstrap.mjs.map',
-                 'dist/worker-bootstrap.mjs.map');
-  }
-} catch (err) {
-  console.warn('Warning: Could not copy worker-router worker-bootstrap:', err.message);
-}
-
 try {
   copyFileSync('proj-emscripten.js', 'dist/proj-emscripten.js');
 } catch (err) {
   console.warn('Warning: Could not copy Emscripten JS file:', err.message);
 }
 
-// All bundles below rewrite `ffi-wasm/handler-runtime` to this sibling file.
-// See handlerRuntimeExternalPlugin for the shared-logState reason.
-try {
-  copyFileSync('node_modules/ffi-wasm/src/cljc/net/willcohen/native/handler_runtime.mjs',
-               'dist/handler-runtime.mjs');
-} catch (err) {
-  console.warn('Warning: Could not copy clj-native handler_runtime.mjs:', err.message);
+// The worker imports these two as they are. They have no static import of a
+// package, because a module worker ignores the page importmap. The generated
+// handler imports ffi-wasm by the URL in its init args.
+for (const f of ['proj-handler.mjs', 'proj-handler-overrides.mjs']) {
+  copyFileSync(f, `dist/${f}`);
 }
-
-// Externalizes `ffi-wasm/handler-runtime` and rewrites the specifier to
-// `./handler-runtime.mjs` in every bundle. The ES module loader caches by
-// URL, so all bundles in a JS context share one module instance and one
-// logState. Inlined copies split logState: __setLogConfig writes one copy
-// while dbg reads another.
-const handlerRuntimeExternalPlugin = {
-  name: 'handler-runtime-external',
-  setup(build) {
-    // The relative shape covers clj-native's own modules, which import
-    // handler_runtime as a sibling. Without that match, esbuild inlines a
-    // copy into proj.mjs although the bare specifier is external.
-    build.onResolve({ filter: /^(ffi-wasm\/handler-runtime|\.\/handler_runtime\.mjs)$/ }, () => {
-      return { path: './handler-runtime.mjs', external: true };
-    });
-  }
-};
 
 // platform 'neutral' does not know the Node builtins, which the Emscripten
 // glue and clj-native's helpers import, with or without the `node:` prefix.
@@ -115,13 +57,16 @@ const buildConfig = {
   platform: 'neutral',
   mainFields: ['module', 'main'],
   outfile: 'dist/proj.mjs',
+  // A package that proj.mjs inlines gets a second module instance next to
+  // the copy that a consumer imports, and its state splits. 'ffi-wasm' also
+  // covers each ffi-wasm/* subpath.
   external: [
     'squint-cljs/core.js',
     'squint-cljs/src/squint/string.js',
     'resource-tracker',
-    'worker-router',
+    'ffi-wasm',
   ],
-  plugins: [emscriptenNodePlugin, handlerRuntimeExternalPlugin],
+  plugins: [emscriptenNodePlugin],
   keepNames: true,
   metafile: true,
   sourcemap: true,
@@ -158,47 +103,6 @@ export * from './fndefs.mjs';
     console.log(text);
 
     console.log('\nBuild complete! Distribution in dist/proj.mjs');
-
-    // Bundled for the worker: module workers do not get the page importmap,
-    // so a bare specifier in proj-handler.mjs causes a 404 in the browser.
-    console.log('\nBundling proj-handler.mjs (worker-loadable)...');
-    await esbuild.build({
-      entryPoints: ['./proj-handler.mjs'],
-      bundle: true,
-      format: 'esm',
-      platform: 'neutral',
-      mainFields: ['module', 'main'],
-      outfile: 'dist/proj-handler.mjs',
-      external: [
-        // Kept as a sibling import so overrides edits do not force a
-        // proj-handler rebuild.
-        './proj-handler-overrides.mjs',
-      ],
-      plugins: [handlerRuntimeExternalPlugin],
-      keepNames: true,
-      sourcemap: true,
-    });
-    console.log('proj-handler.mjs bundled to dist/proj-handler.mjs');
-
-    // Bundled so the ffi-wasm/handler-{paths,fs,heap} imports resolve at
-    // build time. Module workers do not get the page importmap, so bare
-    // specifiers cause a 404 and the worker hangs at module load. The
-    // paths/fs/heap helpers hold no state, so an inlined copy for each
-    // consumer is safe. handler-runtime stays external to keep one logState
-    // (see handlerRuntimeExternalPlugin).
-    console.log('\nBundling proj-handler-overrides.mjs (worker-loadable)...');
-    await esbuild.build({
-      entryPoints: ['./proj-handler-overrides.mjs'],
-      bundle: true,
-      format: 'esm',
-      platform: 'neutral',
-      mainFields: ['module', 'main'],
-      outfile: 'dist/proj-handler-overrides.mjs',
-      plugins: [emscriptenNodePlugin, handlerRuntimeExternalPlugin],
-      keepNames: true,
-      sourcemap: true,
-    });
-    console.log('proj-handler-overrides.mjs bundled to dist/proj-handler-overrides.mjs');
   } catch (error) {
     console.error('Build failed:', error);
     process.exit(1);

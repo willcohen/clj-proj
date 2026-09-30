@@ -400,21 +400,37 @@
                     (let [packed (-> (tasks/shell {:dir "src/cljc/net/willcohen/proj" :out :string}
                                                   "npm" "pack" "--dry-run" "--json")
                                      :out json/parse-string first (get "files"))
-                          paths (set (map (fn [f] (get f "path")) packed))]
-                      (doseq [f ["LICENSE" "dist/THIRD-PARTY-NOTICES.md"]]
-                        (when-not (contains? paths f)
-                          (println (str "The npm package does not contain " f))
-                          (System/exit 1))))
+                          paths (set (map (fn [f] (get f "path")) packed))
+                          ;; ffi-wasm, worker-router, comlink and resource-tracker
+                          ;; resolve from node_modules or the page importmap.
+                          want #{"LICENSE" "README.md" "package.json"
+                                 "dist/THIRD-PARTY-NOTICES.md" "dist/proj.mjs"
+                                 "dist/proj-handler.mjs" "dist/proj-handler-overrides.mjs"
+                                 "dist/proj-emscripten.js" "dist/proj-emscripten.wasm"
+                                 "dist/proj.db" "dist/proj.ini"}]
+                      (when-not (= want paths)
+                        (println "The npm package files differ from the expected list.")
+                        (println (str "  missing: " (sort (remove paths want))))
+                        (println (str "  extra:   " (sort (remove want paths))))
+                        (System/exit 1))
+                      ;; An inlined copy of a package splits its module state
+                      ;; from the copy that a consumer imports.
+                      (doseq [f ["proj.mjs" "proj-handler.mjs" "proj-handler-overrides.mjs"]
+                              :let [inlined (re-seq (re-pattern "(?m)^// node_modules/\\S+")
+                                                    (slurp (str (fs/path dist-dir f))))]
+                              :when (seq inlined)]
+                        (println (str "dist/" f " inlines " (vec (distinct inlined))))
+                        (System/exit 1)))
                     (println "Testing built npm package...")
                     (tasks/shell {:dir "test-npm-package"} "npm" "install")
                     (tasks/shell {:dir "test-npm-package"} "npm" "test"))}
 
   check:squint-pin
-  {:doc "Make sure that the browser importmaps use the squint-cljs version that package.json pins."
+  {:doc "Make sure that the CDN importmaps of docs/index.html and the npm README use the squint-cljs version that package.json pins."
    :task (let [pin-re (re-pattern "\"squint-cljs\":\\s*\"\\^?([0-9][^\"]*)\"")
                map-re (re-pattern "squint-cljs@([0-9][^/\"]*)")
                pinned (second (re-find pin-re (slurp "src/cljc/net/willcohen/proj/package.json")))
-               pages  ["test/browser/test.html" "test/browser/cdn-style/index.html"]
+               pages  ["docs/index.html" "src/cljc/net/willcohen/proj/README.md"]
                wrong  (for [page pages
                             v (map second (re-seq map-re (slurp page)))
                             :when (not= v pinned)]
@@ -424,7 +440,7 @@
            (if (seq wrong)
              (do (binding [*out* *err*]
                    (println (str "squint-cljs is pinned at " pinned
-                                 ", but the browser importmaps use:"))
+                                 ", but the CDN importmaps use:"))
                    (doseq [[page v] wrong] (println (str "  " page " -> " v))))
                  (System/exit 1))
              (println (str "squint-cljs importmap pin matches package.json: " pinned))))}
@@ -433,20 +449,6 @@
                    :depends [squint check:squint-pin]
                    :task (do
                            (stage-browser-resources!)
-                           (println "Setting up cdn-style test directory...")
-                           (fs/create-dirs "test/browser/cdn-style/dist")
-                           ;; The cdn-style test has no npm install, so its dist/
-                           ;; must hold each module that proj.mjs and the
-                           ;; handler import at run time.
-                           (doseq [f ["proj.mjs" "proj.mjs.map" "proj-emscripten.wasm"
-                                      "proj.db" "proj.ini" "proj-emscripten.js"
-                                      "proj-handler.mjs" "proj-handler-overrides.mjs"
-                                      "fetch_worker.mjs" "worker-bootstrap.mjs"
-                                      "worker-router.mjs" "comlink.mjs"
-                                      "resource-tracker.mjs" "handler-runtime.mjs"]]
-                             (fs/copy (fs/path dist-dir f)
-                                      (fs/path "test/browser/cdn-style/dist" f)
-                                      {:replace-existing true}))
                            (println "Installing Playwright dependencies...")
                            (tasks/shell {:dir "test/browser"} "npm" "install")
                            (println "Installing Playwright browsers...")
@@ -1133,6 +1135,13 @@ public class JavaJarTest {
                     (doseq [file files]
                       (println (str "Compiling " file "..."))
                       (nb/squint-compile! proj-dir file))
+
+                    ;; squint emits the squint.edn :paths location of a required
+                    ;; ns, which esbuild then inlines. The bare name stays
+                    ;; external, so proj.mjs shares the consumer's ffi-wasm.
+                    (nb/rewrite-import-specifiers!
+                     (fs/path proj-dir "macros.mjs")
+                     {"./node_modules/ffi-wasm/src/cljc/net/willcohen/native/macros.mjs" "ffi-wasm"})
 
                     (println "Squint compilation complete.")
 

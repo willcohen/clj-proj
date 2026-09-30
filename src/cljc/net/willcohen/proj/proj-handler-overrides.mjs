@@ -10,22 +10,17 @@
  * makeHandler, which runs the calls of a worker one at a time. Module-level
  * state is per worker, because each worker imports its own copy.
  *
+ * This file has no static import of ffi-wasm, because a module worker ignores
+ * the page importmap. The generated handler gives the ffi-wasm/handler
+ * namespace to methods(ffi) and to init as ctx.ffi.
+ *
  * This file runs from two different directories. Read every shipped asset
- * through resolveAsset with the [['.'], ['dist']] candidate list, and add
- * new assets the same way. A path built from __dirname alone works in one
- * layout and fails in the other.
+ * with the [['.'], ['dist']] candidate list, and add new assets the same way.
+ * A path built from __dirname alone works in one layout and fails in the
+ * other.
  */
 
-import { resolveAsset, loadEmscriptenModule } from 'ffi-wasm/handler-paths';
-import { stageFiles } from 'ffi-wasm/handler-fs';
-import { heapHelpers } from 'ffi-wasm/handler-heap';
-import { isNode } from 'ffi-wasm/handler-env';
-import {
-  createSyncFetch,
-  installXhrPolyfill,
-  moduleDestroy,
-} from 'ffi-wasm/http-bridge';
-
+let ffi = null;
 let module = null;
 let contexts = new Map();
 let nextContextId = 1;
@@ -41,22 +36,16 @@ const PJ_LOG_ERROR = 1;
 const PJ_LOG_DEBUG = 2;
 const PJ_LOG_TRACE = 3;
 
+// Node.js has no XMLHttpRequest. makeRangeRequest blocks on the http-bridge
+// fetch worker instead.
 async function installNodeXhrPolyfill() {
-  if (!isNode || typeof globalThis.XMLHttpRequest !== 'undefined') return;
-
-  const { pathToFileURL } = await import('url');
-
-  // Node.js has no XMLHttpRequest. makeRangeRequest blocks on the http-bridge
-  // fetch worker instead.
-  const { path } = await resolveAsset(import.meta.url, 'fetch_worker.mjs', [['.'], ['dist']]);
-  const workerUrl = pathToFileURL(path);
-
-  const syncFetch = await createSyncFetch({ workerUrl });
-  await installXhrPolyfill({ syncFetch });
+  if (!ffi.isNode || typeof globalThis.XMLHttpRequest !== 'undefined') return;
+  const syncFetch = await ffi.createSyncFetch();
+  await ffi.installXhrPolyfill({ syncFetch });
 }
 
 async function loadProjModule() {
-  const { factory } = await loadEmscriptenModule(import.meta.url, {
+  const { factory } = await ffi.loadEmscriptenModule(import.meta.url, {
     name: 'proj-emscripten.js',
     candidates: [['.'], ['dist']],
   });
@@ -383,7 +372,7 @@ function resetErrno(ctx) {
   module.ccall('proj_errno_reset', 'number', ['number'], [errnoPj]);
 }
 
-export const methods = {
+export const methods = (ffiNs) => ({
   context_create: async (opts) => {
     const enableNetwork = (opts?.enableNetwork ?? true) ? 1 : 0;
     const ptr = module.ccall('proj_context_create', 'number', [], []);
@@ -446,16 +435,19 @@ export const methods = {
     return coordAllocations || ctx !== null ? { result: value, coordData, errno } : value;
   },
 
-  ...heapHelpers(() => module),
+  ...ffiNs.heapHelpers(() => module),
 
   read_string_array: async (ptr, _count) => readStringArray(module, ptr),
-};
+});
 
 // worker-router calls this once for each worker at pool terminate, through
 // the generated proj-handler.mjs. It releases the fetch worker that init took.
-export const destroy = moduleDestroy;
+export function destroy() {
+  return ffi?.moduleDestroy();
+}
 
 export async function init(initArgs, ctx) {
+  ffi = ctx.ffi;
   const args = initArgs ?? {};
   if (!args.dbBytes) {
     throw new Error('proj-handler.create: missing required initArgs.dbBytes');
@@ -468,7 +460,7 @@ export async function init(initArgs, ctx) {
 
   const files = { 'proj.db': args.dbBytes };
   if (args.iniBytes) files['proj.ini'] = args.iniBytes;
-  stageFiles(module, files, '/proj');
+  ffi.stageFiles(module, files, '/proj');
 
   logLevel = Number(args.logLevel ?? 0);
 

@@ -32,11 +32,12 @@
      (:import [java.io File]))
    :cljs
    (ns net.willcohen.proj.proj
+     ;; ffi-wasm is one module. The aliases keep the names of the JVM branch.
+     #_{:clj-kondo/ignore [:duplicate-require]}
      (:require [clojure.string :as string]
-               ["ffi-wasm/platform-state" :as nps]
-               ["ffi-wasm/pool" :as pool]
-               ["ffi-wasm/dispatch" :as dispatch]
-               ["ffi-wasm/macros" :refer [underscore->camelCase]]
+               ["ffi-wasm" :as nps]
+               ["ffi-wasm" :as pool]
+               ["ffi-wasm" :as dispatch :refer [underscore->camelCase]]
                [wasm :as wasm]
                [fndefs :as pdefs]
                [macros :refer [define-all-proj-public-fns]]

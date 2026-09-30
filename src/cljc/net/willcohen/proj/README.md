@@ -39,6 +39,33 @@ console.log(x, y); // -7910240.56 5215074.24
 await proj.shutdown();
 ```
 
+### In a browser
+
+A page loads proj-wasm and its dependencies through an import map. A module
+worker does not use the import map, so ffi-wasm gives each worker the URLs
+that it needs.
+
+```html
+<script type="importmap">
+{
+  "imports": {
+    "squint-cljs/core.js": "https://cdn.jsdelivr.net/npm/squint-cljs@0.14.210/core.js",
+    "squint-cljs/src/squint/string.js": "https://cdn.jsdelivr.net/npm/squint-cljs@0.14.210/src/squint/string.js",
+    "resource-tracker": "https://cdn.jsdelivr.net/npm/resource-tracker@0.0.1/resource.mjs",
+    "worker-router": "https://cdn.jsdelivr.net/npm/@wcohen/worker-router@0.0.2/dist/index.mjs",
+    "worker-router/worker-bootstrap": "https://cdn.jsdelivr.net/npm/@wcohen/worker-router@0.0.2/dist/worker-bootstrap.mjs",
+    "comlink": "https://cdn.jsdelivr.net/npm/comlink@4.4.2/dist/esm/comlink.mjs",
+    "ffi-wasm": "https://cdn.jsdelivr.net/npm/ffi-wasm@0.0.3/dist/ffi-wasm.mjs",
+    "proj-wasm": "https://cdn.jsdelivr.net/npm/proj-wasm@0.1.0-beta.1/dist/proj.mjs"
+  }
+}
+</script>
+<script type="module">
+  import * as proj from 'proj-wasm';
+  await proj.init();
+</script>
+```
+
 ### Names
 
 Each function has a camelCase name and a snake_case name, for example

@@ -66,5 +66,13 @@ module.exports = defineConfig({
       env: { PORT: '8081', COOP_COEP: 'true' },
       reuseExistingServer: !process.env.CI,
     },
+    // A second origin, as a CDN is, for the importmap URLs of the pages. It
+    // sends CORS headers, which a COEP page needs for a cross-origin module.
+    {
+      command: 'node server.mjs',
+      port: 8090,
+      env: { PORT: '8090', COOP_COEP: 'false' },
+      reuseExistingServer: !process.env.CI,
+    },
   ],
 });

@@ -3,7 +3,6 @@
 ;; proj-handler-overrides.mjs.
 
 {:overrides-import-path "./proj-handler-overrides.mjs"
- :runtime-import-path   "ffi-wasm/handler-runtime"
 
  :exposed-methods [:context_create :set_log_level :context_destroy
                    :ccall :malloc :free

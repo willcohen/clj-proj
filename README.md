@@ -292,9 +292,10 @@ clj-native. To use a clj-native checkout in JavaScript, do these steps:
    this change.
 3. Run `npm install --prefix src/cljc/net/willcohen/proj`.
 
-After each clj-native change, do steps 1 and 3 again. To use a worker-router
-checkout, link `src/cljc/net/willcohen/proj/node_modules/worker-router` to it.
-Run `npm run build` in the checkout, then run `bb squint`.
+After each clj-native change, do steps 1 and 3 again. The ffi-wasm bundle
+holds worker-router. To use a worker-router checkout, run `npm run build` in
+it, link `../clj-native/node_modules/worker-router` to it, and do steps 1 and 3
+again.
 
 ### Local PROJ
 

@@ -4,6 +4,9 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- **Breaking:** `dist/` has only the PROJ files. A CDN page maps `ffi-wasm`.
+
 ### Fixed
 - `proj-context-errno-string` takes `:context`.
 - npm package links to the repository and issues.

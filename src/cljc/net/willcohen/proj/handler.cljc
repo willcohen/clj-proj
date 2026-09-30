@@ -18,7 +18,7 @@
    (ns net.willcohen.proj.handler
      "Per-worker init/destroy for the clj-native workload-pool `:proj` handler. See JVM ns docstring."
      (:require ["./proj-loader.mjs" :as proj-loader]
-               ["ffi-wasm/pool" :as pool])))
+               ["ffi-wasm" :as pool])))
 
 #?(:clj (set! *warn-on-reflection* true))
 
