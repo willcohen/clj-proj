@@ -6,6 +6,7 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ### Fixed
 - `proj-context-errno-string` takes `:context`.
+- npm package links to the repository and issues.
 
 ## [0.1.0-alpha11] - 2026-09-29
 
