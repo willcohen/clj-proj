@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "ffi-wasm": "0.0.2",
+    "ffi-wasm": "0.0.3",
     "proj-wasm": "file:../../src/cljc/net/willcohen/proj",
     "squint-cljs": "^0.14.210"
   }

@@ -5,6 +5,7 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 ## [Unreleased]
 
 ### Changed
+- clj-native 0.0.3.
 - **Breaking:** `dist/` has only the PROJ files. A CDN page maps `ffi-wasm`.
 
 ### Fixed

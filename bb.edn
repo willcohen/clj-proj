@@ -1,6 +1,6 @@
 {:paths ["scripts"]
  :deps {net.willcohen/proj {:local/root "."}
-        net.willcohen/native {:mvn/version "0.0.2"}
+        net.willcohen/native {:mvn/version "0.0.3"}
         org.babashka/http-client {:mvn/version "0.4.22"}}
  :tasks
  {:requires ([babashka.fs :as fs]
@@ -349,10 +349,10 @@
              :depends [test:cljs]}
 
   stage:clj-native-test-deps
-  {:doc "Copy the clj-native test helpers from the installed ffi-wasm into test/cljc/dist/."
+  {:doc "Copy test_runner.mjs from the dist/ of the installed ffi-wasm into test/cljc/dist/."
    ;; The Clojars jar has no .mjs.
    :task (nb/stage-test-deps!
-          {:native-src "src/cljc/net/willcohen/proj/node_modules/ffi-wasm/src/cljc/net/willcohen/native"})}
+          {:native-dist "src/cljc/net/willcohen/proj/node_modules/ffi-wasm/dist"})}
 
   build:js:test
   {:doc "Compile the cljs.test suites in test/cljc."

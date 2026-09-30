@@ -33,7 +33,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "ffi-wasm": "0.0.2",
+    "ffi-wasm": "0.0.3",
     "resource-tracker": "^0.0.1",
     "squint-cljs": "^0.14.210"
   },
