@@ -14,10 +14,10 @@ has a JavaScript API over a WebAssembly build of PROJ.
 clj-proj is alpha software. The API can change in each release.
 
 ```clojure
-net.willcohen/proj {:mvn/version "0.1.0-alpha10"}
+net.willcohen/proj {:mvn/version "0.1.0-alpha11"}
 ```
 
-For Maven or Gradle, use `net.willcohen:proj:0.1.0-alpha10` from the Clojars
+For Maven or Gradle, use `net.willcohen:proj:0.1.0-alpha11` from the Clojars
 repository (`https://repo.clojars.org`).
 
 ```bash

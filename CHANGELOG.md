@@ -4,6 +4,8 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.0-alpha11] - 2026-09-29
+
 ### Added
 - THIRD-PARTY-NOTICES.md in the jar and the npm package.
 - `proj-context-set-search-paths`, `proj-context-get-user-writable-directory`,
@@ -230,7 +232,8 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - A proof of concept, released to npm and Clojars.
 
-[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha10...HEAD
+[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha11...HEAD
+[0.1.0-alpha11]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha10...0.1.0-alpha11
 [0.1.0-alpha10]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha9...0.1.0-alpha10
 [0.1.0-alpha9]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha8...0.1.0-alpha9
 [0.1.0-alpha8]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha7...0.1.0-alpha8
