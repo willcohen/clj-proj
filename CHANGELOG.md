@@ -4,6 +4,9 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- `proj-context-errno-string` takes `:context`.
+
 ## [0.1.0-alpha11] - 2026-09-29
 
 ### Added

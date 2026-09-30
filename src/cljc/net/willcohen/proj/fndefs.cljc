@@ -201,7 +201,8 @@
    :proj_context_errno {:rettype :int32
                         :argtypes [[:context :pointer]]}
    :proj_context_errno_string {:rettype :string
-                               :argtypes [[:err :int32]]}
+                               :argtypes [[:context :pointer]
+                                          [:err :int32]]}
    :proj_context_get_database_path {:rettype :string
                                     :argtypes [[:context :pointer]]}
    :proj_context_set_search_paths {:rettype :void

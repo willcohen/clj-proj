@@ -111,6 +111,17 @@
     (with-test-context [ctx]
       (is (= 0 (await (proj/proj-context-errno {:context ctx})))))))
 
+;; The fndef had no ctx argument, so the code went in as the PJ_CONTEXT
+;; pointer, and PROJ wrote the message through that address.
+(deftest ^:async context-errno-string-test
+  (with-each-implementation
+    (with-test-context [ctx]
+      (is (= "API misuse"
+             (await (proj/proj-context-errno-string {:context ctx :err 4097}))))
+      (is (= "Unknown error (code 1)"
+             (await (proj/proj-context-errno-string {:err 1})))
+          "a call with no context gets a new one"))))
+
 ;; PROJ finds no operation from an engineering CRS to a geographic CRS. It
 ;; returns NULL and sets no errno.
 (deftest ^:async no-operation-gives-nil-test
