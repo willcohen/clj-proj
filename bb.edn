@@ -699,6 +699,12 @@ public class JavaJarTest {
                    wasm? (some opts [:wasm :wasm-browser :wasm-graal])
                    {host-os :os host-arch :arch} (nb/detect-host-platform)
 
+                   ;; clj-native 0.0.3's zig wrappers turn on UBSan traps at each
+                   ;; -O level, and one trapped in libtiff on Windows. Remove
+                   ;; this when clj-native limits the trap flag to -O0.
+                   zig-no-ubsan "-fno-sanitize=undefined"
+                   with-zig-no-ubsan (fn [flags] (str (or flags "-g -O2") " " zig-no-ubsan))
+
                    build-sqlite (fn [{:keys [type install-dir cc zig-env host-flag is-linux? is-windows? debug?]}]
                                   (let [lib-path (fs/path install-dir "lib" "libsqlite3.a")]
                                     (when debug? (println "DEBUG: Checking for existing" (name type) "SQLite library at:" (str lib-path)))
@@ -721,7 +727,8 @@ public class JavaJarTest {
                                                              "-s ERROR_ON_UNDEFINED_SYMBOLS=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DISABLE_LFS -DSQLITE_LONGDOUBLE_TYPE=double -DSQLITE_ENABLE_JSON1 -DSQLITE_ENABLE_NORMALIZE")
                                             env (cond-> (merge {"CC" cc} zig-env)
                                                   (and (= type :native) is-linux?) (assoc "CFLAGS" "-O2 -fPIC")
-                                                  (= type :wasm) (assoc "CFLAGS" wasm-cflags))]
+                                                  (= type :wasm) (assoc "CFLAGS" wasm-cflags)
+                                                  zig-env (update "CFLAGS" with-zig-no-ubsan))]
                                         (nb/build-autotools-library
                                          {:type type
                                           :build-dir build-dir
@@ -738,7 +745,7 @@ public class JavaJarTest {
                                           env (cond-> (merge {"CC" cc} zig-env)
                                                 ;; CHOST keeps configure from reading uname on a
                                                 ;; macOS host, and --static needs -fPIC for libproj.so.
-                                                zig-env (assoc "CHOST" host "CFLAGS" "-O2 -fPIC")
+                                                zig-env (assoc "CHOST" host "CFLAGS" (with-zig-no-ubsan "-O2 -fPIC"))
                                                 (= type :wasm) (assoc "AR" "emar" "RANLIB" "emranlib")
                                                 (and (= type :wasm) debug?)
                                                 (update "CFLAGS" (fn [v] (str (or v "") " -O0 -g -gsource-map -fsanitize=address"))))
@@ -780,6 +787,7 @@ public class JavaJarTest {
                                                               (= type :wasm) (conj "--disable-tools" "--disable-contrib" "--disable-tests" "--disable-docs" "--disable-ccitt"))
                                              env (cond-> (merge {"CC" cc "CXX" cxx} zig-env)
                                                    (and (= type :native) is-linux?) (assoc "CFLAGS" "-O2 -fPIC" "CXXFLAGS" "-O2 -fPIC")
+                                                   zig-env (update "CFLAGS" with-zig-no-ubsan)
                                                    (= type :wasm) (assoc "CPPFLAGS" "-DHAVE_FCNTL_H=1")
                                                    (and (= type :wasm) debug?) (assoc "CFLAGS" "-O0 -g -gsource-map -fsanitize=address"
                                                                                       "CXXFLAGS" "-O0 -g -gsource-map -fsanitize=address"))
@@ -849,7 +857,9 @@ public class JavaJarTest {
                                                      ;; of CMake names that dir.
                                                      is-darwin? (conj "-DCMAKE_SKIP_BUILD_RPATH=ON")
 
-                                                     zig (into (:cmake-args zig))
+                                                     zig (into (conj (:cmake-args zig)
+                                                                     (str "-DCMAKE_C_FLAGS=" zig-no-ubsan)
+                                                                     (str "-DCMAKE_CXX_FLAGS=" base-cxx-flags " " zig-no-ubsan)))
                                                      (= type :native) (conj "-DENABLE_CURL=OFF"
                                                                             "-DENABLE_NETWORK=ON"
                                                                             "-DBUILD_SHARED_LIBS=ON"
