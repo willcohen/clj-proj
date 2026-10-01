@@ -4,6 +4,8 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-30
+
 ### Changed
 - clj-native 0.0.3.
 - **Breaking:** `dist/` has only the PROJ files. A CDN page maps `ffi-wasm`.
@@ -240,7 +242,8 @@ conventions of [keepachangelog.com](http://keepachangelog.com/).
 ### Added
 - A proof of concept, released to npm and Clojars.
 
-[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha11...HEAD
+[Unreleased]: https://github.com/willcohen/clj-proj/compare/0.1.0...HEAD
+[0.1.0]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha11...0.1.0
 [0.1.0-alpha11]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha10...0.1.0-alpha11
 [0.1.0-alpha10]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha9...0.1.0-alpha10
 [0.1.0-alpha9]: https://github.com/willcohen/clj-proj/compare/0.1.0-alpha8...0.1.0-alpha9

@@ -4,7 +4,7 @@ A transpiled WebAssembly version of [PROJ](https://github.com/OSGeo/PROJ),
 available for use from JavaScript.
 
 This package is part of the [clj-proj](https://github.com/willcohen/clj-proj)
-project and is experimental. See that project's
+project, which is new. A release can still make breaking changes. See its
 [README](https://github.com/willcohen/clj-proj/blob/main/README.md) for more
 details.
 
@@ -56,7 +56,7 @@ that it needs.
     "worker-router/worker-bootstrap": "https://cdn.jsdelivr.net/npm/@wcohen/worker-router@0.0.2/dist/worker-bootstrap.mjs",
     "comlink": "https://cdn.jsdelivr.net/npm/comlink@4.4.2/dist/esm/comlink.mjs",
     "ffi-wasm": "https://cdn.jsdelivr.net/npm/ffi-wasm@0.0.3/dist/ffi-wasm.mjs",
-    "proj-wasm": "https://cdn.jsdelivr.net/npm/proj-wasm@0.1.0-beta.1/dist/proj.mjs"
+    "proj-wasm": "https://cdn.jsdelivr.net/npm/proj-wasm@0.1.0/dist/proj.mjs"
   }
 }
 </script>

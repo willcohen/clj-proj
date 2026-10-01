@@ -11,13 +11,13 @@ clj-proj gives [PROJ](https://proj.org/) to the JVM and to JavaScript. The
 and a Java API. The npm package [`proj-wasm`](https://www.npmjs.com/package/proj-wasm)
 has a JavaScript API over a WebAssembly build of PROJ.
 
-clj-proj is alpha software. The API can change in each release.
+clj-proj is new. A release can still make breaking changes.
 
 ```clojure
-net.willcohen/proj {:mvn/version "0.1.0-alpha11"}
+net.willcohen/proj {:mvn/version "0.1.0"}
 ```
 
-For Maven or Gradle, use `net.willcohen:proj:0.1.0-alpha11` from the Clojars
+For Maven or Gradle, use `net.willcohen:proj:0.1.0` from the Clojars
 repository (`https://repo.clojars.org`).
 
 ```bash

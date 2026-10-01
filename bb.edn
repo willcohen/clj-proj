@@ -1212,7 +1212,7 @@ public class JavaJarTest {
    :depends [squint]
    :task (do
            (println "Publishing to npm...")
-           (tasks/shell {:dir "src/cljc/net/willcohen/proj"} "npm" "publish" "--tag" "alpha")
+           (tasks/shell {:dir "src/cljc/net/willcohen/proj"} "npm" "publish")
            (println "Published to npm"))}
 
   test:all
@@ -1292,7 +1292,7 @@ public class JavaJarTest {
            (run 'npm-contents)
 
            (println "npm publish dry-run:")
-           (tasks/shell {:dir "src/cljc/net/willcohen/proj"} "npm" "publish" "--dry-run" "--tag" "alpha")
+           (tasks/shell {:dir "src/cljc/net/willcohen/proj"} "npm" "publish" "--dry-run")
            (println)
 
            (println (str "Ready to deploy " version ". Run: bb deploy")))}
